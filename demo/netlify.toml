@@ -2,6 +2,10 @@
   command = "npm run build"
   publish = "dist"
 
+# Misma versión de Node con la que se prueba (Vite 8 necesita 20.19 o más).
+[build.environment]
+  NODE_VERSION = "22"
+
 [functions]
   directory = "netlify/functions"
   node_bundler = "esbuild"
