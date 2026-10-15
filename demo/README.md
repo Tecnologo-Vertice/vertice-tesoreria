@@ -13,7 +13,8 @@ npm run dev        # http://localhost:5173
 npm run build      # typecheck app + funciones, y dist/ para Netlify
 npm run preview    # sirve dist/ en http://localhost:4173
 npm run typecheck  # solo tipos
-npm run test:sql   # corre las migraciones en un Postgres local (PGlite) y prueba pagos, reingesta y seguridad
+npm test           # todas las pruebas: lectura de facturas, armado para Xubio y base de datos
+npm run sql:unir   # arma supabase/instalar_todo.sql para pegar en Supabase
 ```
 
 Para que otros en la misma red abran la demo: `npm run dev -- --host` y pasarles la dirección `Network:`.

@@ -17,6 +17,7 @@ Carpeta del sistema nuevo. Acá vive todo lo que reemplaza, por etapas, al Apps 
 | [docs/08-flujo-de-trabajo-y-preguntas.md](docs/08-flujo-de-trabajo-y-preguntas.md) | El circuito real según Guido, lo que permite la API de Xubio y las preguntas abiertas. |
 | [docs/09-prueba-con-el-equipo.md](docs/09-prueba-con-el-equipo.md) | Preparación de la prueba con Vivi y Guido: copia del Apps Script y app nueva (demo o conectada). Correcciones del 13/10. |
 | [docs/10-flujo-1-entrada-de-facturas.md](docs/10-flujo-1-entrada-de-facturas.md) | Flujo 1 en el sistema nuevo: mail → IA → Aprobación. Equivalencias con el Apps Script, mejoras y cómo probarlo. |
+| [docs/11-puesta-en-marcha-hoy.md](docs/11-puesta-en-marcha-hoy.md) | **Empezar acá.** Qué hace el sistema hoy, los pasos para encenderlo (cuentas, claves, mails) y lo que falta. |
 | `apps_script_copia/` | Copia del código de la copia de desarrollo del Apps Script, para leer. **Tiene claves: no se commitea** (está en `.gitignore`). |
 
 ## Correr la demo

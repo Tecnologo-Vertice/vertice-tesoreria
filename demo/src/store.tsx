@@ -28,6 +28,8 @@ interface Store {
   subirFactura: (archivo: File) => Promise<void>
   leerAhora: () => Promise<void>
   reintentarDocumento: (id: string) => Promise<void>
+  subirFacturaXubio: (id: string) => Promise<void>
+  marcarFacturaRalpharma: (id: string) => Promise<void>
   descartarDocumento: (id: string, motivo: string) => Promise<void>
   reiniciar: () => Promise<void>
   recargar: () => Promise<void>
@@ -94,6 +96,13 @@ export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fu
 
   const value = useMemo<Store>(() => {
     const empresaDe = (id: string) => catalogos.empresas.find((e) => e.id === id) ?? { id, nombre: id, corto: id, cuit: '', erp: 'NINGUNO' as const }
+    const subirXubio = async (id: string) => {
+      const r = await accion(() => fuente.subirFacturaXubio(id, usuario))
+      if (!r) return
+      if (r.estado === 'SUBIDA') toast(r.detalle)
+      else if (r.estado === 'EN_SECO') toast(`Xubio en modo prueba: ${r.detalle}`, 'info')
+      else if (r.estado === 'ERROR') toast(`No se pudo subir a Xubio: ${r.detalle}`, 'error')
+    }
     return {
       modo: fuente.modo,
       cargando,
@@ -105,11 +114,14 @@ export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fu
       usuario,
       setUsuario,
       aprobarFactura: async (id, d) => {
-        // Conectado, la subida a Xubio la sigue haciendo el Apps Script: no prometer lo que no pasa.
-        await accion(
-          () => fuente.aprobarFactura(id, d, usuario),
-          fuente.modo === 'demo' ? 'Factura aprobada y enviada a Xubio con la cuenta contable' : 'Factura aprobada con la cuenta contable; pasa a Pagos',
+        const f = facturas.find((x) => x.id === id)
+        const erp = f ? empresaDe(f.empresaId).erp : 'NINGUNO'
+        const ok = await accion(
+          () => fuente.aprobarFactura(id, d, usuario).then(() => true),
+          erp === 'XUBIO' ? 'Factura aprobada; subiendo a Xubio…' : 'Factura aprobada; queda en el sector Ralpharma para Guido',
         )
+        // Xubio automático: al aprobar, la factura se sube sola. Si falla, queda el motivo y se reintenta.
+        if (ok && erp === 'XUBIO') await subirXubio(id)
       },
       rechazarFactura: async (id, m) => {
         await accion(() => fuente.rechazarFactura(id, m, usuario), 'Factura rechazada; queda registrado quién y por qué')
@@ -163,6 +175,10 @@ export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fu
       },
       leerAhora: async () => {
         await accion(() => fuente.leerAhora(), (n) => (n ? `Se leyeron ${n} documento(s)` : 'No había nada esperando lectura'))
+      },
+      subirFacturaXubio: subirXubio,
+      marcarFacturaRalpharma: async (id) => {
+        await accion(() => fuente.marcarFacturaRalpharma(id, usuario), 'Factura marcada como cargada en Ralpharma, con tu nombre')
       },
       reintentarDocumento: async (id) => {
         await accion(() => fuente.reintentarDocumento(id, usuario), 'Vuelve a la cola de lectura')

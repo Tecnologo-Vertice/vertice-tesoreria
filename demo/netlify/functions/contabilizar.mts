@@ -6,6 +6,7 @@
 import type { Config } from '@netlify/functions'
 import { env, exigirRol, json, leerJson, manejar, supabaseAdmin, usuarioDesde, ErrorHttp } from './lib/comun'
 import * as xubio from './lib/xubio'
+import { itemPagoEnFactura } from './lib/xubio-armado'
 
 interface Body {
   pagoId: string
@@ -64,12 +65,38 @@ export default manejar(async (req) => {
     proveedor,
     cheque: pago.numero_cheque ? { numero: String(pago.numero_cheque), vencimiento: pago.fecha_acreditacion ?? pago.fecha } : undefined,
   }
-  const payload = b.formaCargaXubio === 'ORDEN_PAGO' ? xubio.ordenDePago(datos) : xubio.asientoManual(datos)
-  const path = xubio.pathPara(b.formaCargaXubio)
+  // Facturas que cancela este pago, con su id en Xubio.
+  const { data: vinculos } = await db.from('pagos_facturas').select('importe, facturas(id, xubio_id, letra, punto_venta, numero)').eq('pago_id', pago.id)
+  const facturas = ((vinculos ?? []) as unknown as { importe: number; facturas: { xubio_id: string | null; letra: string | null; punto_venta: number; numero: number } }[]).map((v) => ({
+    importe: Number(v.importe),
+    xubioId: v.facturas?.xubio_id && /^\d+$/.test(v.facturas.xubio_id) ? v.facturas.xubio_id : null,
+    nro: `${v.facturas?.letra ? v.facturas.letra + '-' : ''}${String(v.facturas?.punto_venta ?? '').padStart(5, '0')}-${String(v.facturas?.numero ?? '').padStart(8, '0')}`,
+  }))
+
+  // Camino B (docs/08): con XUBIO_PAGO_EN_FACTURA=true y una sola factura ya subida, el pago se registra
+  // DENTRO de la factura y queda imputado. La API de Xubio no permite tildar facturas en una orden de pago.
+  const enFactura = b.formaCargaXubio === 'ORDEN_PAGO' && env('XUBIO_PAGO_EN_FACTURA', false) === 'true' && facturas.length === 1 && !!facturas[0].xubioId
+  let payload: unknown
+  let path: string
+  let metodo: 'POST' | 'PUT' = 'POST'
+  if (enFactura) {
+    const item = itemPagoEnFactura({ cuentaOrigen, importe: datos.importe, descripcion: datos.observacion, cheque: datos.cheque })
+    const actual = t ? await xubio.facturaCompraPorId(t, facturas[0].xubioId!) : {}
+    const items = Array.isArray(actual.transaccionOrdenPagoItems) ? actual.transaccionOrdenPagoItems : []
+    payload = { ...actual, condicionDePago: 2, transaccionOrdenPagoItems: [...items, item] }
+    path = `comprobanteCompraBean/${facturas[0].xubioId}`
+    metodo = 'PUT'
+    notas.push(`pago registrado dentro de la factura ${facturas[0].nro}: queda imputado`)
+  } else {
+    payload = b.formaCargaXubio === 'ORDEN_PAGO' ? xubio.ordenDePago(datos) : xubio.asientoManual(datos)
+    path = xubio.pathPara(b.formaCargaXubio)
+    if (b.formaCargaXubio === 'ORDEN_PAGO' && facturas.length)
+      notas.push(`la OP queda a cuenta del proveedor: en Xubio hay que tildar ${facturas.map((x) => `${x.nro} por ${x.importe}`).join(', ')}`)
+  }
 
   if (!envioReal || !t) {
     await db.from('xubio_log').insert({ empresa_id: pago.empresas.id, entidad: 'PAGO', entidad_id: pago.id, en_seco: true, request: { path, payload }, usuario: u.nombre })
-    const detalle = `En seco: ${b.formaCargaXubio} por ${datos.importe} contra ${cuentaOrigen.nombre}${notas.length ? ' (' + notas.join('; ') + ')' : ''}`
+    const detalle = `En seco: ${enFactura ? 'PAGO EN FACTURA' : b.formaCargaXubio} por ${datos.importe} contra ${cuentaOrigen.nombre}${notas.length ? ' (' + notas.join('; ') + ')' : ''}`
     const { error: e2 } = await db.rpc('marcar_pago_revisado', { p_id: pago.id, p_cuenta: b.cuentaContable, p_forma: b.formaCargaXubio, p_detalle: detalle, p_usuario: u.nombre, p_rol: u.rol })
     if (e2) throw new ErrorHttp(500, e2.message)
     return json({ ok: true, id: 'EN-SECO', enSeco: true, detalle })
@@ -87,7 +114,7 @@ export default manejar(async (req) => {
   if (!reservado?.length)
     throw new ErrorHttp(409, 'Este pago ya se está enviando a Xubio o quedó un envío sin confirmar. Revisá en Xubio y en xubio_log antes de reintentar.')
 
-  const r = await xubio.post(t, path, payload)
+  const r = metodo === 'PUT' ? await xubio.put(t, path, payload) : await xubio.post(t, path, payload)
   await db.from('xubio_log').insert({ empresa_id: pago.empresas.id, entidad: 'PAGO', entidad_id: pago.id, en_seco: false, request: { path, payload }, response: r.body, http_status: r.status, usuario: u.nombre })
   if (r.status >= 400 && r.status < 500) {
     // Rechazo claro de Xubio: no se creó nada, se libera la reserva para corregir y reintentar.
@@ -96,11 +123,11 @@ export default manejar(async (req) => {
   }
   // 5xx o 2xx sin id: no se sabe si Xubio lo creó. La reserva queda puesta para que nadie reintente a ciegas.
   if (r.status < 200 || r.status >= 300) throw new ErrorHttp(502, `Xubio respondió ${r.status}: no se sabe si creó el comprobante. Verificalo en Xubio antes de reintentar.`)
-  const id = xubio.idDeRespuesta(r.body)
+  const id = enFactura ? `FC-${facturas[0].xubioId}` : xubio.idDeRespuesta(r.body)
   if (!id) throw new ErrorHttp(502, 'Xubio aceptó el envío pero no devolvió un id. Buscalo en Xubio y cargalo a mano; no reintentes.')
   const { error: e3 } = await db.rpc('marcar_pago_contabilizado', { p_id: pago.id, p_cuenta: b.cuentaContable, p_forma: b.formaCargaXubio, p_xubio_id: id, p_usuario: u.nombre, p_rol: u.rol })
   if (e3) throw new ErrorHttp(500, `Xubio aceptó (${id}) pero no se pudo marcar el pago: ${e3.message}`)
-  return json({ ok: true, id, enSeco: false })
+  return json({ ok: true, id, enSeco: false, detalle: notas.join('; ') || undefined })
 })
 
 export const config: Config = { path: '/api/contabilizar' }

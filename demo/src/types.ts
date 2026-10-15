@@ -77,6 +77,12 @@ export interface Factura {
   advertencia?: string
   /** Categoría genérica que sugirió la IA. No es la cuenta contable. */
   categoriaIa?: string
+  /** Id en Xubio (para imputar pagos) y por qué falló la última subida. */
+  xubioId?: string
+  xubioError?: string
+  /** Quién confirmó la carga en Ralpharma (empresas sin Xubio). */
+  ralpharmaPor?: string
+  ralpharmaEn?: string
   aprobadoPor?: string
   aprobadoEn?: string
 }

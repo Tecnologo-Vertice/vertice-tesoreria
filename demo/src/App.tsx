@@ -7,6 +7,7 @@ import { Pagos } from './screens/Pagos'
 import { Contabilizacion } from './screens/Contabilizacion'
 import { Flujo } from './screens/Flujo'
 import { Auditoria } from './screens/Auditoria'
+import { Ralpharma } from './screens/Ralpharma'
 import { FuenteDemo } from './data/fuenteDemo'
 import { FuenteSupabase, usuarioActual } from './data/fuenteSupabase'
 import { supabase } from './lib/supabase'
@@ -15,7 +16,7 @@ import type { Fuente } from './data/fuente'
 import type { Usuario } from './types'
 import { Btn } from './components/ui'
 
-const PANTALLAS: Pantalla[] = ['vencimientos', 'aprobacion', 'pagos', 'contabilizacion', 'flujo', 'auditoria']
+const PANTALLAS: Pantalla[] = ['vencimientos', 'aprobacion', 'pagos', 'contabilizacion', 'ralpharma', 'flujo', 'auditoria']
 
 function leerHash(): Pantalla {
   const h = location.hash.replace('#', '') as Pantalla
@@ -45,6 +46,7 @@ export default function App() {
             {pantalla === 'aprobacion' && <Aprobacion />}
             {pantalla === 'pagos' && <Pagos />}
             {pantalla === 'contabilizacion' && <Contabilizacion />}
+            {pantalla === 'ralpharma' && <Ralpharma />}
             {pantalla === 'flujo' && <Flujo />}
             {pantalla === 'auditoria' && <Auditoria />}
           </Layout>

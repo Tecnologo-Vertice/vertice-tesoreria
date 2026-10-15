@@ -13,12 +13,12 @@ const FORMAS: { id: FormaCargaXubio; label: string; desc: string }[] = [
 
 export function Contabilizacion() {
   const { pagos, empresa } = useStore()
-  const [tab, setTab] = useState<'PENDIENTES' | 'RALPHARMA' | 'HECHOS'>('PENDIENTES')
+  const [tab, setTab] = useState<'PENDIENTES' | 'HECHOS'>('PENDIENTES')
   const pendientes = pagos.filter((p) => p.estado === 'CARGADO' || p.estado === 'REVISADO').sort((a, b) => b.cargadoEn.localeCompare(a.cargadoEn))
   const ralpharma = pagos.filter((p) => p.estado === 'PENDIENTE_RALPHARMA')
   const hechos = pagos.filter((p) => p.estado === 'CONTABILIZADO' || p.estado === 'CONCILIADO').sort((a, b) => (b.contabilizadoEn ?? '').localeCompare(a.contabilizadoEn ?? ''))
   const sinCuenta = pendientes.filter((p) => !p.cuentaContable).length
-  const lista = tab === 'PENDIENTES' ? pendientes : tab === 'RALPHARMA' ? ralpharma : hechos
+  const lista = tab === 'PENDIENTES' ? pendientes : hechos
 
   return (
     <div className="space-y-6">
@@ -32,7 +32,7 @@ export function Contabilizacion() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Kpi label="Para contabilizar" value={String(pendientes.length)} sub={moneyShort(pendientes.reduce((a, p) => a + p.importe, 0))} tone="dorado" />
         <Kpi label="Sin cuenta definida" value={String(sinCuenta)} sub="requieren decisión" tone={sinCuenta ? 'rojo' : 'verde'} />
-        <Kpi label="Pendientes Ralpharma" value={String(ralpharma.length)} sub="carga manual" tone="crema" />
+        <Kpi label="Pendientes Ralpharma" value={String(ralpharma.length)} sub="en el sector Ralpharma" tone="crema" />
         <Kpi label="Contabilizados" value={String(hechos.length)} sub={`${hechos.filter((p) => p.xubioId?.startsWith('OP')).length} con orden de pago`} tone="verde" />
       </div>
 
@@ -41,7 +41,6 @@ export function Contabilizacion() {
         onChange={setTab}
         tabs={[
           { id: 'PENDIENTES', label: 'Para contabilizar', n: pendientes.length },
-          { id: 'RALPHARMA', label: 'Pendiente Ralpharma', n: ralpharma.length },
           { id: 'HECHOS', label: 'Contabilizados', n: hechos.length },
         ]}
       />

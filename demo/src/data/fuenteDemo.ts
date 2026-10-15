@@ -2,7 +2,7 @@
 // Toda la lógica de negocio de acá tiene su equivalente en supabase/migrations/0003_funciones.sql.
 
 import type { Auditoria, ComprobanteEjemplo, Documento, Factura, LecturaComprobante, Pago, Usuario } from '../types'
-import type { Datos, DatosAprobacion, DatosContabilizacion, Fuente, NuevoPago, ResultadoSubida, ResultadoXubio } from './fuente'
+import type { Datos, DatosAprobacion, DatosContabilizacion, Fuente, NuevoPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
 import {
   auditoriaInicial,
   comprobantesEjemplo,
@@ -95,7 +95,7 @@ export class FuenteDemo implements Fuente {
             diasCheque: d.diasCheque,
             aprobadoPor: u.nombre,
             aprobadoEn: new Date().toISOString(),
-            estadoXubio: EMPRESAS.find((x) => x.id === f.empresaId)?.erp === 'XUBIO' ? 'SUBIDA' : 'PENDIENTE_RALPHARMA',
+            estadoXubio: EMPRESAS.find((x) => x.id === f.empresaId)?.erp === 'XUBIO' ? (f.estadoXubio === 'SUBIDA' ? 'SUBIDA' : 'PENDIENTE') : 'PENDIENTE_RALPHARMA',
           }
         : f,
     )
@@ -240,6 +240,27 @@ export class FuenteDemo implements Fuente {
     })
     this.commit()
     return { estado: 'LEIDO', detalle: `${prov.nombre}: en la demo la lectura es simulada` }
+  }
+
+  /** En la demo Xubio está simulado: la factura queda subida con un id inventado. */
+  async subirFacturaXubio(id: string, u: Usuario): Promise<ResultadoXubioFactura> {
+    await demora(600)
+    const f = this.e.facturas.find((x) => x.id === id)
+    if (!f) throw new Error('Factura inexistente')
+    if (EMPRESAS.find((e) => e.id === f.empresaId)?.erp !== 'XUBIO') return { estado: 'NO_APLICA', detalle: 'Esta empresa no usa Xubio' }
+    const xubioId = String(95_000_000 + Math.floor(Math.random() * 900_000))
+    this.e.facturas = this.e.facturas.map((x): Factura => (x.id === id ? { ...x, estadoXubio: 'SUBIDA', xubioId, xubioError: undefined } : x))
+    this.log(u, { accion: 'XUBIO_FACTURA', entidad: 'FACTURA', entidadId: id, detalle: `Subida a Xubio, id ${xubioId} (simulado)` })
+    this.commit()
+    return { estado: 'SUBIDA', xubioId, detalle: `Subida a Xubio con id ${xubioId} (simulado en la demo)` }
+  }
+
+  async marcarFacturaRalpharma(id: string, u: Usuario) {
+    this.e.facturas = this.e.facturas.map((x): Factura =>
+      x.id === id ? { ...x, estadoXubio: 'CARGADA_RALPHARMA', ralpharmaPor: u.nombre, ralpharmaEn: new Date().toISOString() } : x,
+    )
+    this.log(u, { accion: 'FACTURA_RALPHARMA', entidad: 'FACTURA', entidadId: id, detalle: 'Carga de la factura confirmada en Ralpharma' })
+    this.commit()
   }
 
   async leerAhora() {

@@ -4,7 +4,7 @@ import { USUARIOS } from '../data/demo'
 import { supabase } from '../lib/supabase'
 import type { Rol } from '../types'
 
-export type Pantalla = 'vencimientos' | 'aprobacion' | 'pagos' | 'contabilizacion' | 'flujo' | 'auditoria'
+export type Pantalla = 'vencimientos' | 'aprobacion' | 'pagos' | 'contabilizacion' | 'ralpharma' | 'flujo' | 'auditoria'
 
 const ROLES: Record<Rol, string> = {
   TESORERIA: 'Tesorería',
@@ -24,7 +24,7 @@ interface Item {
 }
 
 export function Layout({ pantalla, onNav, children }: { pantalla: Pantalla; onNav: (p: Pantalla) => void; children: ReactNode }) {
-  const { modo, cargando, usuario, setUsuario, facturas, pagos, documentos, toasts, reiniciar, recargar } = useStore()
+  const { modo, cargando, usuario, setUsuario, facturas, pagos, documentos, toasts, reiniciar, recargar, empresa } = useStore()
 
   const items: Item[] = [
     { id: 'vencimientos', titulo: 'Vencimientos', sub: 'Deuda del grupo', icono: '◷' },
@@ -36,7 +36,16 @@ export function Layout({ pantalla, onNav, children }: { pantalla: Pantalla; onNa
       n: facturas.filter((f) => f.estado === 'PENDIENTE_APROBACION' || f.estado === 'ERROR').length + documentos.filter((d) => d.estado === 'ERROR').length,
     },
     { id: 'pagos', titulo: 'Pagos', sub: 'Tesorería', icono: '⇄', n: facturas.filter((f) => f.estado === 'PARA_PAGAR' || f.estado === 'PAGADA_PARCIAL').length },
-    { id: 'contabilizacion', titulo: 'Contabilización', sub: 'Administración', icono: '▤', n: pagos.filter((p) => p.estado === 'CARGADO' || p.estado === 'REVISADO' || p.estado === 'PENDIENTE_RALPHARMA').length },
+    { id: 'contabilizacion', titulo: 'Contabilización', sub: 'Administración', icono: '▤', n: pagos.filter((p) => p.estado === 'CARGADO' || p.estado === 'REVISADO').length },
+    {
+      id: 'ralpharma',
+      titulo: 'Ralpharma',
+      sub: 'Carga manual · Guido',
+      icono: '◐',
+      n:
+        facturas.filter((f) => f.estadoXubio === 'PENDIENTE_RALPHARMA' && empresa(f.empresaId).erp === 'RALPHARMA' && ['PARA_PAGAR', 'PAGADA_PARCIAL', 'PAGADA'].includes(f.estado)).length +
+        pagos.filter((p) => p.estado === 'PENDIENTE_RALPHARMA').length,
+    },
     { id: 'flujo', titulo: 'Flujo de fondos', sub: 'Real y proyectado', icono: '∿' },
     { id: 'auditoria', titulo: 'Auditoría', sub: 'Quién hizo qué', icono: '≡' },
   ]

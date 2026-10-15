@@ -44,15 +44,29 @@ export async function token(c: Credenciales): Promise<Token> {
   return j
 }
 
-async function get<T>(t: Token, path: string, query = ''): Promise<T> {
+export async function get<T>(t: Token, path: string, query = ''): Promise<T> {
   const r = await fetch(API + path + (query ? `?${query}` : ''), { headers: { Authorization: `${t.token_type} ${t.access_token}`, Accept: 'application/json' } })
   if (!r.ok) throw new ErrorHttp(502, `Xubio GET ${path} → ${r.status}`)
   return (await r.json()) as T
 }
 
+const lista = (x: unknown) => (Array.isArray(x) ? (x as Record<string, unknown>[]) : [])
+export const listarProveedores = async (t: Token) => lista(await get(t, 'ProveedorBean'))
+export const listarProductosCompra = async (t: Token) => lista(await get(t, 'ProductoCompraBean'))
+export const listarFacturasCompra = async (t: Token, desde: string, hasta: string) => lista(await get(t, 'comprobanteCompraBean', `fechaDesde=${desde}&fechaHasta=${hasta}`))
+export const facturaCompraPorId = async (t: Token, id: string) => (await get(t, `comprobanteCompraBean/${id}`)) as Record<string, unknown>
+
+export async function put(t: Token, path: string, payload: unknown): Promise<{ status: number; body: unknown }> {
+  return enviar('PUT', t, path, payload)
+}
+
 export async function post(t: Token, path: string, payload: unknown): Promise<{ status: number; body: unknown }> {
+  return enviar('POST', t, path, payload)
+}
+
+async function enviar(metodo: 'POST' | 'PUT', t: Token, path: string, payload: unknown): Promise<{ status: number; body: unknown }> {
   const r = await fetch(API + path, {
-    method: 'POST',
+    method: metodo,
     headers: { Authorization: `${t.token_type} ${t.access_token}`, Accept: 'application/json', 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })

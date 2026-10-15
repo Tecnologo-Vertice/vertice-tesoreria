@@ -25,8 +25,9 @@ const normal = (s: string) =>
     .trim()
 
 export function Pagos() {
-  const { facturas, pagos, proveedor, empresa, usuario } = useStore()
+  const { modo, facturas, pagos, proveedor, empresa, usuario, subirFacturaXubio } = useStore()
   const puedePagar = puede(usuario.rol, 'PAGAR')
+  const puedeXubio = puede(usuario.rol, 'APROBAR')
   const [tab, setTab] = useState<'PARA_PAGAR' | 'PAGADAS'>('PARA_PAGAR')
   const [sel, setSel] = useState<string[]>([])
   const [modal, setModal] = useState<null | { facturaIds: string[] }>(null)
@@ -98,6 +99,18 @@ export function Pagos() {
                   <p className="text-xs text-seco">
                     {f.tipo} {nroComprobante(f.puntoVenta, f.numero)} · {f.metodoPago} · {f.cuentaContable}
                   </p>
+                  {f.xubioError && <p className="text-[11px] text-red-300 mt-0.5">Xubio: {f.xubioError}</p>}
+                  {puedeXubio && e.erp === 'XUBIO' && (f.estadoXubio === 'PENDIENTE' || f.estadoXubio === 'ERROR') && (
+                    <button
+                      onClick={(ev) => {
+                        ev.stopPropagation()
+                        void subirFacturaXubio(f.id)
+                      }}
+                      className="text-[11px] text-dorado underline mt-0.5"
+                    >
+                      {f.estadoXubio === 'ERROR' ? 'Reintentar subida a Xubio' : modo === 'demo' ? 'Subir a Xubio (simulado)' : 'Subir a Xubio'}
+                    </button>
+                  )}
                 </div>
                 <div className="text-right">
                   <p className="font-serif text-xl">{money(pendiente(f))}</p>

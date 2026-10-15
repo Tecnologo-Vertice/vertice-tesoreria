@@ -4,7 +4,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Auditoria, ComprobanteEjemplo, CuentaOrigen, Documento, Empresa, Factura, LecturaComprobante, Pago, Proveedor, Usuario } from '../types'
-import type { Bucket, Datos, DatosAprobacion, DatosContabilizacion, Fuente, NuevoPago, ResultadoSubida, ResultadoXubio } from './fuente'
+import type { Bucket, Datos, DatosAprobacion, DatosContabilizacion, Fuente, NuevoPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
 import { archivoABase64, llamarFuncion } from '../lib/supabase'
 
 type Row = Record<string, unknown>
@@ -42,6 +42,10 @@ function mapFactura(r: Row): Factura {
     pdfPath: s(r.pdf_path),
     advertencia: s(r.advertencia),
     categoriaIa: s(r.categoria_ia),
+    xubioId: s(r.xubio_id),
+    xubioError: s(r.xubio_error),
+    ralpharmaPor: s(r.ralpharma_por),
+    ralpharmaEn: s(r.ralpharma_en),
     aprobadoPor: s(r.aprobado_por),
     aprobadoEn: s(r.aprobado_en),
   }
@@ -246,6 +250,14 @@ export class FuenteSupabase implements Fuente {
   async leerAhora(): Promise<number> {
     const r = await llamarFuncion<{ resultados: unknown[] }>('documentos/leer', {})
     return r.resultados.length
+  }
+
+  async subirFacturaXubio(id: string): Promise<ResultadoXubioFactura> {
+    return llamarFuncion<ResultadoXubioFactura>('xubio/factura', { facturaId: id })
+  }
+
+  async marcarFacturaRalpharma(id: string) {
+    await this.rpc('marcar_factura_ralpharma', { p_id: id })
   }
 
   async reintentarDocumento(id: string) {

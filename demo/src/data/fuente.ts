@@ -36,6 +36,7 @@ export interface Datos {
 /** Resultado de subir una factura a mano: leída, duplicada, con error, o en cola si la IA tardó. */
 export type ResultadoSubida = { estado: 'LEIDO' | 'DUPLICADO' | 'ERROR' | 'PENDIENTE'; detalle?: string }
 export type Bucket = 'comprobantes' | 'facturas'
+export type ResultadoXubioFactura = { estado: 'SUBIDA' | 'EN_SECO' | 'ERROR' | 'NO_APLICA'; xubioId?: string; detalle: string }
 
 export type DatosAprobacion = { cuentaContable: string; metodoPago: MetodoPago; diasCheque?: number }
 export type DatosContabilizacion = { cuentaContable: string; formaCargaXubio: Pago['formaCargaXubio'] }
@@ -63,6 +64,10 @@ export interface Fuente {
   /** Lee lo que esté esperando en la cola sin esperar al lector programado. Devuelve cuántos leyó. */
   leerAhora(): Promise<number>
   reintentarDocumento(id: string, u: Usuario): Promise<void>
+  /** Sube a Xubio una factura aprobada (en seco o real según la configuración del servidor). */
+  subirFacturaXubio(id: string, u: Usuario): Promise<ResultadoXubioFactura>
+  /** Guido confirma que cargó en Ralpharma una factura de una empresa sin Xubio. */
+  marcarFacturaRalpharma(id: string, u: Usuario): Promise<void>
   descartarDocumento(id: string, motivo: string, u: Usuario): Promise<void>
   reiniciar(): Promise<void>
 }
