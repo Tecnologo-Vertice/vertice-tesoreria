@@ -1,0 +1,7 @@
+# Copia del Apps Script de desarrollo: tiene claves de Gemini y secretos de Xubio escritos en Code.gs.
+# Es solo para leer acá; nunca se commitea ni se comparte.
+apps_script_copia/
+
+# Carpeta de trabajo de Claude Cowork: PDFs de prueba, diffs y respaldos de la copia del Apps Script.
+# Puede tener datos reales; queda solo en esta máquina.
+Claude outputs/
