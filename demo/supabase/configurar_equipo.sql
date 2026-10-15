@@ -8,8 +8,8 @@
 --           TESORERIA (carga pagos) · APROBADOR (solo aprueba facturas) · DIRECCION (ve todo, no modifica)
 insert into usuarios (email, nombre, rol) values
   ('tecnologia@verticebi.com',     'Brian',   'ADMIN'),
-  ('COMPLETAR-mail-de-felipe@verticebi.com',  'Felipe',  'ADMIN'),            -- dirección, con todos los permisos
-  ('COMPLETAR-mail-de-mariela@verticebi.com', 'Mariela', 'ADMINISTRACION'),   -- contabilidad
+  ('Md@verticebi.com',  'Felipe',  'ADMIN'),            -- dirección, con todos los permisos
+  ('contabilidad@verticebi.com', 'Mariela', 'ADMINISTRACION'),   -- contabilidad
   ('tesoreria@verticebi.com',      'Vivi',    'TESORERIA'),
   ('administracion@verticebi.com', 'Guido',   'ADMINISTRACION')
 on conflict (email) do update set nombre = excluded.nombre, rol = excluded.rol, activo = true;
