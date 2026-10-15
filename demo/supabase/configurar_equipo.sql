@@ -3,15 +3,24 @@
 -- Reemplazar todo lo que dice COMPLETAR. Se puede correr de nuevo sin duplicar nada.
 -- ============================================================================
 
+-- 0) Mails siempre en minúscula (ya viene en instalar_todo.sql; se repite por si la base se instaló antes).
+alter table usuarios drop constraint if exists usuarios_email_minuscula;
+update usuarios set email = lower(email) where email <> lower(email);
+alter table usuarios add constraint usuarios_email_minuscula check (email = lower(email));
+
 -- 1) Personas que pueden entrar, con su rol. Si un mail no está acá, Google no deja entrar.
 --    Roles: ADMIN (todo) · ADMINISTRACION (aprueba, contabiliza en Xubio, confirma Ralpharma)
 --           TESORERIA (carga pagos) · APROBADOR (solo aprueba facturas) · DIRECCION (ve todo, no modifica)
-insert into usuarios (email, nombre, rol) values
+--    Los mails van siempre en minúscula: el login compara en minúscula (por eso el lower() de abajo).
+insert into usuarios (email, nombre, rol)
+select lower(trim(email)), nombre, rol::rol from (values
   ('tecnologia@verticebi.com',     'Brian',   'ADMIN'),
-  ('Md@verticebi.com',  'Felipe',  'ADMIN'),            -- dirección, con todos los permisos
-  ('contabilidad@verticebi.com', 'Mariela', 'ADMINISTRACION'),   -- contabilidad
+  ('md@verticebi.com',             'Felipe',  'ADMIN'),            -- dirección, con todos los permisos
+  ('COMPLETAR-controller@verticebi.com', 'Santi', 'ADMIN'),        -- Controller, autor del sistema en Apps Script (de vacaciones)
+  ('contabilidad@verticebi.com',   'Mariela', 'ADMINISTRACION'),   -- contabilidad
   ('tesoreria@verticebi.com',      'Vivi',    'TESORERIA'),
   ('administracion@verticebi.com', 'Guido',   'ADMINISTRACION')
+) as equipo(email, nombre, rol)
 on conflict (email) do update set nombre = excluded.nombre, rol = excluded.rol, activo = true;
 
 -- 2) CUIT reales de las empresas (11 dígitos, sin guiones). Sirven para que la IA reconozca la

@@ -956,3 +956,6 @@ revoke execute on function
   facturas_para_xubio(integer)
   from public, anon, authenticated;
 
+-- Los mails de usuarios van en minúscula: el login compara en minúscula y un "Md@..." no entraría nunca.
+alter table usuarios add constraint usuarios_email_minuscula check (email = lower(email));
+
