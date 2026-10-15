@@ -16,7 +16,7 @@ insert into usuarios (email, nombre, rol)
 select lower(trim(email)), nombre, rol::rol from (values
   ('tecnologia@verticebi.com',     'Brian',   'ADMIN'),
   ('md@verticebi.com',             'Felipe',  'ADMIN'),            -- dirección, con todos los permisos
-  ('COMPLETAR-controller@verticebi.com', 'Santi', 'ADMIN'),        -- Controller, autor del sistema en Apps Script (de vacaciones)
+  ('controller@verticebi.com', 'Santi', 'ADMIN'),                  -- Controller, autor del sistema en Apps Script (de vacaciones)
   ('contabilidad@verticebi.com',   'Mariela', 'ADMINISTRACION'),   -- contabilidad
   ('tesoreria@verticebi.com',      'Vivi',    'TESORERIA'),
   ('administracion@verticebi.com', 'Guido',   'ADMINISTRACION')
@@ -25,21 +25,22 @@ on conflict (email) do update set nombre = excluded.nombre, rol = excluded.rol, 
 
 -- 2) CUIT reales de las empresas (11 dígitos, sin guiones). Sirven para que la IA reconozca la
 --    empresa receptora de cada factura y nunca tome su CUIT como el del proveedor.
-update empresas set cuit = 'COMPLETAR' where id = 'beratung';      -- Beratung S.A.
-update empresas set cuit = 'COMPLETAR' where id = 'india';         -- INDIA ADV S.A.
-update empresas set cuit = 'COMPLETAR' where id = 'controlb';      -- Control B
-update empresas set cuit = 'COMPLETAR' where id = 'ysd';           -- YSD Pharma S.A.
-update empresas set cuit = 'COMPLETAR' where id = 'vertice';       -- Vértice BI S.A.
-update empresas set cuit = 'COMPLETAR' where id = 'robles';        -- Droguería Robles S.A.
-update empresas set cuit = 'COMPLETAR' where id = 'hrobles';       -- Héctor Daniel Robles
-update empresas set cuit = 'COMPLETAR' where id = 'farmacontrol';  -- Farma Control S.A.
+update empresas set cuit = '33716515929' where id = 'beratung';      -- Beratung S.A.
+update empresas set cuit = '30718077180' where id = 'india';         -- INDIA ADV S.A.
+update empresas set cuit = '30710392575' where id = 'controlb';      -- Control B
+update empresas set cuit = '30718616596' where id = 'ysd';           -- YSD Pharma S.A.
+update empresas set cuit = '30719561507' where id = 'vertice';       -- Vértice BI S.A.
+update empresas set cuit = '30718833066' where id = 'robles';        -- Droguería Robles S.A.
+update empresas set cuit = '20121602742' where id = 'hrobles';       -- Héctor Daniel Robles
+update empresas set cuit = '33717962279' where id = 'farmacontrol';  -- Farma Control S.A.
 
 -- 3) Cuentas de origen (bancos, cajas, cheques diferidos) con el NOMBRE EXACTO de Xubio.
 --    Sin esto, Vivi no puede elegir desde dónde pagó. Agregar una línea por cuenta.
-insert into cuentas_origen (empresa_id, nombre) values
-  ('beratung', 'COMPLETAR nombre exacto en Xubio, ej.: Banco Galicia CC $')
+-- (Desactivado hasta tener los nombres exactos de Xubio: sacar los "-- " de estas líneas y completar.)
+-- insert into cuentas_origen (empresa_id, nombre) values
+--   ('beratung', 'COMPLETAR nombre exacto en Xubio, ej.: Banco Galicia CC $')
   -- ,('india', 'Cheque Diferido BRUBANK')
-on conflict (empresa_id, nombre) do nothing;
+-- on conflict (empresa_id, nombre) do nothing;
 
 -- Verificación: tiene que mostrar los mails reales activos y ningún CUIT 'COMPLETAR'.
 select 'usuario' as que, email as detalle, rol::text as extra from usuarios where activo
