@@ -33,9 +33,11 @@ for (const f of readdirSync(dir).filter((x) => x.endsWith('.sql')).sort()) {
   try { await db.exec(readFileSync(join(dir, f), 'utf8').replace(/create extension if not exists pgcrypto;/i, '')); check(`migración ${f}`, true) }
   catch (e) { check(`migración ${f}`, false, e.message); process.exit(1) }
 }
-// Lo que Supabase da por defecto a los roles de la API sobre public.
-await db.exec(`grant select, insert, update, delete on all tables in schema public to anon, authenticated, service_role;
-               insert into usuarios (email, nombre, rol) values ('aprobador@verticebi.com', 'Aprobador', 'APROBADOR'), ('direccion@verticebi.com', 'Dirección', 'DIRECCION')`)
+// Proyecto creado con "Automatically expose new tables" desmarcado: los únicos permisos son los de 0007.
+await db.exec(`insert into usuarios (email, nombre, rol) values ('aprobador@verticebi.com', 'Aprobador', 'APROBADOR'), ('direccion@verticebi.com', 'Dirección', 'DIRECCION')`)
+check('anon no tiene ningún permiso sobre las tablas', !(await val(`select has_table_privilege('anon', 'facturas', 'select') p`)).p && !(await val(`select has_table_privilege('anon', 'pagos', 'select') p`)).p)
+check('authenticated solo lee (no escribe directo en las tablas)', (await val(`select has_table_privilege('authenticated', 'pagos', 'select') p`)).p && !(await val(`select has_table_privilege('authenticated', 'pagos', 'insert') p`)).p)
+check('service_role (funciones de Netlify) escribe', (await val(`select has_table_privilege('service_role', 'documentos', 'insert') p`)).p)
 
 // --- Semilla
 check('semilla: 8 empresas', (await val(`select count(*)::int n from empresas`)).n === 8)
@@ -72,7 +74,7 @@ await db.query(`select aprobar_factura($1, 'COSTO DE INSUMOS', 'TRANSFERENCIA')`
 check('aprobada pasa a PARA_PAGAR', (await val(`select estado from facturas where id = $1`, [f1])).estado === 'PARA_PAGAR')
 await db.exec(`reset role; set role anon`)
 await como('')
-check('anon NO ve facturas por la vista export_cashflow', (await val(`select count(*)::int n from export_cashflow`)).n === 0)
+await falla('anon NO puede leer la vista export_cashflow', `select count(*) from export_cashflow`, [], /permission denied/)
 await db.exec(`reset role; set role authenticated`)
 await como('aprobador@verticebi.com')
 check('usuario habilitado SÍ ve la vista', (await val(`select count(*)::int n from export_cashflow`)).n > 0)
