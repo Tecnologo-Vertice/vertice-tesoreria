@@ -4,20 +4,15 @@
 -- ============================================================================
 
 -- 1) Personas que pueden entrar, con su rol. Si un mail no está acá, Google no deja entrar.
---    Roles: TESORERIA (Vivi: carga pagos) · ADMINISTRACION (Guido: aprueba, contabiliza, Ralpharma)
---           APROBADOR (aprueba facturas) · DIRECCION (ve todo, no modifica) · ADMIN (Tecnología)
+--    Roles: ADMIN (todo) · ADMINISTRACION (aprueba, contabiliza en Xubio, confirma Ralpharma)
+--           TESORERIA (carga pagos) · APROBADOR (solo aprueba facturas) · DIRECCION (ve todo, no modifica)
 insert into usuarios (email, nombre, rol) values
-  ('tecnologia@verticebi.com',  'Tecnología', 'ADMIN'),
-  ('COMPLETAR-mail-de-vivi@verticebi.com',  'Vivi',  'TESORERIA'),
-  ('COMPLETAR-mail-de-guido@verticebi.com', 'Guido', 'ADMINISTRACION')
-  -- ,('COMPLETAR-mail-de-quien-aprueba@verticebi.com', 'Nombre', 'APROBADOR')
-  -- ,('COMPLETAR-mail-de-direccion@verticebi.com',     'Nombre', 'DIRECCION')
+  ('tecnologia@verticebi.com',     'Brian',   'ADMIN'),
+  ('COMPLETAR-mail-de-felipe@verticebi.com',  'Felipe',  'ADMIN'),            -- dirección, con todos los permisos
+  ('COMPLETAR-mail-de-mariela@verticebi.com', 'Mariela', 'ADMINISTRACION'),   -- contabilidad
+  ('tesoreria@verticebi.com',      'Vivi',    'TESORERIA'),
+  ('administracion@verticebi.com', 'Guido',   'ADMINISTRACION')
 on conflict (email) do update set nombre = excluded.nombre, rol = excluded.rol, activo = true;
-
--- Los usuarios de ejemplo de la semilla quedan inactivos si no son mails reales.
-update usuarios set activo = false
-where email in ('tesoreria@verticebi.com', 'administracion@verticebi.com')
-  and email not like 'COMPLETAR%';
 
 -- 2) CUIT reales de las empresas (11 dígitos, sin guiones). Sirven para que la IA reconozca la
 --    empresa receptora de cada factura y nunca tome su CUIT como el del proveedor.
