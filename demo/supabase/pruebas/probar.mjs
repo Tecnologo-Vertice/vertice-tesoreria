@@ -223,5 +223,83 @@ r = await val(`select estado_xubio, ralpharma_por from facturas where id = $1`, 
 check('Guido confirma la carga en Ralpharma con su nombre', r.estado_xubio === 'CARGADA_RALPHARMA' && r.ralpharma_por === 'Guido')
 await db.exec(`reset role`)
 
+// ================================================================ Espejo de la hoja real (0008)
+// Filas con la forma real de la hoja → lib/espejo.ts (la misma traducción que usa /api/espejo) → SQL.
+const espejo = await import('../../netlify/functions/lib/espejo.ts')
+await db.exec(`reset role`)
+const trad = (filas, hoja) => filas.map((x) => (hoja === 'Pagos' ? espejo.pagoDesdeFila(x, x._fila) : espejo.facturaDesdeFila(x, hoja, x._fila))).filter((t) => t.ok).map((t) => t.dato)
+const espFact = async (filas, hoja = 'Facturas') => (await val(`select espejar_facturas($1) r`, [JSON.stringify(trad(filas, hoja))])).r
+const espPag = async (filas) => (await val(`select espejar_pagos($1) r`, [JSON.stringify(trad(filas, 'Pagos'))])).r
+const filaF = (x = {}) => ({ _fila: 2, RECEPTOR: 'BERATUNG SA', PROVEEDOR: 'LIMPIEZA SUR SRL', CUIT_PROVEEDOR: '30-71555555-1', LETRA: 'A', TIPO: 'Factura A',
+  NUMERO: '00007-00000350', CAE: '76350274640244', FECHA: '2026-10-20', VENCIMIENTODELPAGO: '2026-11-05', MONEDA: 'ARS', COTIZACION: 1, IMPORTE: 100000, IVA: 21000,
+  TOTAL: 121000, CATEGORIA_CONTABLE: 'Gastos Generales', ESTADO_VALIDACION: 'OK', ESTADO_XUBIO: 'SUBIDO', XUBIO_ID_FACTURA: 99887766, ESTADO_APROBACION: 'APROBADA',
+  METODO_PAGO: 'Transferencia', ESTADO_PAGO: 'PARA_PAGAR', PORCENTAJE_PAGADO: '', PERCEPCIONES_JSON: '[]', ...x })
+
+const cat = espejo.catalogosDesdeHoja({
+  cuentas: [{ CODIGO: 'GASTOS_BANCARIOS', NOMBRE: 'GASTOS BANCARIOS', CUENTA_COMPLETA: 'GASTOS_BANCARIOS GASTOS BANCARIOS', XUBIO_ID: 977973, EMPRESA: 'Beratung S.A.' }],
+  origen: [{ EMPRESA: 'Beratung S.A.', TIPO_CUENTA: 2, CUENTA_ID: 665247, NOMBRE: 'Banco Hipotecario CC 0319 BERATUNG', CODIGO: 'BH', USOS_180_DIAS: 548, ULTIMO_USO: '2026-09-29' }],
+  porEmpresa: [{ RECEPTOR: 'Beratung S.A.', CUIT: '30-71555555-1', NOMBRE_XUBIO: 'LIMPIEZA SUR S.R.L.', CUENTA_CONTABLE: 'Gastos Generales', SALTAR_XUBIO: '' }],
+  emails: [{ CUIT_PROVEEDOR: '30715555551', PROVEEDOR: 'LIMPIEZA SUR SRL', EMAIL: 'cobranzas@limpiezasur.com' }],
+  productos: [{ 'Columna A (Nombre)': 'Gastos Generales', 'Columna B (Codigo)': 'GASTOS_GENERALES' }],
+})
+await db.query(`select espejar_catalogos($1)`, [JSON.stringify(cat)])
+check('catálogos: cuenta de origen real con su tipo e id de Xubio', (await val(`select tipo_cuenta, xubio_id from cuentas_origen where empresa_id = 'beratung' and nombre like 'Banco Hipotecario%'`))?.xubio_id === '665247')
+check('catálogos: plan de cuentas de Beratung con el nombre completo', (await val(`select count(*)::int n from cuentas_contables where empresa_id = 'beratung' and nombre = 'GASTOS_BANCARIOS GASTOS BANCARIOS'`)).n === 1)
+check('catálogos: proveedor por empresa con nombre de Xubio y mail', (await val(`select pe.nombre_xubio, p.email from proveedores_empresa pe join proveedores p on p.id = pe.proveedor_id where p.cuit = '30715555551'`))?.email === 'cobranzas@limpiezasur.com')
+await db.query(`select espejar_catalogos($1)`, [JSON.stringify(cat)])
+check('catálogos dos veces: no duplica', (await val(`select count(*)::int n from cuentas_origen where empresa_id = 'beratung' and nombre like 'Banco Hipotecario%'`)).n === 1)
+
+let e1 = await espFact([filaF(), filaF({ _fila: 3, NUMERO: '00007-00000351', ESTADO_APROBACION: 'PENDIENTE_APROBACION', ESTADO_PAGO: '', ESTADO_XUBIO: '', XUBIO_ID_FACTURA: '' })])
+check('espejo de facturas: 2 nuevas', e1.nuevas === 2 && e1.omitidas.length === 0, JSON.stringify(e1))
+const fe1 = await val(`select id, estado, gestion, xubio_id, estado_xubio from facturas where numero = 350 and punto_venta = 7`)
+const fe2 = await val(`select id, estado, gestion from facturas where numero = 351 and punto_venta = 7`)
+check('copiada: la gestiona la hoja, aprobada y subida a Xubio con su id', fe1.gestion === 'HOJA' && fe1.estado === 'PARA_PAGAR' && fe1.estado_xubio === 'SUBIDA' && fe1.xubio_id === '99887766')
+check('copiada: auditoría "copiada de la hoja"', (await val(`select count(*)::int n from auditoria where entidad_id = $1 and accion = 'COPIA_HOJA'`, [fe1.id])).n === 1)
+e1 = await espFact([filaF(), filaF({ _fila: 3, NUMERO: '00007-00000351', ESTADO_APROBACION: 'PENDIENTE_APROBACION', ESTADO_PAGO: '', ESTADO_XUBIO: '', XUBIO_ID_FACTURA: '' })])
+check('segunda copia sin cambios: no reescribe nada', e1.nuevas === 0 && e1.actualizadas === 0 && e1.sin_cambios === 2)
+e1 = await espFact([filaF({ PORCENTAJE_PAGADO: 50 })])
+check('la hoja registra un pago del 50 %: se actualiza', e1.actualizadas === 1 && Number((await val(`select pagado from facturas where id = $1`, [fe1.id])).pagado) === 60500)
+
+// Brian aprueba en el sistema nuevo la pendiente: desde ahí la hoja no la pisa.
+await db.exec(`set role authenticated`)
+await como('aprobador@verticebi.com')
+await db.query(`select aprobar_factura($1, 'Gastos Generales', 'TRANSFERENCIA')`, [fe2.id])
+await db.exec(`reset role`)
+check('aprobada en el sistema nuevo: pasa a gestión SISTEMA', (await val(`select gestion from facturas where id = $1`, [fe2.id])).gestion === 'SISTEMA')
+e1 = await espFact([filaF({ _fila: 3, NUMERO: '00007-00000351', ESTADO_APROBACION: 'PENDIENTE_APROBACION', ESTADO_PAGO: '', ESTADO_XUBIO: '', XUBIO_ID_FACTURA: '', MOTIVO_VALIDACION: 'cambio en la hoja' })])
+check('la hoja sigue diciendo pendiente: no vuelve atrás lo aprobado en el sistema', (await val(`select estado from facturas where id = $1`, [fe2.id])).estado === 'PARA_PAGAR')
+e1 = await espFact([filaF({ PORCENTAJE_PAGADO: 50, _fila: 120 })], 'Facturas_Aprobadas')
+check('pasó al historial con los mismos datos: no cuenta como cambio, se anota la pestaña', e1.sin_cambios === 1 && (await val(`select hoja from facturas where id = $1`, [fe1.id])).hoja === 'Facturas_Aprobadas')
+
+const filaP = (x = {}) => ({ _fila: 5, ID_PAGO: 'PAGO-1792698005398-0', TIPO_PAGO: 'FACTURA', FACTURA_ASOCIADA: '00007-00000350', PROVEEDOR_DESTINO: 'LIMPIEZA SUR SRL',
+  DESCRIPCION_PAGO: 'Pago 50% Factura 00007-00000350', REALIZADO_POR: '', EMPRESA: '', BANCO_ORIGEN: 'Banco Hipotecario', FECHA_PAGO: '2026-10-22', IMPORTE: 60500,
+  URL_COMPROBANTE: 'https://drive.google.com/file/d/c/view', ESTADO_CONTABLE: 'PENDIENTE', FORMA_CARGA: 'ORDEN_PAGO', CUENTA_CONTABLE: 'Gastos Generales', CARGADO_POR: 'tesoreria@verticebi.com', ...x })
+let ep = await espPag([filaP(), filaP({ _fila: 6, ID_PAGO: 'PAGO-1792698005999-0', FACTURA_ASOCIADA: '', TIPO_PAGO: 'SIN_FACTURA', IMPORTE: '', ESTADO_EXTRACCION_IA: 'ERROR_1' }),
+  filaP({ _fila: 7, ID_PAGO: 'PAGO-1792698006000-0', FACTURA_ASOCIADA: '', TIPO_PAGO: 'SIN_FACTURA', PROVEEDOR_DESTINO: 'Nadie' })])
+const pe1 = await val(`select id, empresa_id, proveedor_id, estado, gestion, importe from pagos where hoja_id = 'PAGO-1792698005398-0'`)
+check('espejo de pagos: empresa y proveedor tomados de la factura vinculada', pe1?.empresa_id === 'beratung' && pe1?.proveedor_id && pe1?.gestion === 'HOJA' && pe1?.estado === 'CARGADO')
+check('pago vinculado a su factura', (await val(`select count(*)::int n from pagos_facturas where pago_id = $1 and factura_id = $2`, [pe1.id, fe1.id])).n === 1)
+check('el vínculo no toca lo pagado de la factura (lo sigue diciendo la hoja)', Number((await val(`select pagado from facturas where id = $1`, [fe1.id])).pagado) === 60500)
+check('pago sin empresa ni factura: omitido con motivo', ep.omitidas.length === 2 && ep.omitidas.every((o) => /empresa/.test(o.motivo)), JSON.stringify(ep.omitidas))
+await falla('un pago cargado en el sistema nunca puede tener importe 0',
+  `insert into pagos (empresa_id, fecha, importe, medio, cargado_por) values ('beratung', '2026-10-01', 0, 'TRANSFERENCIA', 'x')`, [], /pagos_importe_check/)
+ep = await espPag([filaP({ _fila: 6, ID_PAGO: 'PAGO-1792698005999-0', FACTURA_ASOCIADA: '', TIPO_PAGO: 'SIN_FACTURA', IMPORTE: '', EMPRESA: 'BERATUNG S.A.', ESTADO_EXTRACCION_IA: 'ERROR_1' })])
+check('pago sin leer todavía (importe 0) se copia igual', ep.nuevas === 1 && Number((await val(`select importe from pagos where hoja_id = 'PAGO-1792698005999-0'`)).importe) === 0)
+
+// Guido lo contabiliza (en seco) en el sistema nuevo: desde ahí la hoja no lo pisa.
+await db.query(`select marcar_pago_revisado($1, 'Gastos Generales', 'ORDEN_PAGO', 'En seco', 'Guido', 'ADMINISTRACION')`, [pe1.id])
+check('contabilizado en el sistema nuevo: gestión SISTEMA', (await val(`select gestion from pagos where id = $1`, [pe1.id])).gestion === 'SISTEMA')
+ep = await espPag([filaP({ CUENTA_CONTABLE: 'Otra cuenta', OBSERVACIONES_TESORERIA: 'cambio en la hoja' })])
+check('la hoja cambia la cuenta: no pisa lo que decidió el sistema', (await val(`select estado, cuenta_contable from pagos where id = $1`, [pe1.id])).estado === 'REVISADO')
+ep = await espPag([filaP({ _fila: 8, ID_PAGO: 'PAGO-1792698007000-0', FACTURA_ASOCIADA: '', TIPO_PAGO: 'SIN_FACTURA', EMPRESA: 'Droguería Robles', ESTADO_CONTABLE: 'CONTABILIZADA', ESTADO_XUBIO_PAGO: 'SIN_ERP_XUBIO' })])
+check('pago de Robles contabilizado en producción sin cargar en Ralpharma: bandeja Ralpharma', (await val(`select estado from pagos where hoja_id = 'PAGO-1792698007000-0'`)).estado === 'PENDIENTE_RALPHARMA')
+
+const malo = trad([filaF({ NUMERO: '00007-00000999' })], 'Facturas').map((x) => ({ ...x, estado: 'INVENTADO' }))
+const rMalo = (await val(`select espejar_facturas($1) r`, [JSON.stringify(malo)])).r
+check('una fila que la base rechaza se omite con el motivo, sin cortar la copia', rMalo.omitidas.length === 1 && /estado_factura|invalid/i.test(rMalo.omitidas[0].motivo), rMalo.omitidas[0]?.motivo)
+for (const r of ['anon', 'authenticated'])
+  check(`${r} NO puede copiar facturas de la hoja`, !(await val(`select has_function_privilege($1, 'espejar_facturas(jsonb)', 'execute') p`, [r])).p)
+check('los usuarios ven el estado de la copia', (await val(`select has_table_privilege('authenticated', 'espejo_estado', 'select') p`)).p)
+
 console.log(`\n${ok} OK · ${mal} MAL`)
 process.exit(mal ? 1 : 0)

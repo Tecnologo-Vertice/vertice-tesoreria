@@ -3,7 +3,7 @@
 // funciones de Netlify porque necesitan claves que nunca van al navegador.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { Auditoria, ComprobanteEjemplo, CuentaOrigen, Documento, Empresa, Factura, LecturaComprobante, Pago, Proveedor, Usuario } from '../types'
+import type { Auditoria, ComprobanteEjemplo, CuentaOrigen, Documento, Empresa, EstadoEspejo, Factura, LecturaComprobante, Pago, Proveedor, Usuario } from '../types'
 import type { Bucket, Datos, DatosAprobacion, DatosContabilizacion, Fuente, NuevoPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
 import { archivoABase64, llamarFuncion } from '../lib/supabase'
 
@@ -48,6 +48,7 @@ function mapFactura(r: Row): Factura {
     ralpharmaEn: s(r.ralpharma_en),
     aprobadoPor: s(r.aprobado_por),
     aprobadoEn: s(r.aprobado_en),
+    gestion: s(r.gestion) as Factura['gestion'],
   }
 }
 
@@ -78,6 +79,16 @@ function mapPago(r: Row, facturaIds: string[]): Pago {
     contabilizadoEn: s(r.contabilizado_en),
     xubioId: s(r.xubio_id),
     mailProveedorEnviado: r.mail_proveedor_en != null,
+    hojaId: s(r.hoja_id),
+    gestion: s(r.gestion) as Pago['gestion'],
+    comprobanteUrl: s(r.comprobante_url),
+    bancoOrigen: s(r.banco_origen),
+    numeroCuenta: s(r.numero_cuenta),
+    proveedorDestino: s(r.proveedor_destino),
+    tipoCheque: s(r.tipo_cheque),
+    estadoExtraccion: s(r.estado_extraccion),
+    avisoImporte: s(r.aviso_importe),
+    detalleXubio: s(r.xubio_detalle) ?? s(r.detalle_contabilizacion),
   }
 }
 
@@ -107,7 +118,7 @@ export class FuenteSupabase implements Fuente {
   }
 
   async cargar(): Promise<Datos> {
-    const [empresas, proveedores, cuentasOrigen, plan, facturas, pagosRaw, vinculos, auditoria, documentos] = await Promise.all([
+    const [empresas, proveedores, cuentasOrigen, plan, facturas, pagosRaw, vinculos, auditoria, documentos, espejo, productos] = await Promise.all([
       this.lista<Empresa>('empresas', (r) => ({ id: String(r.id), nombre: String(r.nombre), corto: String(r.nombre_corto), cuit: String(r.cuit), erp: String(r.erp) as Empresa['erp'] })),
       this.lista<Proveedor>('proveedores', (r) => ({
         id: String(r.id),
@@ -117,8 +128,16 @@ export class FuenteSupabase implements Fuente {
         categoriaVertice: (s(r.categoria_vertice) ?? 'PROVEEDOR') as Proveedor['categoriaVertice'],
         cuentaHabitual: s(r.cuenta_habitual),
       })),
-      this.lista<CuentaOrigen>('cuentas_origen', (r) => ({ id: String(r.id), empresaId: String(r.empresa_id), nombre: String(r.nombre), saldo: n(r.saldo) })),
-      this.lista<string>('cuentas_contables', (r) => String(r.nombre)),
+      this.lista<CuentaOrigen>('cuentas_origen', (r) => ({
+        id: String(r.id),
+        empresaId: String(r.empresa_id),
+        nombre: String(r.nombre),
+        saldo: n(r.saldo),
+        xubioId: s(r.xubio_id),
+        tipoCuenta: r.tipo_cuenta == null ? undefined : n(r.tipo_cuenta),
+        usos: n(r.usos),
+      })),
+      this.lista<{ empresa: string | undefined; nombre: string; activa: boolean }>('cuentas_contables', (r) => ({ empresa: s(r.empresa_id), nombre: String(r.nombre), activa: r.activa !== false })),
       this.lista<Factura>('facturas', mapFactura),
       this.lista<Row>('pagos', (r) => r, [['cargado_en', 'desc'], ['id', 'asc']]),
       this.lista<{ pago: string; factura: string }>('pagos_facturas', (r) => ({ pago: String(r.pago_id), factura: String(r.factura_id) }), [['pago_id', 'asc'], ['factura_id', 'asc']]),
@@ -158,11 +177,30 @@ export class FuenteSupabase implements Fuente {
         [['recibido_en', 'desc'], ['id', 'asc']],
         500,
       ),
+      // Estado de la copia de la hoja real. Si la base todavía no tiene la migración 0008, se muestra vacío.
+      this.lista<EstadoEspejo>(
+        'espejo_estado',
+        (r) => ({
+          hoja: String(r.hoja),
+          ultimaEn: String(r.ultima_en),
+          filas: n(r.filas),
+          nuevas: n(r.nuevas),
+          actualizadas: n(r.actualizadas),
+          omitidas: n(r.omitidas),
+          detalle: (r.detalle as EstadoEspejo['detalle']) ?? [],
+        }),
+        [['hoja', 'asc']],
+      ).catch(() => [] as EstadoEspejo[]),
+      this.lista<string>('productos_xubio', (r) => String(r.nombre), [['nombre', 'asc']]).catch(() => [] as string[]),
     ])
+    const comunes = plan.filter((c) => !c.empresa && c.activa).map((c) => c.nombre)
+    const planPorEmpresa: Record<string, string[]> = {}
+    for (const c of plan) if (c.empresa && c.activa) (planPorEmpresa[c.empresa] ??= []).push(c.nombre)
+    for (const k of Object.keys(planPorEmpresa)) planPorEmpresa[k].sort((a, b) => a.localeCompare(b))
     const facturasDePago = new Map<string, string[]>()
     for (const v of vinculos) facturasDePago.set(v.pago, [...(facturasDePago.get(v.pago) ?? []), v.factura])
     const pagos = pagosRaw.map((r) => mapPago(r, facturasDePago.get(String(r.id)) ?? []))
-    return { facturas, pagos, documentos, auditoria: auditoria.sort((a, b) => a.fecha.localeCompare(b.fecha)), catalogos: { empresas, proveedores, cuentasOrigen, planCuentas: [...new Set(plan)].sort() } }
+    return { facturas, pagos, documentos, auditoria: auditoria.sort((a, b) => a.fecha.localeCompare(b.fecha)), catalogos: { empresas, proveedores, cuentasOrigen, planCuentas: [...new Set(comunes)].sort(), planPorEmpresa, productos }, espejo }
   }
 
   private async rpc<T = unknown>(fn: string, args: Record<string, unknown>): Promise<T> {
@@ -211,7 +249,7 @@ export class FuenteSupabase implements Fuente {
 
   async contabilizarPago(id: string, d: DatosContabilizacion): Promise<ResultadoXubio> {
     try {
-      return await llamarFuncion<ResultadoXubio>('contabilizar', { pagoId: id, cuentaContable: d.cuentaContable, formaCargaXubio: d.formaCargaXubio })
+      return await llamarFuncion<ResultadoXubio>('contabilizar', { pagoId: id, cuentaContable: d.cuentaContable, formaCargaXubio: d.formaCargaXubio, cuentaOrigen: d.cuentaOrigen })
     } catch (e) {
       return { ok: false, error: e instanceof Error ? e.message : String(e) }
     }

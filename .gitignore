@@ -5,3 +5,14 @@ apps_script_copia/
 # Carpeta de trabajo de Claude Cowork: PDFs de prueba, diffs y respaldos de la copia del Apps Script.
 # Puede tener datos reales; queda solo en esta máquina.
 Claude outputs/
+
+# Carpetas de trabajo del Apps Script (producción y copias): tienen claves de Gemini y Xubio
+# escritas en Code.gs. Solo para leer acá; nunca se commitean.
+vertice_produccion/
+apps_script_copia_lite/
+apps_script_produccion/
+apps_script_produccion_lite/
+apps_script_produccion_v8/
+
+# Capturas de las pruebas de pantalla
+.playwright-mcp/

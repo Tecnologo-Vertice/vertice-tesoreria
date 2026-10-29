@@ -54,6 +54,7 @@ const lista = (x: unknown) => (Array.isArray(x) ? (x as Record<string, unknown>[
 export const listarProveedores = async (t: Token) => lista(await get(t, 'ProveedorBean'))
 export const listarProductosCompra = async (t: Token) => lista(await get(t, 'ProductoCompraBean'))
 export const listarFacturasCompra = async (t: Token, desde: string, hasta: string) => lista(await get(t, 'comprobanteCompraBean', `fechaDesde=${desde}&fechaHasta=${hasta}`))
+export const listarPagos = async (t: Token, desde: string, hasta: string) => lista(await get(t, 'pagoBean', `fechaDesde=${desde}&fechaHasta=${hasta}`))
 export const facturaCompraPorId = async (t: Token, id: string) => (await get(t, `comprobanteCompraBean/${id}`)) as Record<string, unknown>
 
 export async function put(t: Token, path: string, payload: unknown): Promise<{ status: number; body: unknown }> {
@@ -106,12 +107,13 @@ export async function cuentas(t: Token): Promise<RefXubio[]> {
   return (Array.isArray(lista) ? lista : []).map((c) => ({ ID: Number(c.ID ?? c.id), id: Number(c.ID ?? c.id), nombre: String(c.nombre ?? ''), codigo: String(c.codigo ?? '') }))
 }
 
-/** Solo coincidencia exacta (sin mayúsculas, tildes ni signos). Una coincidencia parcial podría
- *  imputar a "Banco Galicia USD" un pago de "Banco Galicia": en contabilidad no se adivina. */
+/** Solo coincidencia exacta (sin mayúsculas, tildes ni signos), por nombre o por "CÓDIGO NOMBRE", que es como
+ *  la guarda producción ("GASTOS_BANCARIOS GASTOS BANCARIOS"). Una coincidencia parcial podría imputar a
+ *  "Banco Galicia USD" un pago de "Banco Galicia": en contabilidad no se adivina. */
 export function buscarCuenta(lista: RefXubio[], texto: string): RefXubio | null {
   const n = norm(texto)
   if (!n) return null
-  return lista.find((c) => norm(c.nombre) === n) ?? null
+  return lista.find((c) => norm(c.nombre) === n) ?? lista.find((c) => !!c.codigo && norm(`${c.codigo} ${c.nombre}`) === n) ?? null
 }
 
 export async function proveedorPorCuit(t: Token, cuit: string, nombre: string): Promise<RefXubio | null> {

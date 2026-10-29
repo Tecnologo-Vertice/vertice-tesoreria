@@ -1,4 +1,4 @@
-// POST /api/contabilizar  { pagoId, cuentaContable, formaCargaXubio }
+// POST /api/contabilizar  { pagoId, cuentaContable, formaCargaXubio, cuentaOrigen? }
 // Guido contabiliza un pago. Arma el comprobante para Xubio, lo registra en xubio_log y:
 //   - XUBIO_ENVIO_REAL=false (default): prueba en seco. El pago queda REVISADO con la cuenta y la forma.
 //   - XUBIO_ENVIO_REAL=true: lo envía, guarda el id de Xubio y el pago queda CONTABILIZADO.
@@ -6,12 +6,20 @@
 import type { Config } from '@netlify/functions'
 import { env, exigirRol, json, leerJson, manejar, supabaseAdmin, usuarioDesde, ErrorHttp } from './lib/comun'
 import * as xubio from './lib/xubio'
-import { itemPagoEnFactura } from './lib/xubio-armado'
+import { itemPagoEnFactura, pagoYaExiste } from './lib/xubio-armado'
 
 interface Body {
   pagoId: string
   cuentaContable: string
   formaCargaXubio: 'ORDEN_PAGO' | 'SALIDA_FONDOS' | 'ASIENTO_MANUAL'
+  /** La que elige Guido en la tarjeta (los pagos copiados de la hoja suelen traer solo el banco). */
+  cuentaOrigen?: string
+}
+
+const masDias = (iso: string, n: number) => {
+  const d = new Date(iso + 'T12:00:00Z')
+  d.setUTCDate(d.getUTCDate() + n)
+  return d.toISOString().slice(0, 10)
 }
 
 export default manejar(async (req) => {
@@ -25,10 +33,26 @@ export default manejar(async (req) => {
   if (error || !pago) throw new ErrorHttp(404, 'Pago inexistente')
   if (!['CARGADO', 'REVISADO'].includes(pago.estado)) throw new ErrorHttp(409, `El pago está en estado ${pago.estado}`)
   if (pago.empresas.erp !== 'XUBIO') throw new ErrorHttp(422, 'Esta empresa no usa Xubio: confirmá la carga en Ralpharma')
+  if (!(Number(pago.importe) > 0)) throw new ErrorHttp(422, 'Falta el importe del pago: la IA no lo leyó del comprobante')
+
+  // Cuenta de origen: la elegida en la tarjeta manda; queda guardada en el pago.
+  const origenTexto = (b.cuentaOrigen ?? '').trim() || pago.cuenta_origen || ''
+  if (!origenTexto) throw new ErrorHttp(422, 'Falta la cuenta de origen (de qué banco o caja salió el pago)')
+  if (origenTexto !== pago.cuenta_origen) {
+    const { error: eo } = await db.from('pagos').update({ cuenta_origen: origenTexto }).eq('id', pago.id)
+    if (eo) throw new ErrorHttp(500, eo.message)
+    pago.cuenta_origen = origenTexto
+  }
+  // E-cheq contra la cuenta de e-cheqs emitidos (tipo 4): Xubio no acepta crear esa OP por API (producción: CARGAR_A_MANO).
+  const { data: co4 } = await db.from('cuentas_origen').select('tipo_cuenta').eq('empresa_id', pago.empresas.id).eq('nombre', origenTexto).maybeSingle()
+  const echeqAMano = !!pago.numero_cheque && b.formaCargaXubio === 'ORDEN_PAGO' && (co4?.tipo_cuenta === 4 || xubio.tipoCuentaPara(origenTexto) === 4)
 
   const envioReal = env('XUBIO_ENVIO_REAL', false) === 'true'
+  if (echeqAMano && envioReal)
+    throw new ErrorHttp(422, `Pago con e-cheq ${pago.numero_cheque}: Xubio no permite crear esta orden de pago por API. Cargala a mano en Xubio (${pago.empresas.nombre}).`)
   const creds = xubio.credencialesDe(pago.empresas.id)
   const notas: string[] = []
+  if (echeqAMano) notas.push('e-cheq: en real hay que cargar la OP a mano en Xubio')
 
   // Con credenciales: verifica cuentas y proveedor contra Xubio real (solo lectura).
   let t: xubio.Token | null = null
@@ -73,6 +97,31 @@ export default manejar(async (req) => {
     nro: `${v.facturas?.letra ? v.facturas.letra + '-' : ''}${String(v.facturas?.punto_venta ?? '').padStart(5, '0')}-${String(v.facturas?.numero ?? '').padStart(8, '0')}`,
   }))
 
+  // ¿Ya está en Xubio? Producción lo revisa antes de crear la OP: los pagos copiados de la hoja suelen estar
+  // contabilizados allá. Mismo proveedor, mismo importe, ±5 días (buscarPagoXubioExistente_).
+  if (t && b.formaCargaXubio === 'ORDEN_PAGO' && proveedor?.ID) {
+    let existente: string | null = null
+    try {
+      existente = pagoYaExiste(await xubio.listarPagos(t, masDias(pago.fecha, -5), masDias(pago.fecha, 5)), proveedor.ID, datos.importe)
+    } catch (e) {
+      if (envioReal) throw new ErrorHttp(502, `No se pudo verificar en Xubio si el pago ya está cargado (${e instanceof Error ? e.message : e}). No se envía para no duplicar.`)
+      notas.push('no se pudo verificar si ya estaba en Xubio')
+    }
+    if (existente) {
+      const detalle = `Ya está en Xubio (OP ${existente}, mismo proveedor e importe): no se vuelve a cargar`
+      if (envioReal) {
+        const { error: e4 } = await db.rpc('marcar_pago_contabilizado', { p_id: pago.id, p_cuenta: b.cuentaContable, p_forma: b.formaCargaXubio, p_xubio_id: `OP-${existente}`, p_usuario: u.nombre, p_rol: u.rol })
+        if (e4) throw new ErrorHttp(500, e4.message)
+        await db.from('pagos').update({ detalle_contabilizacion: detalle }).eq('id', pago.id)
+        return json({ ok: true, id: `OP-${existente}`, enSeco: false, detalle })
+      }
+      const { error: e5 } = await db.rpc('marcar_pago_revisado', { p_id: pago.id, p_cuenta: b.cuentaContable, p_forma: b.formaCargaXubio, p_detalle: 'En seco: ' + detalle, p_usuario: u.nombre, p_rol: u.rol })
+      if (e5) throw new ErrorHttp(500, e5.message)
+      await db.from('pagos').update({ detalle_contabilizacion: 'En seco: ' + detalle }).eq('id', pago.id)
+      return json({ ok: true, id: 'EN-SECO', enSeco: true, detalle })
+    }
+  }
+
   // Camino B (docs/08): con XUBIO_PAGO_EN_FACTURA=true y una sola factura ya subida, el pago se registra
   // DENTRO de la factura y queda imputado. La API de Xubio no permite tildar facturas en una orden de pago.
   const enFactura = b.formaCargaXubio === 'ORDEN_PAGO' && env('XUBIO_PAGO_EN_FACTURA', false) === 'true' && facturas.length === 1 && !!facturas[0].xubioId
@@ -99,6 +148,7 @@ export default manejar(async (req) => {
     const detalle = `En seco: ${enFactura ? 'PAGO EN FACTURA' : b.formaCargaXubio} por ${datos.importe} contra ${cuentaOrigen.nombre}${notas.length ? ' (' + notas.join('; ') + ')' : ''}`
     const { error: e2 } = await db.rpc('marcar_pago_revisado', { p_id: pago.id, p_cuenta: b.cuentaContable, p_forma: b.formaCargaXubio, p_detalle: detalle, p_usuario: u.nombre, p_rol: u.rol })
     if (e2) throw new ErrorHttp(500, e2.message)
+    await db.from('pagos').update({ detalle_contabilizacion: detalle }).eq('id', pago.id)
     return json({ ok: true, id: 'EN-SECO', enSeco: true, detalle })
   }
 

@@ -80,7 +80,8 @@ export class FuenteDemo implements Fuente {
       pagos: this.e.pagos,
       auditoria: this.e.auditoria,
       documentos: this.e.documentos,
-      catalogos: { empresas: EMPRESAS, proveedores: PROVEEDORES, cuentasOrigen: CUENTAS_ORIGEN, planCuentas: PLAN_CUENTAS },
+      catalogos: { empresas: EMPRESAS, proveedores: PROVEEDORES, cuentasOrigen: CUENTAS_ORIGEN, planCuentas: PLAN_CUENTAS, planPorEmpresa: {}, productos: [] },
+      espejo: [],
     }
   }
 
@@ -152,10 +153,10 @@ export class FuenteDemo implements Fuente {
   async contabilizarPago(id: string, d: DatosContabilizacion, u: Usuario): Promise<ResultadoXubio> {
     const p = this.e.pagos.find((x) => x.id === id)
     if (!p) return { ok: false, error: 'Pago inexistente' }
-    const r = await registrarEnXubio({ ...p, ...d })
+    const r = await registrarEnXubio({ ...p, ...d, cuentaOrigen: d.cuentaOrigen || p.cuentaOrigen })
     if (!r.ok) return { ok: false, error: r.error }
     this.e.pagos = this.e.pagos.map((x): Pago =>
-      x.id === id ? { ...x, ...d, estado: 'CONTABILIZADO', xubioId: r.id, contabilizadoPor: u.nombre, contabilizadoEn: new Date().toISOString() } : x,
+      x.id === id ? { ...x, ...d, cuentaOrigen: d.cuentaOrigen || x.cuentaOrigen, estado: 'CONTABILIZADO', xubioId: r.id, contabilizadoPor: u.nombre, contabilizadoEn: new Date().toISOString() } : x,
     )
     this.log(u, { accion: 'CONTABILIZADO', entidad: 'PAGO', entidadId: id, detalle: `Xubio ${r.id} · ${d.formaCargaXubio} · ${d.cuentaContable}` })
     this.commit()

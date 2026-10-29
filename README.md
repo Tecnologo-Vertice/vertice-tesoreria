@@ -18,6 +18,8 @@ Carpeta del sistema nuevo. Acá vive todo lo que reemplaza, por etapas, al Apps 
 | [docs/09-prueba-con-el-equipo.md](docs/09-prueba-con-el-equipo.md) | Preparación de la prueba con Vivi y Guido: copia del Apps Script y app nueva (demo o conectada). Correcciones del 13/10. |
 | [docs/10-flujo-1-entrada-de-facturas.md](docs/10-flujo-1-entrada-de-facturas.md) | Flujo 1 en el sistema nuevo: mail → IA → Aprobación. Equivalencias con el Apps Script, mejoras y cómo probarlo. |
 | [docs/11-puesta-en-marcha-hoy.md](docs/11-puesta-en-marcha-hoy.md) | **Empezar acá.** Qué hace el sistema hoy, los pasos para encenderlo (cuentas, claves, mails) y lo que falta. |
+| [docs/12-produccion-apps-script-como-funciona.md](docs/12-produccion-apps-script-como-funciona.md) | Cómo funciona el Apps Script que usa el equipo en producción, qué le falta al sistema nuevo, decisiones de la demo y el puente que copia la hoja real. |
+| [docs/13-que-tengo-que-hacer.md](docs/13-que-tengo-que-hacer.md) | **Checklist** para encender la copia de la hoja real (Supabase, Netlify, puente). |
 | `apps_script_copia/` | Copia del código de la copia de desarrollo del Apps Script, para leer. **Tiene claves: no se commitea** (está en `.gitignore`). |
 
 ## Correr la demo

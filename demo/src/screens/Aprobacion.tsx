@@ -1,7 +1,8 @@
 import { useRef, useState } from 'react'
 import { useStore } from '../store'
 import { CATEGORIAS } from '../data/demo'
-import { Badge, BadgeVencimiento, Btn, Card, Empty, Field, inputCls, Tabs } from '../components/ui'
+import { Badge, BadgeVencimiento, Btn, Card, Empty, Field, inputCls, SelectorCuenta, Tabs } from '../components/ui'
+import { cuentasFactura, enLista } from '../lib/cuentas'
 import { fecha, fechaHora, fmtCuit, money, nroComprobante } from '../lib/format'
 import { puede } from '../lib/permisos'
 import type { Documento, Factura, MetodoPago } from '../types'
@@ -183,7 +184,7 @@ function TarjetaDocumento({ d }: { d: Documento }) {
 
 function TarjetaFactura({ f, modo }: { f: Factura; modo: 'PENDIENTES' | 'ERRORES' | 'HISTORIAL' }) {
   const { modo: modoApp, proveedor, empresa, catalogos, usuario, aprobarFactura, rechazarFactura, corregirFactura, abrirArchivo } = useStore()
-  const PLAN_CUENTAS = catalogos.planCuentas
+  const opcionesCuenta = cuentasFactura(catalogos, f.empresaId)
   const p = proveedor(f.proveedorId) ?? { nombre: f.proveedorId, cuit: '', cuentaHabitual: undefined }
   const e = empresa(f.empresaId)
   const puedeAprobar = puede(usuario.rol, 'APROBAR')
@@ -194,6 +195,7 @@ function TarjetaFactura({ f, modo }: { f: Factura; modo: 'PENDIENTES' | 'ERRORES
   const [rechazando, setRechazando] = useState(false)
   const [motivo, setMotivo] = useState('')
   const esCheque = metodo === 'CHEQUE' || metodo === 'ECHEQ'
+  const cuentaValida = enLista(opcionesCuenta, cuenta)
 
   const panelRechazo = (
     <div className="space-y-2">
@@ -218,7 +220,7 @@ function TarjetaFactura({ f, modo }: { f: Factura; modo: 'PENDIENTES' | 'ERRORES
           <div className="flex flex-wrap items-center gap-2 mb-1">
             <Badge tone="dorado">{e.corto}</Badge>
             <Badge>{f.origen}</Badge>
-            <Badge>{CATEGORIAS[f.categoriaVertice]}</Badge>
+            <Badge>{CATEGORIAS[f.categoriaVertice] ?? f.categoriaVertice}</Badge>
             {f.tipo === 'Factura M' && <Badge tone="naranja">Factura M: revisar retención</Badge>}
             {!f.validacionOk && <Badge tone="rojo">Validación con error</Badge>}
             {f.validacionOk && modo !== 'HISTORIAL' && <Badge tone="verde">CAE y totales OK</Badge>}
@@ -298,14 +300,7 @@ function TarjetaFactura({ f, modo }: { f: Factura; modo: 'PENDIENTES' | 'ERRORES
                 hint={`Regla de oro: siempre la cuenta del plan, nunca una categoría genérica.${f.categoriaIa ? ` La IA lo clasificó como "${f.categoriaIa}".` : ''}${f.cuentaContable && modo === 'PENDIENTES' ? ' La cuenta viene de lo que se eligió la última vez para este proveedor.' : ''}`}
                 marcado={cuenta ? undefined : 'falta'}
               >
-                <select value={cuenta} onChange={(ev) => setCuenta(ev.target.value)} className={inputCls}>
-                  <option value="">Elegir cuenta…</option>
-                  {PLAN_CUENTAS.map((c) => (
-                    <option key={c} value={c}>
-                      {c}
-                    </option>
-                  ))}
-                </select>
+                <SelectorCuenta value={cuenta} onChange={setCuenta} opciones={opcionesCuenta} />
               </Field>
               <div className="grid grid-cols-2 gap-3">
                 <Field label="Método de pago">
@@ -327,7 +322,7 @@ function TarjetaFactura({ f, modo }: { f: Factura; modo: 'PENDIENTES' | 'ERRORES
                 <Btn variant="peligro" onClick={() => setRechazando(true)}>
                   Rechazar
                 </Btn>
-                <Btn disabled={!cuenta} onClick={() => aprobarFactura(f.id, { cuentaContable: cuenta, metodoPago: metodo, diasCheque: esCheque ? dias : undefined })}>
+                <Btn disabled={!cuentaValida} onClick={() => aprobarFactura(f.id, { cuentaContable: cuentaValida!, metodoPago: metodo, diasCheque: esCheque ? dias : undefined })}>
                   {e.erp !== 'XUBIO' ? 'Aprobar (carga manual en Ralpharma)' : modoApp === 'demo' ? 'Aprobar y enviar a Xubio' : 'Aprobar'}
                 </Btn>
               </div>

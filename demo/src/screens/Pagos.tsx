@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '../store'
-import { Badge, BadgeVencimiento, Btn, Empty, Field, inputCls, Modal, Tabs } from '../components/ui'
+import { Badge, BadgeVencimiento, Btn, Empty, Field, inputCls, Modal, SelectorCuenta, Tabs } from '../components/ui'
+import { cuentasOrigenDe, cuentasPara, enLista } from '../lib/cuentas'
 import { addDays, diasHasta, fecha, iso, money, nroComprobante, parseIso, pendiente } from '../lib/format'
 import { formaDeCarga, sugerirCuenta, type Sugerencia } from '../lib/ia'
 import { puede } from '../lib/permisos'
@@ -188,7 +189,7 @@ function ModalCargarPago({ facturaIds, onClose }: { facturaIds: string[]; onClos
   const [guardando, setGuardando] = useState(false)
   const inputArchivo = useRef<HTMLInputElement>(null)
 
-  const cuentasEmpresa = catalogos.cuentasOrigen.filter((c) => c.empresaId === empresaId)
+  const cuentasEmpresa = cuentasOrigenDe(catalogos.cuentasOrigen, empresaId)
   const esCheque = medio === 'CHEQUE' || medio === 'ECHEQ'
   const facturasEmpresa = facturas.filter((f) => f.empresaId === empresaId && (f.estado === 'PARA_PAGAR' || f.estado === 'PAGADA_PARCIAL'))
   const [vinculadas, setVinculadas] = useState<string[]>(facturaIds)
@@ -265,8 +266,9 @@ function ModalCargarPago({ facturaIds, onClose }: { facturaIds: string[]; onClos
 
   // Vencimiento del cheque: por defecto, fecha de pago + los días que se aprobaron en la factura.
   const vtoChequeFinal = vtoCheque || iso(addDays(parseIso(fechaPago), facts[0]?.diasCheque ?? 30))
-  const falta = !archivo || !importe || !cuentaOrigen || (esCheque && !nroCheque)
-  const motivoFalta = !archivo ? 'Falta el comprobante' : !importe ? 'Falta el importe' : !cuentaOrigen ? 'Falta la cuenta de origen' : esCheque && !nroCheque ? 'Falta el número de cheque' : ''
+  const cuentaFuera = !!cuenta && !enLista(cuentasPara(catalogos, empresaId), cuenta)
+  const falta = !archivo || !importe || !cuentaOrigen || (esCheque && !nroCheque) || cuentaFuera
+  const motivoFalta = !archivo ? 'Falta el comprobante' : !importe ? 'Falta el importe' : !cuentaOrigen ? 'Falta la cuenta de origen' : esCheque && !nroCheque ? 'Falta el número de cheque' : cuentaFuera ? 'La cuenta contable no está en el plan de la empresa' : ''
   const marcado = (campo: string, valorIA: unknown) => (lectura && valorIA && !editados.has(campo) ? 'ia' : undefined)
 
   async function confirmar() {
@@ -514,21 +516,15 @@ function ModalCargarPago({ facturaIds, onClose }: { facturaIds: string[]; onClos
             marcado={cuenta && !editados.has('cuenta') && sug?.cuenta ? 'ia' : !cuenta ? 'falta' : undefined}
             hint={sug ? `${sug.origen === 'REGLA' ? 'Regla aprendida' : sug.origen === 'IA' ? 'Sugerencia de la IA' : 'Manual'} · ${sug.motivo} · confianza ${Math.round(sug.confianza * 100)}%` : undefined}
           >
-            <select
+            <SelectorCuenta
               value={cuenta}
-              onChange={(e) => {
-                setCuenta(e.target.value)
+              onChange={(v) => {
+                setCuenta(v)
                 marcar('cuenta')
               }}
-              className={inputCls}
-            >
-              <option value="">Guido la define al contabilizar</option>
-              {catalogos.planCuentas.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
+              opciones={cuentasPara(catalogos, empresaId)}
+              placeholder="Vacío: Guido la define al contabilizar"
+            />
           </Field>
           <p className="text-xs text-seco">
             Forma de carga en Xubio: <span className="text-crema">{formaDeCarga(facturasEmpresa.filter((f) => vinculadas.includes(f.id)), obs).replace('_', ' ')}</span>

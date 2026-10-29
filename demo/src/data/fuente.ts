@@ -9,6 +9,7 @@ import type {
   CuentaOrigen,
   Documento,
   Empresa,
+  EstadoEspejo,
   Factura,
   LecturaComprobante,
   MetodoPago,
@@ -21,7 +22,12 @@ export interface Catalogos {
   empresas: Empresa[]
   proveedores: Proveedor[]
   cuentasOrigen: CuentaOrigen[]
+  /** Plan de cuentas común (o el único, en demo). */
   planCuentas: string[]
+  /** Plan real de cada empresa (Catalogo_Cuentas_Contables). Vacío en demo. */
+  planPorEmpresa: Record<string, string[]>
+  /** Productos de compra de Xubio: la "cuenta" de una factura en producción. Vacío en demo. */
+  productos: string[]
 }
 
 export interface Datos {
@@ -31,6 +37,8 @@ export interface Datos {
   /** Archivos que entraron y todavía no son factura (en lectura, con error, duplicados). */
   documentos: Documento[]
   catalogos: Catalogos
+  /** Copia de la hoja real: cuándo corrió por última vez cada pestaña. Vacío en demo. */
+  espejo: EstadoEspejo[]
 }
 
 /** Resultado de subir una factura a mano: leída, duplicada, con error, o en cola si la IA tardó. */
@@ -39,7 +47,7 @@ export type Bucket = 'comprobantes' | 'facturas'
 export type ResultadoXubioFactura = { estado: 'SUBIDA' | 'EN_SECO' | 'ERROR' | 'NO_APLICA'; xubioId?: string; detalle: string }
 
 export type DatosAprobacion = { cuentaContable: string; metodoPago: MetodoPago; diasCheque?: number }
-export type DatosContabilizacion = { cuentaContable: string; formaCargaXubio: Pago['formaCargaXubio'] }
+export type DatosContabilizacion = { cuentaContable: string; formaCargaXubio: Pago['formaCargaXubio']; cuentaOrigen?: string }
 export type NuevoPago = Omit<Pago, 'id' | 'estado' | 'cargadoPor' | 'cargadoEn'>
 export type ResultadoXubio = { ok: true; id: string; enSeco: boolean; detalle?: string } | { ok: false; error: string }
 

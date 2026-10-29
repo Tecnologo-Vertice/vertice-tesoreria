@@ -188,3 +188,18 @@ export function facturaYaExiste(lista: Record<string, unknown>[], numeroDoc: str
   })
   return hit ? idCreado(hit) || 'EXISTENTE' : null
 }
+
+/**
+ * ¿Ya hay en Xubio una orden de pago a este proveedor por este importe? (buscarPagoXubioExistente_ de producción:
+ * mismo proveedor, mismo importe ±1 peso; la lista viene filtrada a ±5 días). Devuelve el número de la OP.
+ */
+export function pagoYaExiste(lista: Record<string, unknown>[], proveedorId: number, importe: number): string | null {
+  const hit = lista.find((p) => {
+    const pr = p.proveedor as { ID?: number; id?: number } | undefined
+    if (!pr || Number(pr.ID ?? pr.id) !== proveedorId) return false
+    const instrumentos = Array.isArray(p.transaccionInstrumentoDePago) ? (p.transaccionInstrumentoDePago as { importe?: unknown }[]) : []
+    const total = instrumentos.reduce((a, i) => a + (Number(i.importe) || 0), 0)
+    return Math.abs(total - importe) < 1
+  })
+  return hit ? String(hit.transaccionid ?? hit.transaccionId ?? hit.numeroRecibo ?? 's/n') : null
+}

@@ -85,6 +85,8 @@ export interface Factura {
   ralpharmaEn?: string
   aprobadoPor?: string
   aprobadoEn?: string
+  /** Facturas copiadas de la hoja real: HOJA mientras nadie la toque en el sistema nuevo. */
+  gestion?: 'HOJA' | 'SISTEMA'
 }
 
 export type EstadoDocumento = 'PENDIENTE' | 'LEYENDO' | 'LEIDO' | 'DUPLICADO' | 'ERROR' | 'DESCARTADO'
@@ -137,6 +139,21 @@ export interface Pago {
   contabilizadoEn?: string
   xubioId?: string
   mailProveedorEnviado?: boolean
+  /** Pagos copiados de la hoja real (producción). gestion SISTEMA = ya se tocó en el sistema nuevo. */
+  hojaId?: string
+  gestion?: 'HOJA' | 'SISTEMA'
+  /** Link de Drive del comprobante (pagos de la hoja); los del sistema nuevo usan `comprobante` (Storage). */
+  comprobanteUrl?: string
+  bancoOrigen?: string
+  numeroCuenta?: string
+  proveedorDestino?: string
+  tipoCheque?: string
+  /** Lectura del comprobante por la IA: OK · MANUAL_OK · ERROR_n · REVISION_MANUAL. */
+  estadoExtraccion?: string
+  /** El comprobante dice un importe y Tesorería cargó otro. */
+  avisoImporte?: string
+  /** Qué pasó en Xubio (texto de producción o del envío en seco). */
+  detalleXubio?: string
 }
 
 export interface CuentaOrigen {
@@ -144,6 +161,11 @@ export interface CuentaOrigen {
   empresaId: string
   nombre: string
   saldo: number
+  /** Datos de Xubio (Xubio_Cuentas_Origen): 1 caja · 2 banco · 4 e-cheq emitidos. */
+  xubioId?: string
+  tipoCuenta?: number
+  /** Cuántas veces se usó en los últimos 180 días: ordena la lista. */
+  usos?: number
 }
 
 export interface Auditoria {
@@ -158,6 +180,17 @@ export interface Auditoria {
 }
 
 export type Rol = 'TESORERIA' | 'ADMINISTRACION' | 'APROBADOR' | 'DIRECCION' | 'CONTROLLER' | 'ADMIN'
+
+/** Última copia de una pestaña de la hoja real (espejo, solo en modo conectado). */
+export interface EstadoEspejo {
+  hoja: string
+  ultimaEn: string
+  filas: number
+  nuevas: number
+  actualizadas: number
+  omitidas: number
+  detalle: { fila?: number; id?: string; motivo: string }[]
+}
 
 export interface Usuario {
   nombre: string

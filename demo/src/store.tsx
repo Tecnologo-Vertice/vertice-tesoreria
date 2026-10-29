@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
-import type { Auditoria, ComprobanteEjemplo, Documento, Empresa, Factura, LecturaComprobante, Pago, Proveedor, Usuario } from './types'
+import type { Auditoria, ComprobanteEjemplo, Documento, Empresa, EstadoEspejo, Factura, LecturaComprobante, Pago, Proveedor, Usuario } from './types'
 import type { Bucket, Catalogos, DatosAprobacion, DatosContabilizacion, Fuente, NuevoPago } from './data/fuente'
 import { addDays, parseIso, pendiente } from './lib/format'
 
@@ -13,6 +13,7 @@ interface Store {
   auditoria: Auditoria[]
   documentos: Documento[]
   catalogos: Catalogos
+  espejo: EstadoEspejo[]
   usuario: Usuario
   setUsuario: (u: Usuario) => void
   aprobarFactura: (id: string, datos: DatosAprobacion) => Promise<void>
@@ -41,7 +42,7 @@ interface Store {
 
 const Ctx = createContext<Store | null>(null)
 
-const CATALOGOS_VACIOS: Catalogos = { empresas: [], proveedores: [], cuentasOrigen: [], planCuentas: [] }
+const CATALOGOS_VACIOS: Catalogos = { empresas: [], proveedores: [], cuentasOrigen: [], planCuentas: [], planPorEmpresa: {}, productos: [] }
 
 export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fuente; usuarioInicial: Usuario; children: ReactNode }) {
   const [facturas, setFacturas] = useState<Factura[]>([])
@@ -49,6 +50,7 @@ export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fu
   const [auditoria, setAuditoria] = useState<Auditoria[]>([])
   const [documentos, setDocumentos] = useState<Documento[]>([])
   const [catalogos, setCatalogos] = useState<Catalogos>(CATALOGOS_VACIOS)
+  const [espejo, setEspejo] = useState<EstadoEspejo[]>([])
   const [usuario, setUsuario] = useState<Usuario>(usuarioInicial)
   const [cargando, setCargando] = useState(true)
   const [toasts, setToasts] = useState<Toast[]>([])
@@ -67,6 +69,7 @@ export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fu
       setAuditoria(d.auditoria)
       setDocumentos(d.documentos)
       setCatalogos(d.catalogos)
+      setEspejo(d.espejo)
     } catch (e) {
       toast(`No se pudieron cargar los datos: ${e instanceof Error ? e.message : e}`, 'error')
     } finally {
@@ -111,6 +114,7 @@ export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fu
       auditoria,
       documentos,
       catalogos,
+      espejo,
       usuario,
       setUsuario,
       aprobarFactura: async (id, d) => {
@@ -197,7 +201,7 @@ export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fu
       proveedor: (id) => catalogos.proveedores.find((p) => p.id === id),
       empresa: empresaDe,
     }
-  }, [fuente, cargando, facturas, pagos, auditoria, documentos, catalogos, usuario, toasts, toast, accion, recargar])
+  }, [fuente, cargando, facturas, pagos, auditoria, documentos, catalogos, espejo, usuario, toasts, toast, accion, recargar])
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
 }

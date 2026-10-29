@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useStore } from '../store'
-import { Badge, Btn, Card, Empty, Field, inputCls, Kpi, Tabs } from '../components/ui'
+import { Badge, Btn, Card, Empty, Field, inputCls, Kpi, SelectorCuenta, Tabs } from '../components/ui'
+import { cuentasOrigenDe, cuentasPara, enLista, sugerirCuentaOrigen } from '../lib/cuentas'
 import { fecha, fechaHora, money, moneyShort, nroComprobante } from '../lib/format'
 import { puede } from '../lib/permisos'
 import type { FormaCargaXubio, Pago } from '../types'
@@ -58,17 +59,25 @@ export function Contabilizacion() {
 function TarjetaPago({ p, empresaNombre, erp }: { p: Pago; empresaNombre: string; erp: string }) {
   const { facturas, proveedor, catalogos, usuario, contabilizarPago, marcarRalpharma, abrirArchivo } = useStore()
   const puedeContabilizar = puede(usuario.rol, 'CONTABILIZAR')
-  const PLAN_CUENTAS = catalogos.planCuentas
+  const planEmpresa = cuentasPara(catalogos, p.empresaId)
+  const origenes = cuentasOrigenDe(catalogos.cuentasOrigen, p.empresaId)
+  // Cuenta de origen: la que ya tiene el pago; si no, deducida del banco del comprobante (como producción).
+  const sugeridaOrigen = p.cuentaOrigen ? null : sugerirCuentaOrigen(origenes, p.bancoOrigen, { esCheque: !!p.numeroCheque, numeroCuenta: p.numeroCuenta })
   const [cuenta, setCuenta] = useState(p.cuentaContable ?? '')
+  const [origen, setOrigen] = useState(p.cuentaOrigen || sugeridaOrigen?.cuenta || '')
   const [forma, setForma] = useState<FormaCargaXubio>(p.formaCargaXubio)
   const [enviando, setEnviando] = useState(false)
   const facts = facturas.filter((f) => p.facturaIds.includes(f.id))
   const prov = proveedor(p.proveedorId)
   const hecho = p.estado === 'CONTABILIZADO' || p.estado === 'CONCILIADO'
+  const cuentaValida = enLista(planEmpresa, cuenta)
+  const sinLeer = p.estadoExtraccion === 'REVISION_MANUAL' || /^ERROR/.test(p.estadoExtraccion ?? '')
+  const echeq = !!p.numeroCheque && (origenes.find((c) => c.nombre === origen)?.tipoCuenta === 4 || /cheq|chec/i.test(origen))
+  const falta = p.importe <= 0 ? 'Falta el importe del pago' : !origen ? 'Falta la cuenta de origen' : !cuentaValida ? 'Falta la cuenta contable' : ''
 
   async function contabilizar() {
     setEnviando(true)
-    await contabilizarPago(p.id, { cuentaContable: cuenta, formaCargaXubio: forma })
+    await contabilizarPago(p.id, { cuentaContable: cuentaValida ?? cuenta, formaCargaXubio: forma, cuentaOrigen: origen })
     setEnviando(false)
   }
 
@@ -79,21 +88,40 @@ function TarjetaPago({ p, empresaNombre, erp }: { p: Pago; empresaNombre: string
           <div className="flex flex-wrap items-center gap-2">
             <Badge tone="dorado">{empresaNombre}</Badge>
             <Badge>{p.medio}</Badge>
+            {p.gestion === 'HOJA' && <Badge title="Copiado del dashboard de producción. Si lo contabilizás acá, la copia ya no lo pisa.">De la hoja</Badge>}
             <Badge tone={facts.length ? 'azul' : 'naranja'}>{facts.length ? `${facts.length} factura(s)` : 'Sin factura'}</Badge>
             {p.numeroCheque && <Badge>Cheque {p.numeroCheque} · acredita {fecha(p.fechaAcreditacion)}</Badge>}
             {hecho && <Badge tone="verde">{p.xubioId === 'RALPHARMA' ? 'Cargado en Ralpharma' : `Xubio ${p.xubioId}`}</Badge>}
             {p.mailProveedorEnviado && <Badge tone="azul">Mail al proveedor</Badge>}
           </div>
           <div>
-            <p className="font-semibold">{prov?.nombre ?? p.descripcion}</p>
+            <p className="font-semibold">{prov?.nombre ?? p.proveedorDestino ?? p.descripcion}</p>
             <p className="text-xs text-seco">
-              {fecha(p.fecha)} · desde {p.cuentaOrigen}
-              {p.bancoDestino ? ` → ${p.bancoDestino}` : ''} · comprobante{' '}
-              <button onClick={() => void abrirArchivo('comprobantes', p.comprobante)} className="text-dorado underline hover:text-crema">
-                {p.comprobante.split('/').pop()}
-              </button>
+              {fecha(p.fecha)} · desde {p.cuentaOrigen || p.bancoOrigen || 'cuenta sin definir'}
+              {p.bancoDestino ? ` → ${p.bancoDestino}` : ''}
+              {p.comprobanteUrl ? (
+                <>
+                  {' · '}
+                  <a href={p.comprobanteUrl} target="_blank" rel="noreferrer" className="text-dorado underline hover:text-crema">
+                    comprobante en Drive
+                  </a>
+                </>
+              ) : p.comprobante ? (
+                <>
+                  {' · comprobante '}
+                  <button onClick={() => void abrirArchivo('comprobantes', p.comprobante)} className="text-dorado underline hover:text-crema">
+                    {p.comprobante.split('/').pop()}
+                  </button>
+                </>
+              ) : null}
             </p>
           </div>
+          {sinLeer && (
+            <div className="rounded-lg bg-amber-950/40 border border-amber-900 text-amber-200 text-xs p-3">
+              La IA no pudo leer el comprobante ({p.estadoExtraccion}). Revisá importe, banco y fecha mirándolo antes de contabilizar.
+            </div>
+          )}
+          {p.avisoImporte && <div className="rounded-lg bg-amber-950/40 border border-amber-900 text-amber-200 text-xs p-3">{p.avisoImporte}</div>}
           {p.observaciones && (
             <div className="rounded-lg bg-botella border border-borde p-3 text-sm">
               <p className="text-[10px] uppercase tracking-widest text-seco mb-1">Comentario de {p.cargadoPor}</p>
@@ -131,18 +159,27 @@ function TarjetaPago({ p, empresaNombre, erp }: { p: Pago; empresaNombre: string
           {!hecho && puedeContabilizar && erp === 'XUBIO' && (
             <>
               <Field
+                label="Cuenta de origen (de dónde salió la plata)"
+                marcado={!origen ? 'falta' : sugeridaOrigen && origen === sugeridaOrigen.cuenta ? 'ia' : undefined}
+                hint={sugeridaOrigen && origen === sugeridaOrigen.cuenta ? sugeridaOrigen.nota : origenes.length ? undefined : 'No hay cuentas de origen de esta empresa: falta copiar Xubio_Cuentas_Origen'}
+              >
+                <select value={origen} onChange={(e) => setOrigen(e.target.value)} className={inputCls}>
+                  <option value="">Elegir…</option>
+                  {p.cuentaOrigen && !origenes.some((c) => c.nombre === p.cuentaOrigen) && <option value={p.cuentaOrigen}>{p.cuentaOrigen}</option>}
+                  {origenes.map((c) => (
+                    <option key={c.id} value={c.nombre}>
+                      {c.nombre}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              {echeq && <p className="text-[11px] text-amber-300">E-cheq: Xubio no deja crear esta orden de pago por API. En seco se verifica igual; en real hay que cargarla a mano.</p>}
+              <Field
                 label="Cuenta contable"
                 marcado={!cuenta ? 'falta' : p.sugerenciaOrigen && !p.cuentaContable ? 'ia' : undefined}
                 hint={p.sugerenciaOrigen ? `${p.sugerenciaOrigen === 'REGLA' ? 'Regla aprendida' : p.sugerenciaOrigen === 'IA' ? 'Sugerida por IA' : 'Elegida por Vivi'} · ${Math.round((p.sugerenciaConfianza ?? 0) * 100)}%` : 'Sin sugerencia: definila vos'}
               >
-                <select value={cuenta} onChange={(e) => setCuenta(e.target.value)} className={inputCls}>
-                  <option value="">Elegir…</option>
-                  {PLAN_CUENTAS.map((c) => (
-                    <option key={c} value={c}>
-                      {c}
-                    </option>
-                  ))}
-                </select>
+                <SelectorCuenta value={cuenta} onChange={setCuenta} opciones={planEmpresa} />
               </Field>
               <Field label="Forma de carga en Xubio" hint={FORMAS.find((f) => f.id === forma)?.desc}>
                 <select value={forma} onChange={(e) => setForma(e.target.value as FormaCargaXubio)} className={inputCls}>
@@ -153,9 +190,10 @@ function TarjetaPago({ p, empresaNombre, erp }: { p: Pago; empresaNombre: string
                   ))}
                 </select>
               </Field>
-              <Btn className="w-full justify-center" disabled={!cuenta || enviando} onClick={contabilizar}>
+              <Btn className="w-full justify-center" disabled={!!falta || enviando} onClick={contabilizar} title={falta}>
                 {enviando ? 'Registrando en Xubio…' : 'Contabilizar en Xubio'}
               </Btn>
+              {falta && <p className="text-[11px] text-red-300 text-right">{falta}</p>}
             </>
           )}
           {!hecho && puedeContabilizar && erp === 'RALPHARMA' && (
@@ -166,6 +204,7 @@ function TarjetaPago({ p, empresaNombre, erp }: { p: Pago; empresaNombre: string
               </Btn>
             </>
           )}
+          {(hecho || p.estado === 'REVISADO') && p.detalleXubio && <p className="text-[11px] text-seco">{p.detalleXubio}</p>}
           {hecho && (
             <div className="text-xs text-seco space-y-1">
               <p>

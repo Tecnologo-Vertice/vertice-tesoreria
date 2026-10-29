@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { useStore } from '../store'
 import { USUARIOS } from '../data/demo'
 import { supabase } from '../lib/supabase'
-import type { Rol } from '../types'
+import type { EstadoEspejo, Rol } from '../types'
 
 export type Pantalla = 'vencimientos' | 'aprobacion' | 'pagos' | 'contabilizacion' | 'ralpharma' | 'flujo' | 'auditoria'
 
@@ -24,7 +24,7 @@ interface Item {
 }
 
 export function Layout({ pantalla, onNav, children }: { pantalla: Pantalla; onNav: (p: Pantalla) => void; children: ReactNode }) {
-  const { modo, cargando, usuario, setUsuario, facturas, pagos, documentos, toasts, reiniciar, recargar, empresa } = useStore()
+  const { modo, cargando, usuario, setUsuario, facturas, pagos, documentos, espejo, toasts, reiniciar, recargar, empresa } = useStore()
 
   const items: Item[] = [
     { id: 'vencimientos', titulo: 'Vencimientos', sub: 'Deuda del grupo', icono: '◷' },
@@ -126,7 +126,10 @@ export function Layout({ pantalla, onNav, children }: { pantalla: Pantalla; onNa
             {modo === 'demo' ? (
               <p className="text-[10px] text-seco/70 mt-3">Demo con datos ficticios. Ninguna acción toca Xubio, Gmail ni Sheets.</p>
             ) : (
-              <p className="text-[10px] text-seco/70 mt-3">Conectado a la base de Vértice.</p>
+              <>
+                <p className="text-[10px] text-seco/70 mt-3">Conectado a la base de Vértice.</p>
+                <EstadoCopia espejo={espejo} />
+              </>
             )}
           </div>
           <p className="absolute bottom-4 left-6 text-[9px] tracking-widest text-seco/60">LLEVAMOS TU PYME A LA CIMA · VÉRTICE 2026</p>
@@ -166,6 +169,27 @@ export function Layout({ pantalla, onNav, children }: { pantalla: Pantalla; onNa
           </div>
         ))}
       </div>
+    </div>
+  )
+}
+
+/** Cuándo se copió por última vez la hoja real (Facturas, Facturas_Aprobadas, Pagos) y qué filas quedaron afuera. */
+function EstadoCopia({ espejo }: { espejo: EstadoEspejo[] }) {
+  const pestanas = espejo.filter((e) => e.hoja !== 'Catalogos')
+  if (pestanas.length === 0) return <p className="text-[10px] text-seco/70">Sin copia de la hoja real todavía.</p>
+  const ultima = Math.max(...pestanas.map((e) => new Date(e.ultimaEn).getTime()))
+  const minutos = Math.max(0, Math.round((Date.now() - ultima) / 60000))
+  const omitidas = pestanas.flatMap((e) => e.detalle.map((d) => `${e.hoja}${d.fila ? ' fila ' + d.fila : ''}: ${d.motivo}`))
+  return (
+    <div className="text-[10px] mt-1 space-y-0.5">
+      <p className={minutos <= 25 ? 'text-emerald-300' : 'text-amber-300'}>
+        Copia de la hoja real: {minutos < 1 ? 'recién' : minutos < 120 ? `hace ${minutos} min` : `hace ${Math.round(minutos / 60)} h`}
+      </p>
+      {omitidas.length > 0 && (
+        <p className="text-amber-300/90 cursor-help" title={omitidas.slice(0, 30).join('\n')}>
+          {omitidas.length} fila(s) de la hoja sin copiar
+        </p>
+      )}
     </div>
   )
 }

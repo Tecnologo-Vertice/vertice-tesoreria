@@ -1,5 +1,6 @@
-import type { ReactNode } from 'react'
+import { useId, type ReactNode } from 'react'
 import { diasHasta } from '../lib/format'
+import { enLista } from '../lib/cuentas'
 
 export function Card({ children, className = '' }: { children: ReactNode; className?: string }) {
   return <div className={`bg-pino/50 border border-borde rounded-xl p-5 fade-up ${className}`}>{children}</div>
@@ -89,6 +90,36 @@ export function Field({ label, children, hint, marcado }: { label: string; child
 }
 
 export const inputCls = 'w-full bg-botella border border-borde text-crema text-sm rounded-lg px-3 py-2 focus:border-dorado outline-none'
+
+/**
+ * Cuenta contable con buscador: el plan real tiene cientos de cuentas por empresa. Solo vale lo que está
+ * en la lista (regla de oro: siempre una cuenta de Xubio); si se escribe otra cosa, queda marcado en rojo.
+ */
+export function SelectorCuenta({ value, onChange, opciones, placeholder = 'Escribí para buscar…' }: { value: string; onChange: (v: string) => void; opciones: string[]; placeholder?: string }) {
+  const id = useId()
+  const valido = !value || enLista(opciones, value) !== null
+  return (
+    <>
+      <input
+        list={id}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={() => {
+          const exacta = enLista(opciones, value)
+          if (exacta && exacta !== value) onChange(exacta)
+        }}
+        placeholder={placeholder}
+        className={`${inputCls} ${valido ? '' : 'border-red-600'}`}
+      />
+      <datalist id={id}>
+        {opciones.map((o) => (
+          <option key={o} value={o} />
+        ))}
+      </datalist>
+      {!valido && <span className="text-[11px] text-red-300 mt-1 block">No está en el plan de cuentas de esta empresa: elegí una de la lista.</span>}
+    </>
+  )
+}
 
 export function Modal({ titulo, children, onClose, ancho = 'max-w-2xl' }: { titulo: string; children: ReactNode; onClose: () => void; ancho?: string }) {
   return (

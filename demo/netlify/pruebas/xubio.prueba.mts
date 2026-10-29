@@ -1,6 +1,6 @@
 // Pruebas de lib/xubio-armado.ts: factura de compra, pago dentro de la factura y búsquedas en listados de Xubio.
 // Uso: npm run test:xubio. Datos ficticios con la forma real de la API.
-import { elegirProducto, elegirProveedor, facturaCompra, facturaYaExiste, idCreado, itemPagoEnFactura, numeroDocumento, tipoComprobante } from '../functions/lib/xubio-armado.ts'
+import { elegirProducto, elegirProveedor, facturaCompra, facturaYaExiste, idCreado, itemPagoEnFactura, numeroDocumento, pagoYaExiste, tipoComprobante } from '../functions/lib/xubio-armado.ts'
 
 let ok = 0
 let mal = 0
@@ -56,6 +56,15 @@ const item = itemPagoEnFactura({ cuentaOrigen: { ID: 9, id: 9, nombre: 'Cheque D
 check('pago en factura con cheque: tipo de cuenta 4, número y vencimiento (OP 483)', item.cuentaTipo === '4' && item.chequePropios === '29598' && item.fechaVto === '2026-09-18')
 const transf = itemPagoEnFactura({ cuentaOrigen: { ID: 3, id: 3, nombre: 'Banco Galicia CC $', codigo: '' }, importe: 1000, descripcion: 'x' })
 check('pago en factura por transferencia: tipo de cuenta 2, sin cheque', transf.cuentaTipo === '2' && !('chequePropios' in transf))
+
+// Orden de pago ya cargada en Xubio (como buscarPagoXubioExistente_ de producción)
+const ops = [
+  { transaccionid: 777, proveedor: { ID: 501 }, transaccionInstrumentoDePago: [{ importe: 60000 }, { importe: 500.4 }] },
+  { transaccionid: 778, proveedor: { ID: 999 }, transaccionInstrumentoDePago: [{ importe: 60500 }] },
+]
+check('pago ya en Xubio: mismo proveedor e importe (suma de instrumentos, ±1 peso)', pagoYaExiste(ops, 501, 60500) === '777')
+check('mismo importe de otro proveedor: no es el mismo pago', pagoYaExiste(ops, 502, 60500) === null)
+check('mismo proveedor, otro importe: no es el mismo pago', pagoYaExiste(ops, 501, 61000) === null)
 
 console.log(`\n${ok} OK · ${mal} MAL`)
 process.exit(mal ? 1 : 0)
