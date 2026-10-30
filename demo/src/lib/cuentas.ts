@@ -15,7 +15,8 @@ export function cuentasFactura(c: Catalogos, empresaId: string): string[] {
   return c.productos.length ? c.productos : cuentasPara(c, empresaId)
 }
 
-const norm = (s: unknown) =>
+/** Texto para comparar: sin mayúsculas, tildes, espacios ni signos. */
+export const norm = (s: unknown) =>
   String(s ?? '')
     .normalize('NFD')
     .replace(/[̀-ͯ]/g, '')

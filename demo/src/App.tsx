@@ -84,7 +84,7 @@ function Sesion({ fuente, children }: { fuente: Fuente; children: (u: Usuario) =
     <div className="min-h-screen flex items-center justify-center p-6">
       <div className="max-w-md w-full bg-pino border border-borde rounded-xl p-8 text-center space-y-4 fade-up">
         <h1 className="font-serif text-4xl">Vértice</h1>
-        <p className="text-[10px] tracking-[0.25em] uppercase text-acento">Tesorería y administración</p>
+        <p className="text-[0.625rem] tracking-[0.25em] uppercase text-acento">Tesorería y administración</p>
         {estado === 'cargando' && <p className="text-seco text-sm">Verificando sesión…</p>}
         {estado === 'sin-sesion' && (
           <>

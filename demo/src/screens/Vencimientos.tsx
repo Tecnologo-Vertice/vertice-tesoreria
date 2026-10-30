@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useStore } from '../store'
-import { Badge, BadgeVencimiento, Card, Kpi, Table } from '../components/ui'
+import { Badge, BadgeVencimiento, Card, Desplegable, Kpi, Table } from '../components/ui'
 import { diasHasta, fecha, money, moneyShort, nroComprobante, pendiente } from '../lib/format'
 
 export function Vencimientos() {
@@ -42,14 +42,7 @@ export function Vencimientos() {
           <h2 className="titulo-pagina">Vencimientos</h2>
           <p className="text-sm text-seco">Lo que el grupo debe pagar, ordenado por urgencia.</p>
         </div>
-        <select value={empresaId} onChange={(e) => setEmpresaId(e.target.value)} className="bg-pino border border-borde text-crema text-sm rounded-lg px-3 py-2 focus:border-dorado outline-none">
-          <option value="TODAS">Todas las empresas</option>
-          {EMPRESAS.map((e) => (
-            <option key={e.id} value={e.id}>
-              {e.nombre}
-            </option>
-          ))}
-        </select>
+        <Desplegable compacto value={empresaId} onChange={setEmpresaId} opciones={[{ value: 'TODAS', label: 'Todas las empresas' }, ...EMPRESAS.map((e) => ({ value: e.id, label: e.nombre }))]} />
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">

@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '../store'
-import { Badge, BadgeVencimiento, Btn, Empty, Field, inputCls, Modal, SelectorCuenta, Tabs } from '../components/ui'
+import { Badge, BadgeVencimiento, Btn, Desplegable, Empty, Field, inputCls, Modal, SelectorCuenta, Tabs } from '../components/ui'
 import { cuentasOrigenDe, cuentasPara, enLista } from '../lib/cuentas'
 import { useFiltro } from '../components/Filtros'
-import { addDays, diasHasta, fecha, iso, money, nroComprobante, parseIso, pendiente } from '../lib/format'
+import { addDays, diasHasta, fecha, fmtCuit, iso, money, nroComprobante, parseIso, pendiente } from '../lib/format'
 import { formaDeCarga, sugerirCuenta, type Sugerencia } from '../lib/ia'
 import { puede } from '../lib/permisos'
 import type { ComprobanteEjemplo, EstadoXubio, LecturaComprobante, MetodoPago } from '../types'
@@ -120,14 +120,14 @@ export function Pagos() {
                   <p className="text-xs text-seco">
                     {f.tipo} {nroComprobante(f.puntoVenta, f.numero)} · {f.metodoPago} · {f.cuentaContable}
                   </p>
-                  {f.xubioError && <p className="text-[11px] text-red-300 mt-0.5">Xubio: {f.xubioError}</p>}
+                  {f.xubioError && <p className="text-[0.6875rem] text-red-300 mt-0.5">Xubio: {f.xubioError}</p>}
                   {puedeXubio && e.erp === 'XUBIO' && (f.estadoXubio === 'PENDIENTE' || f.estadoXubio === 'ERROR') && (
                     <button
                       onClick={(ev) => {
                         ev.stopPropagation()
                         void subirFacturaXubio(f.id)
                       }}
-                      className="text-[11px] text-acento underline mt-0.5"
+                      className="text-[0.6875rem] text-acento underline mt-0.5"
                     >
                       {f.estadoXubio === 'ERROR' ? 'Reintentar subida a Xubio' : modo === 'demo' ? 'Subir a Xubio (simulado)' : 'Subir a Xubio'}
                     </button>
@@ -135,7 +135,7 @@ export function Pagos() {
                 </div>
                 <div className="text-right">
                   <p className="font-serif text-xl">{money(pendiente(f))}</p>
-                  <p className="text-[10px] text-seco">vence {fecha(f.vencimiento)}</p>
+                  <p className="text-[0.625rem] text-seco">vence {fecha(f.vencimiento)}</p>
                 </div>
               </div>
             )
@@ -323,7 +323,7 @@ function ModalCargarPago({ facturaIds, onClose }: { facturaIds: string[]; onClos
     <Modal titulo={facturaIds.length ? 'Confirmar pago' : 'Cargar pago sin factura'} onClose={onClose} ancho="max-w-4xl">
       <div className="grid md:grid-cols-5 gap-6">
         <div className="md:col-span-2 space-y-3">
-          <p className="text-[10px] uppercase tracking-widest text-seco">1 · Comprobante</p>
+          <p className="text-[0.625rem] uppercase tracking-widest text-seco">1 · Comprobante</p>
           {!archivo && (
             <div className="border border-dashed border-borde rounded-xl p-4 text-center space-y-3">
               <input
@@ -390,34 +390,26 @@ function ModalCargarPago({ facturaIds, onClose }: { facturaIds: string[]; onClos
         </div>
 
         <div className="md:col-span-3 space-y-3">
-          <p className="text-[10px] uppercase tracking-widest text-seco">2 · Datos del pago</p>
+          <p className="text-[0.625rem] uppercase tracking-widest text-seco">2 · Datos del pago</p>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Empresa">
-              <select
+              <Desplegable
                 value={empresaId}
                 disabled={facts.length > 0}
-                onChange={(e) => {
-                  setEmpresaId(e.target.value)
+                onChange={(v) => {
+                  setEmpresaId(v)
                   setVinculadas([])
                 }}
-                className={inputCls}
-              >
-                {catalogos.empresas.map((e) => (
-                  <option key={e.id} value={e.id}>
-                    {e.nombre}
-                  </option>
-                ))}
-              </select>
+                opciones={catalogos.empresas.map((e) => ({ value: e.id, label: e.nombre }))}
+              />
             </Field>
             <Field label="Proveedor / destinatario">
-              <select value={proveedorId} onChange={(e) => setProveedorId(e.target.value)} className={inputCls}>
-                <option value="">Sin proveedor (banco, impuestos)</option>
-                {catalogos.proveedores.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.nombre}
-                  </option>
-                ))}
-              </select>
+              <Desplegable
+                value={proveedorId}
+                onChange={setProveedorId}
+                anchoMenu={320}
+                opciones={[{ value: '', label: 'Sin proveedor (banco, impuestos)' }, ...catalogos.proveedores.map((p) => ({ value: p.id, label: p.nombre, detalle: p.cuit ? fmtCuit(p.cuit) : undefined }))]}
+              />
             </Field>
             <Field label="Importe" marcado={marcado('importe', lectura?.importe) ?? (!importe ? 'falta' : undefined)}>
               <input
@@ -442,39 +434,29 @@ function ModalCargarPago({ facturaIds, onClose }: { facturaIds: string[]; onClos
               />
             </Field>
             <Field label="Medio" marcado={marcado('medio', lectura?.medio)}>
-              <select
+              <Desplegable
                 value={medio}
-                onChange={(e) => {
-                  setMedio(e.target.value as MetodoPago)
+                onChange={(v) => {
+                  setMedio(v as MetodoPago)
                   marcar('medio')
                 }}
-                className={inputCls}
-              >
-                {MEDIOS.map((m) => (
-                  <option key={m}>{m}</option>
-                ))}
-              </select>
+                opciones={MEDIOS.map((m) => ({ value: m, label: m }))}
+              />
             </Field>
             <Field
               label="Cuenta de origen"
               hint={bancoLeido && !cuentaOrigen ? `La IA leyó "${bancoLeido}": elegí la cuenta exacta` : 'Nombre exacto de la cuenta en Xubio'}
               marcado={!cuentaOrigen ? 'falta' : marcado('cuentaOrigen', lectura?.banco)}
             >
-              <select
+              <Desplegable
                 value={cuentaOrigen}
-                onChange={(e) => {
-                  setCuentaOrigen(e.target.value)
+                onChange={(v) => {
+                  setCuentaOrigen(v)
                   marcar('cuentaOrigen')
                 }}
-                className={inputCls}
-              >
-                <option value="">Elegir…</option>
-                {cuentasEmpresa.map((c) => (
-                  <option key={c.id} value={c.nombre}>
-                    {c.nombre}
-                  </option>
-                ))}
-              </select>
+                anchoMenu={300}
+                opciones={cuentasEmpresa.map((c) => ({ value: c.nombre, label: c.nombre }))}
+              />
             </Field>
             {esCheque ? (
               <>
@@ -502,7 +484,7 @@ function ModalCargarPago({ facturaIds, onClose }: { facturaIds: string[]; onClos
             </Field>
           </div>
 
-          <p className="text-[10px] uppercase tracking-widest text-seco pt-2">3 · Facturas que cancela</p>
+          <p className="text-[0.625rem] uppercase tracking-widest text-seco pt-2">3 · Facturas que cancela</p>
           <div className="max-h-40 overflow-y-auto rounded-lg border border-borde divide-y divide-borde/60">
             {facturasEmpresa.length === 0 && <p className="p-3 text-xs text-seco">Esta empresa no tiene facturas para pagar.</p>}
             {facturasEmpresa.map((f) => {
@@ -532,7 +514,7 @@ function ModalCargarPago({ facturaIds, onClose }: { facturaIds: string[]; onClos
             </p>
           )}
 
-          <p className="text-[10px] uppercase tracking-widest text-seco pt-2">4 · Cuenta contable (regla de oro)</p>
+          <p className="text-[0.625rem] uppercase tracking-widest text-seco pt-2">4 · Cuenta contable (regla de oro)</p>
           <Field
             label="Cuenta del plan de Xubio"
             marcado={cuenta && !editados.has('cuenta') && sug?.cuenta ? 'ia' : !cuenta ? 'falta' : undefined}

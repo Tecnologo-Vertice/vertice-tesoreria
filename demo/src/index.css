@@ -46,6 +46,17 @@
   color-scheme: light;
 }
 
+/* Tamaño de letra (botón A A A): todo el sistema está en rem, así que crece en proporción */
+html {
+  font-size: 100%;
+}
+:root[data-letra='grande'] {
+  font-size: 112.5%;
+}
+:root[data-letra='mayor'] {
+  font-size: 125%;
+}
+
 html,
 body,
 #root {
@@ -56,7 +67,7 @@ body {
   background: var(--c-fondo);
   color: var(--c-tinta);
   font-family: var(--font-sans);
-  font-size: 15px;
+  font-size: 0.9375rem;
   -webkit-font-smoothing: antialiased;
   transition: background-color 0.2s ease, color 0.2s ease;
 }
@@ -117,6 +128,17 @@ body {
 select option {
   background: var(--c-panel);
   color: var(--c-tinta);
+}
+
+/* Desplegables propios (ui.tsx): aparecen suave */
+.menu-flotante {
+  animation: menuAbre 0.12s ease-out both;
+}
+@keyframes menuAbre {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
 }
 
 @keyframes fadeUp {

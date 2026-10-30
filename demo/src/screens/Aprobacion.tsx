@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { useStore } from '../store'
 import { CATEGORIAS } from '../data/demo'
-import { Badge, BadgeVencimiento, Btn, Card, Empty, Field, inputCls, SelectorCuenta, TablaDatos, Tabs } from '../components/ui'
+import { Badge, BadgeVencimiento, Btn, Card, Desplegable, Empty, Field, inputCls, SelectorCuenta, TablaDatos, Tabs } from '../components/ui'
 import { cuentasFactura, enLista } from '../lib/cuentas'
 import { useFiltro } from '../components/Filtros'
 import { FormFactura } from '../components/FormFactura'
@@ -272,7 +272,7 @@ function TarjetaFactura({ f, modo, nueva }: { f: Factura; modo: 'PENDIENTES' | '
               titulo="Lo que leyó la IA · comprobante"
               accion={
                 editable && (
-                  <button onClick={() => setEditando(true)} className="text-[12px] font-bold text-acento hover:underline">
+                  <button onClick={() => setEditando(true)} className="text-[0.75rem] font-bold text-acento hover:underline">
                     Editar datos
                   </button>
                 )
@@ -284,7 +284,7 @@ function TarjetaFactura({ f, modo, nueva }: { f: Factura; modo: 'PENDIENTES' | '
                 ['Comprobante', `${f.tipo} ${nroComprobante(f.puntoVenta, f.numero)}`],
                 ['Emitida', fecha(f.fecha)],
                 ['Vencimiento del pago', fecha(f.vencimiento)],
-                ['CAE', <span key="c" className="font-mono text-[13px]">{f.cae || '—'}</span>],
+                ['CAE', <span key="c" className="font-mono text-[0.8125rem]">{f.cae || '—'}</span>],
                 ['CAE vence', fecha(f.caeVencimiento)],
                 [
                   'PDF',
@@ -303,12 +303,12 @@ function TarjetaFactura({ f, modo, nueva }: { f: Factura; modo: 'PENDIENTES' | '
               ]}
             />
             {f.advertencia && (
-              <div className="p-3 rounded-xl bg-amber-950/40 border border-amber-900 text-amber-200 text-[13px]">
+              <div className="p-3 rounded-xl bg-amber-950/40 border border-amber-900 text-amber-200 text-[0.8125rem]">
                 <strong>Aviso:</strong> {f.advertencia}
               </div>
             )}
             {f.motivoValidacion && (
-              <div className="p-3 rounded-xl bg-red-950/40 border border-red-900 text-red-200 text-[13px]">
+              <div className="p-3 rounded-xl bg-red-950/40 border border-red-900 text-red-200 text-[0.8125rem]">
                 <strong>Motivo:</strong> {f.motivoValidacion}
               </div>
             )}
@@ -337,7 +337,7 @@ function TarjetaFactura({ f, modo, nueva }: { f: Factura; modo: 'PENDIENTES' | '
 
             {modo !== 'HISTORIAL' && puedeAprobar && (
               <div className="rounded-xl border border-borde bg-suave/40 p-5 space-y-4">
-                <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-seco">{modo === 'ERRORES' ? 'Excepción' : 'Aprobar'}</p>
+                <p className="text-[0.625rem] uppercase tracking-[0.16em] font-bold text-seco">{modo === 'ERRORES' ? 'Excepción' : 'Aprobar'}</p>
 
                 {rechazando && panelRechazo}
 
@@ -352,13 +352,7 @@ function TarjetaFactura({ f, modo, nueva }: { f: Factura; modo: 'PENDIENTES' | '
                     </Field>
                     <div className="grid grid-cols-2 gap-3">
                       <Field label="Método de pago">
-                        <select value={metodo} onChange={(ev) => setMetodo(ev.target.value as MetodoPago)} className={inputCls}>
-                          {METODOS.map((m) => (
-                            <option key={m.id} value={m.id}>
-                              {m.label}
-                            </option>
-                          ))}
-                        </select>
+                        <Desplegable value={metodo} onChange={(v) => setMetodo(v as MetodoPago)} opciones={METODOS.map((m) => ({ value: m.id, label: m.label }))} />
                       </Field>
                       {esCheque && (
                         <Field label="Días del cheque">

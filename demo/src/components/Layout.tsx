@@ -3,7 +3,7 @@ import { useStore } from '../store'
 import { USUARIOS } from '../data/demo'
 import { supabase } from '../lib/supabase'
 import type { EstadoEspejo, Rol } from '../types'
-import { BotonTema } from './ui'
+import { BotonLetra, BotonTema, Desplegable } from './ui'
 
 export type Pantalla = 'vencimientos' | 'aprobacion' | 'pagos' | 'contabilizacion' | 'ralpharma' | 'flujo' | 'auditoria'
 
@@ -67,7 +67,7 @@ export function Layout({ pantalla, onNav, children }: { pantalla: Pantalla; onNa
         <div className="px-6 pt-6 pb-5">
           <img src="/logo-oscuro.svg" alt="Vértice" className="logo-oscuro h-9 w-auto" />
           <img src="/logo-claro.svg" alt="Vértice" className="logo-claro h-9 w-auto" />
-          <p className="mt-2 text-[10px] uppercase tracking-[0.2em] font-bold text-seco">Tesorería y administración</p>
+          <p className="mt-2 text-[0.625rem] uppercase tracking-[0.2em] font-bold text-seco">Tesorería y administración</p>
         </div>
         <nav className="flex-1 overflow-y-auto px-3 space-y-1">
           {items.map((it) => {
@@ -83,26 +83,26 @@ export function Layout({ pantalla, onNav, children }: { pantalla: Pantalla; onNa
                   {ICONOS[it.id]}
                 </svg>
                 <span className="flex-1 min-w-0">
-                  <span className="block text-[14px] font-bold leading-tight">{it.titulo}</span>
-                  <span className="block text-[11px] opacity-75">{it.sub}</span>
+                  <span className="block text-[0.875rem] font-bold leading-tight">{it.titulo}</span>
+                  <span className="block text-[0.6875rem] opacity-75">{it.sub}</span>
                 </span>
                 {it.n !== undefined && it.n > 0 && (
-                  <span className={`text-[11px] font-bold tabular px-2 py-0.5 rounded-md ${activo ? 'bg-dorado text-sobre-oro' : 'bg-borde/60 text-crema'}`}>{it.n}</span>
+                  <span className={`text-[0.6875rem] font-bold tabular px-2 py-0.5 rounded-md ${activo ? 'bg-dorado text-sobre-oro' : 'bg-borde/60 text-crema'}`}>{it.n}</span>
                 )}
               </button>
             )
           })}
         </nav>
-        <div className="mx-3 mb-3 mt-4 rounded-xl border border-borde bg-suave/60 p-4 text-[12px] text-seco space-y-1">
+        <div className="mx-3 mb-3 mt-4 rounded-xl border border-borde bg-suave/60 p-4 text-[0.75rem] text-seco space-y-1">
           <p className="text-crema font-bold">{usuario.nombre}</p>
           <p>{ROLES[usuario.rol]}</p>
           {modo === 'demo' ? (
-            <p className="text-[11px] pt-1">Demo con datos ficticios. Nada toca Xubio, Gmail ni Sheets.</p>
+            <p className="text-[0.6875rem] pt-1">Demo con datos ficticios. Nada toca Xubio, Gmail ni Sheets.</p>
           ) : (
             <EstadoCopia espejo={espejo} />
           )}
         </div>
-        <p className="px-6 pb-5 text-[9px] tracking-[0.2em] text-seco/70">VÉRTICE · 2026</p>
+        <p className="px-6 pb-5 text-[0.5625rem] tracking-[0.2em] text-seco/70">VÉRTICE · 2026</p>
       </aside>
 
       <div className="flex-1 min-w-0 flex flex-col">
@@ -113,26 +113,21 @@ export function Layout({ pantalla, onNav, children }: { pantalla: Pantalla; onNa
               <img src="/logo-oscuro.svg" alt="Vértice" className="logo-oscuro h-7 w-auto" />
               <img src="/logo-claro.svg" alt="Vértice" className="logo-claro h-7 w-auto" />
             </div>
-            <p className="hidden md:block text-[11px] uppercase tracking-[0.2em] font-bold text-seco">
+            <p className="hidden md:block text-[0.6875rem] uppercase tracking-[0.2em] font-bold text-seco">
               Vértice <span className="text-borde mx-1.5">/</span> <span className="text-crema">{actual?.titulo}</span>
             </p>
           </div>
           <div className="flex items-center gap-2">
             {modo === 'demo' ? (
               <>
-                <select
+                <Desplegable
+                  compacto
                   value={usuario.nombre}
-                  onChange={(e) => setUsuario(USUARIOS.find((u) => u.nombre === e.target.value)!)}
+                  onChange={(v) => setUsuario(USUARIOS.find((u) => u.nombre === v)!)}
                   title="Entrar como"
-                  className="h-9 bg-pino border border-borde text-crema text-sm rounded-xl px-3 focus:border-acento outline-none"
-                >
-                  {USUARIOS.map((u) => (
-                    <option key={u.nombre} value={u.nombre}>
-                      {u.nombre} · {ROLES[u.rol]}
-                    </option>
-                  ))}
-                </select>
-                <button onClick={() => void reiniciar()} title="Vuelve los datos ficticios al inicio" className="h-9 px-3 rounded-xl text-[13px] text-seco hover:text-acento">
+                  opciones={USUARIOS.map((u) => ({ value: u.nombre, label: `${u.nombre} · ${ROLES[u.rol]}` }))}
+                />
+                <button onClick={() => void reiniciar()} title="Vuelve los datos ficticios al inicio" className="h-9 px-3 rounded-xl text-[0.8125rem] text-seco hover:text-acento">
                   Reiniciar
                 </button>
               </>
@@ -141,14 +136,15 @@ export function Layout({ pantalla, onNav, children }: { pantalla: Pantalla; onNa
                 <span className="hidden sm:inline text-sm text-seco mr-1">
                   <span className="font-bold text-crema">{usuario.nombre}</span> · {ROLES[usuario.rol]}
                 </span>
-                <button onClick={() => void recargar()} className="h-9 px-3 rounded-xl text-[13px] font-bold text-seco hover:text-acento border border-borde hover:border-acento">
+                <button onClick={() => void recargar()} className="h-9 px-3 rounded-xl text-[0.8125rem] font-bold text-seco hover:text-acento border border-borde hover:border-acento">
                   Actualizar
                 </button>
-                <button onClick={() => supabase?.auth.signOut()} className="h-9 px-3 rounded-xl text-[13px] text-seco hover:text-acento">
+                <button onClick={() => supabase?.auth.signOut()} className="h-9 px-3 rounded-xl text-[0.8125rem] text-seco hover:text-acento">
                   Salir
                 </button>
               </>
             )}
+            <BotonLetra />
             <BotonTema />
           </div>
         </header>
@@ -196,12 +192,12 @@ export function Layout({ pantalla, onNav, children }: { pantalla: Pantalla; onNa
 /** Cuándo se copió por última vez la hoja real (Facturas, Facturas_Aprobadas, Pagos) y qué filas quedaron afuera. */
 function EstadoCopia({ espejo }: { espejo: EstadoEspejo[] }) {
   const pestanas = espejo.filter((e) => e.hoja !== 'Catalogos')
-  if (pestanas.length === 0) return <p className="text-[11px] pt-1">Sin copia de la hoja real todavía.</p>
+  if (pestanas.length === 0) return <p className="text-[0.6875rem] pt-1">Sin copia de la hoja real todavía.</p>
   const ultima = Math.max(...pestanas.map((e) => new Date(e.ultimaEn).getTime()))
   const minutos = Math.max(0, Math.round((Date.now() - ultima) / 60000))
   const omitidas = pestanas.flatMap((e) => e.detalle.map((d) => `${e.hoja}${d.fila ? ' fila ' + d.fila : ''}: ${d.motivo}`))
   return (
-    <div className="text-[11px] pt-1 space-y-0.5">
+    <div className="text-[0.6875rem] pt-1 space-y-0.5">
       <p className="flex items-center gap-1.5">
         <span className={`inline-block w-1.5 h-1.5 rounded-full ${minutos <= 25 ? 'bg-emerald-400/80' : 'bg-red-400/80'}`} />
         <span className={minutos <= 25 ? 'text-emerald-300' : 'text-amber-300'}>

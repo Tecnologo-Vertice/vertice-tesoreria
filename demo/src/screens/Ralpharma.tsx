@@ -84,7 +84,7 @@ export function Ralpharma() {
                     Confirmo que la cargué
                   </Btn>
                 ) : (
-                  <p className="text-[11px] text-seco">La confirma Administración</p>
+                  <p className="text-[0.6875rem] text-seco">La confirma Administración</p>
                 )}
               </div>
             </Card>
@@ -117,7 +117,7 @@ export function Ralpharma() {
                     Confirmo que lo cargué
                   </Btn>
                 ) : (
-                  <p className="text-[11px] text-seco">Lo confirma Administración</p>
+                  <p className="text-[0.6875rem] text-seco">Lo confirma Administración</p>
                 )}
               </div>
             </Card>

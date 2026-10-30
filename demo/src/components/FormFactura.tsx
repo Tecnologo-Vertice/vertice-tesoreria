@@ -9,7 +9,7 @@ import { cuentasFactura } from '../lib/cuentas'
 import { money } from '../lib/format'
 import type { DatosEdicion } from '../data/fuente'
 import type { Factura } from '../types'
-import { Btn, Field, inputCls, SelectorCuenta } from './ui'
+import { Btn, Combo, Desplegable, Field, inputCls, SelectorCuenta } from './ui'
 
 const TIPOS = ['Factura A', 'Factura B', 'Factura C', 'Factura M', 'Factura E', 'Nota de Crédito A', 'Nota de Crédito B', 'Nota de Crédito C', 'Nota de Débito A', 'Nota de Débito B', 'Recibo C', 'Sin tipo']
 
@@ -68,8 +68,8 @@ export function FormFactura({ f, onCerrar }: { f: Factura; onCerrar: () => void 
   return (
     <div className="md:col-span-2 space-y-4 fade-up">
       <div className="flex items-center justify-between">
-        <h4 className="text-[10px] uppercase tracking-widest text-seco">Corregir los datos de la factura</h4>
-        <span className="text-[11px] text-seco">Queda en la auditoría con tu nombre y lo que cambiaste</span>
+        <h4 className="text-[0.625rem] uppercase tracking-widest text-seco">Corregir los datos de la factura</h4>
+        <span className="text-[0.6875rem] text-seco">Queda en la auditoría con tu nombre y lo que cambiaste</span>
       </div>
 
       <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -80,31 +80,14 @@ export function FormFactura({ f, onCerrar }: { f: Factura; onCerrar: () => void 
           <input value={d.cuit} onChange={(e) => set('cuit', e.target.value)} className={inputCls} />
         </Field>
         <Field label="Empresa que recibe">
-          <select value={d.empresaId} onChange={(e) => set('empresaId', e.target.value)} className={inputCls}>
-            {catalogos.empresas.map((e) => (
-              <option key={e.id} value={e.id}>
-                {e.nombre}
-              </option>
-            ))}
-          </select>
+          <Desplegable value={d.empresaId} onChange={(v) => set('empresaId', v)} opciones={catalogos.empresas.map((e) => ({ value: e.id, label: e.nombre }))} />
         </Field>
         <Field label="Categoría Vértice">
-          <select value={d.categoriaVertice} onChange={(e) => set('categoriaVertice', e.target.value)} className={inputCls}>
-            {Object.entries(CATEGORIAS).map(([k, v]) => (
-              <option key={k} value={k}>
-                {v}
-              </option>
-            ))}
-          </select>
+          <Desplegable value={d.categoriaVertice} onChange={(v) => set('categoriaVertice', v)} opciones={Object.entries(CATEGORIAS).map(([k, v]) => ({ value: k, label: v }))} />
         </Field>
 
         <Field label="Tipo">
-          <input list={`tipos-${f.id}`} value={d.tipo} onChange={(e) => set('tipo', e.target.value)} className={inputCls} />
-          <datalist id={`tipos-${f.id}`}>
-            {TIPOS.map((t) => (
-              <option key={t} value={t} />
-            ))}
-          </datalist>
+          <Combo value={d.tipo} onChange={(v) => set('tipo', v)} opciones={TIPOS} placeholder="Factura A, Nota de crédito B…" />
         </Field>
         <Field label="Letra">
           <input value={d.letra} maxLength={1} onChange={(e) => set('letra', e.target.value.toUpperCase())} className={inputCls} />
@@ -155,7 +138,7 @@ export function FormFactura({ f, onCerrar }: { f: Factura; onCerrar: () => void 
 
       <div className="space-y-2">
         <div className="flex items-center justify-between">
-          <span className="text-[10px] uppercase tracking-widest text-seco">Percepciones e impuestos</span>
+          <span className="text-[0.625rem] uppercase tracking-widest text-seco">Percepciones e impuestos</span>
           <button onClick={() => set('percepciones', [...d.percepciones, { nombre: '', importe: 0 }])} className="text-xs text-acento hover:text-crema">
             + Agregar percepción
           </button>

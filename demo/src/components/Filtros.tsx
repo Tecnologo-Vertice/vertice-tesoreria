@@ -4,6 +4,7 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useStore } from '../store'
+import { Desplegable } from './ui'
 
 export type Orden = 'NUEVO' | 'VENCIMIENTO' | 'IMPORTE'
 
@@ -123,7 +124,6 @@ export function useFiltro<T>(items: T[], cfg: ConfigFiltro<T>) {
 
   const nuevas = items.filter(esNueva).length
   const activos = !!(f.q || f.empresa || f.proveedor || f.cuenta)
-  const sel = 'bg-botella border border-borde text-crema text-sm rounded-lg px-2 py-2 focus:border-dorado outline-none max-w-[220px]'
 
   const barra: ReactNode = (
     <div className="flex flex-wrap items-center gap-2 bg-pino border border-borde rounded-2xl p-3">
@@ -131,45 +131,50 @@ export function useFiltro<T>(items: T[], cfg: ConfigFiltro<T>) {
         value={f.q}
         onChange={(e) => setF({ ...f, q: e.target.value })}
         placeholder="Buscar por proveedor, CUIT, N° de comprobante, CAE, cuenta…"
-        className="flex-1 min-w-[220px] bg-botella border border-borde text-crema text-sm rounded-lg px-3 py-2 focus:border-dorado outline-none"
+        className="flex-1 min-w-[220px] h-9 bg-botella border border-borde text-crema text-sm rounded-xl px-3 focus:border-acento focus:ring-2 focus:ring-dorado/30 outline-none"
       />
-      <select value={f.empresa} onChange={(e) => setF({ ...f, empresa: e.target.value })} className={sel} title="Empresa">
-        <option value="">Todas las empresas</option>
-        {opciones.empresas.map((id) => (
-          <option key={id} value={id}>
-            {empresaDe(id).corto}
-          </option>
-        ))}
-      </select>
-      <select value={f.proveedor} onChange={(e) => setF({ ...f, proveedor: e.target.value })} className={sel} title="Proveedor">
-        <option value="">Todos los proveedores</option>
-        {opciones.proveedores.map((p) => (
-          <option key={p} value={p}>
-            {p}
-          </option>
-        ))}
-      </select>
+      <Desplegable
+        compacto
+        value={f.empresa}
+        onChange={(v) => setF({ ...f, empresa: v })}
+        title="Empresa"
+        opciones={[{ value: '', label: 'Todas las empresas' }, ...opciones.empresas.map((id) => ({ value: id, label: empresaDe(id).corto }))]}
+      />
+      <Desplegable
+        compacto
+        value={f.proveedor}
+        onChange={(v) => setF({ ...f, proveedor: v })}
+        title="Proveedor"
+        anchoMenu={320}
+        opciones={[{ value: '', label: 'Todos los proveedores' }, ...opciones.proveedores.map((p) => ({ value: p, label: p }))]}
+      />
       {cfg.cuenta && (
-        <select value={f.cuenta} onChange={(e) => setF({ ...f, cuenta: e.target.value })} className={sel} title="Cuenta contable">
-          <option value="">Todas las cuentas</option>
-          {opciones.cuentas.map((c) => (
-            <option key={c} value={c}>
-              {c}
-            </option>
-          ))}
-        </select>
+        <Desplegable
+          compacto
+          value={f.cuenta}
+          onChange={(v) => setF({ ...f, cuenta: v })}
+          title="Cuenta contable"
+          anchoMenu={340}
+          opciones={[{ value: '', label: 'Todas las cuentas' }, ...opciones.cuentas.map((c) => ({ value: c, label: c }))]}
+        />
       )}
-      <select value={f.orden} onChange={(e) => setF({ ...f, orden: e.target.value as Orden })} className={sel} title="Ordenar">
-        <option value="NUEVO">Más nuevo primero</option>
-        {cfg.vencimiento && <option value="VENCIMIENTO">{cfg.etiquetaFecha ?? 'Vencimiento'}</option>}
-        <option value="IMPORTE">Importe mayor</option>
-      </select>
+      <Desplegable
+        compacto
+        value={f.orden}
+        onChange={(v) => setF({ ...f, orden: v as Orden })}
+        title="Ordenar"
+        opciones={[
+          { value: 'NUEVO', label: 'Más nuevo primero' },
+          ...(cfg.vencimiento ? [{ value: 'VENCIMIENTO', label: cfg.etiquetaFecha ?? 'Vencimiento' }] : []),
+          { value: 'IMPORTE', label: 'Importe mayor' },
+        ]}
+      />
       {activos && (
         <button onClick={() => setF({ ...VACIO, orden: f.orden })} className="text-xs text-seco hover:text-acento px-2">
           Limpiar
         </button>
       )}
-      <span className="text-[11px] text-seco ml-auto">
+      <span className="text-[0.6875rem] text-seco ml-auto">
         {visibles.length === items.length ? `${items.length}` : `${visibles.length} de ${items.length}`}
         {nuevas > 0 && <span className="text-sky-300"> · {nuevas} nueva{nuevas === 1 ? '' : 's'} desde tu última visita</span>}
       </span>

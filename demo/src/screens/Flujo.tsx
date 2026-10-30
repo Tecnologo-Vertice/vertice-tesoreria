@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useFlujo, useStore } from '../store'
-import { Badge, Btn, Card, Kpi, Table } from '../components/ui'
+import { Badge, Btn, Card, Desplegable, Kpi, Table } from '../components/ui'
 import { fecha, iso, money, moneyShort, pendiente } from '../lib/format'
 
 export function Flujo() {
@@ -44,14 +44,7 @@ export function Flujo() {
           <p className="text-sm text-seco">Pagos reales, facturas aprobadas por vencer y cheques a acreditar, por cuenta contable. Hoy esto se arma a mano.</p>
         </div>
         <div className="flex gap-2">
-          <select value={empresaId} onChange={(e) => setEmpresaId(e.target.value)} className="bg-pino border border-borde text-crema text-sm rounded-lg px-3 py-2 focus:border-dorado outline-none">
-            <option value="TODAS">Todas las empresas</option>
-            {EMPRESAS.map((e) => (
-              <option key={e.id} value={e.id}>
-                {e.nombre}
-              </option>
-            ))}
-          </select>
+          <Desplegable compacto value={empresaId} onChange={setEmpresaId} opciones={[{ value: 'TODAS', label: 'Todas las empresas' }, ...EMPRESAS.map((e) => ({ value: e.id, label: e.nombre }))]} />
           <Btn variant="secundario" onClick={exportar}>
             Exportar para el Cash Flow
           </Btn>
@@ -68,7 +61,7 @@ export function Flujo() {
       <Card>
         <div className="flex items-center justify-between mb-4">
           <h3 className="font-serif text-xl">Semana a semana</h3>
-          <div className="flex gap-3 text-[10px] uppercase tracking-widest text-seco">
+          <div className="flex gap-3 text-[0.625rem] uppercase tracking-widest text-seco">
             <span className="flex items-center gap-1"><i className="inline-block w-3 h-3 rounded-sm bg-emerald-400/80" /> real</span>
             <span className="flex items-center gap-1"><i className="inline-block w-3 h-3 rounded-sm bg-dorado/80" /> proyectado</span>
             <span className="flex items-center gap-1"><i className="inline-block w-3 h-3 rounded-sm bg-red-400/80" /> vencido</span>
@@ -88,7 +81,7 @@ export function Flujo() {
                   </div>
                   <Barra v={s.cheques} max={max} cls="bg-sky-400/80" titulo={`Cheques ${money(s.cheques)}`} />
                 </div>
-                <p className={`text-[10px] ${esActual ? 'text-acento font-bold' : 'text-seco'}`}>{esActual ? 'esta sem.' : fecha(iso(s.ini)).slice(0, 5)}</p>
+                <p className={`text-[0.625rem] ${esActual ? 'text-acento font-bold' : 'text-seco'}`}>{esActual ? 'esta sem.' : fecha(iso(s.ini)).slice(0, 5)}</p>
               </div>
             )
           })}

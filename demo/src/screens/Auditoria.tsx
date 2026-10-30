@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useStore } from '../store'
-import { Badge, Card, Table } from '../components/ui'
+import { Badge, Card, Desplegable, Table } from '../components/ui'
 import { fechaHora } from '../lib/format'
 
 const ACCIONES: Record<string, { label: string; tone: 'neutro' | 'dorado' | 'rojo' | 'verde' | 'azul' | 'naranja' }> = {
@@ -33,20 +33,8 @@ export function Auditoria() {
         <p className="text-sm text-seco">Registro de solo inserción: quién aprobó, pagó y contabilizó cada cosa. Hoy la hoja no guarda esto.</p>
       </div>
       <div className="flex flex-wrap gap-3">
-        <select value={usuario} onChange={(e) => setUsuario(e.target.value)} className="bg-pino border border-borde text-crema text-sm rounded-lg px-3 py-2 focus:border-dorado outline-none">
-          <option value="TODOS">Todas las personas</option>
-          {usuarios.map((u) => (
-            <option key={u}>{u}</option>
-          ))}
-        </select>
-        <select value={accion} onChange={(e) => setAccion(e.target.value)} className="bg-pino border border-borde text-crema text-sm rounded-lg px-3 py-2 focus:border-dorado outline-none">
-          <option value="TODAS">Todas las acciones</option>
-          {Object.entries(ACCIONES).map(([k, v]) => (
-            <option key={k} value={k}>
-              {v.label}
-            </option>
-          ))}
-        </select>
+        <Desplegable compacto value={usuario} onChange={setUsuario} opciones={[{ value: 'TODOS', label: 'Todas las personas' }, ...usuarios.map((u) => ({ value: u, label: u }))]} />
+        <Desplegable compacto value={accion} onChange={setAccion} opciones={[{ value: 'TODAS', label: 'Todas las acciones' }, ...Object.entries(ACCIONES).map(([k, v]) => ({ value: k, label: v.label }))]} />
         <span className="self-center text-xs text-seco">{lista.length} eventos</span>
       </div>
       <Card className="p-0 overflow-hidden">

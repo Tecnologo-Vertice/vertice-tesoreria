@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { useStore } from '../store'
-import { Badge, Btn, Card, Empty, Field, inputCls, Kpi, SelectorCuenta, TablaDatos, Tabs } from '../components/ui'
+import { Badge, Btn, Card, Desplegable, Empty, Field, Kpi, SelectorCuenta, TablaDatos, Tabs } from '../components/ui'
 import { cuentasOrigenDe, cuentasPara, enLista, sugerirCuentaOrigen } from '../lib/cuentas'
 import { useFiltro } from '../components/Filtros'
 import { fecha, fechaHora, fmtCuit, money, moneyShort, nroComprobante } from '../lib/format'
@@ -130,7 +130,7 @@ function TarjetaPago({ p, empresaNombre, erp, nueva }: { p: Pago; empresaNombre:
         </div>
         <div className="md:text-right shrink-0">
           <p className="font-serif text-[2.2rem] leading-none text-crema">{money(p.importe)}</p>
-          <p className="text-[11px] text-seco mt-1.5">Cargado por {p.cargadoPor} · {fechaHora(p.cargadoEn)}</p>
+          <p className="text-[0.6875rem] text-seco mt-1.5">Cargado por {p.cargadoPor} · {fechaHora(p.cargadoEn)}</p>
         </div>
       </div>
 
@@ -160,21 +160,21 @@ function TarjetaPago({ p, empresaNombre, erp, nueva }: { p: Pago; empresaNombre:
             ]}
           />
           {sinLeer && (
-            <div className="rounded-xl bg-amber-950/40 border border-amber-900 text-amber-200 text-[13px] p-3">
+            <div className="rounded-xl bg-amber-950/40 border border-amber-900 text-amber-200 text-[0.8125rem] p-3">
               La IA no pudo leer el comprobante ({p.estadoExtraccion}). Revisá importe, banco y fecha mirándolo antes de contabilizar.
             </div>
           )}
-          {p.avisoImporte && <div className="rounded-xl bg-amber-950/40 border border-amber-900 text-amber-200 text-[13px] p-3">{p.avisoImporte}</div>}
+          {p.avisoImporte && <div className="rounded-xl bg-amber-950/40 border border-amber-900 text-amber-200 text-[0.8125rem] p-3">{p.avisoImporte}</div>}
           {p.observaciones && (
             <div className="rounded-xl bg-suave border border-borde p-4">
-              <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-seco mb-1">Comentario de {p.cargadoPor}</p>
+              <p className="text-[0.625rem] uppercase tracking-[0.16em] font-bold text-seco mb-1">Comentario de {p.cargadoPor}</p>
               <p className="italic text-crema">"{p.observaciones}"</p>
             </div>
           )}
         </div>
 
         <div className="rounded-xl border border-borde bg-suave/40 p-5 space-y-4 self-start w-full">
-          <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-seco">{hecho ? 'Cómo quedó' : erp === 'XUBIO' ? 'Contabilizar en Xubio' : 'Carga en Ralpharma'}</p>
+          <p className="text-[0.625rem] uppercase tracking-[0.16em] font-bold text-seco">{hecho ? 'Cómo quedó' : erp === 'XUBIO' ? 'Contabilizar en Xubio' : 'Carga en Ralpharma'}</p>
           {!hecho && !puedeContabilizar && <p className="text-sm text-seco">Lo contabiliza Administración.</p>}
           {!hecho && puedeContabilizar && erp === 'XUBIO' && (
             <>
@@ -183,17 +183,16 @@ function TarjetaPago({ p, empresaNombre, erp, nueva }: { p: Pago; empresaNombre:
                 marcado={!origen ? 'falta' : sugeridaOrigen && origen === sugeridaOrigen.cuenta ? 'ia' : undefined}
                 hint={sugeridaOrigen && origen === sugeridaOrigen.cuenta ? sugeridaOrigen.nota : origenes.length ? undefined : 'No hay cuentas de origen de esta empresa: falta copiar Xubio_Cuentas_Origen'}
               >
-                <select value={origen} onChange={(e) => setOrigen(e.target.value)} className={inputCls}>
-                  <option value="">Elegir…</option>
-                  {p.cuentaOrigen && !origenes.some((c) => c.nombre === p.cuentaOrigen) && <option value={p.cuentaOrigen}>{p.cuentaOrigen}</option>}
-                  {origenes.map((c) => (
-                    <option key={c.id} value={c.nombre}>
-                      {c.nombre}
-                    </option>
-                  ))}
-                </select>
+                <Desplegable
+                  value={origen}
+                  onChange={setOrigen}
+                  opciones={[
+                    ...(p.cuentaOrigen && !origenes.some((c) => c.nombre === p.cuentaOrigen) ? [{ value: p.cuentaOrigen, label: p.cuentaOrigen, detalle: 'La que vino en la hoja' }] : []),
+                    ...origenes.map((c) => ({ value: c.nombre, label: c.nombre, detalle: sugeridaOrigen?.cuenta === c.nombre ? 'Sugerida' : undefined })),
+                  ]}
+                />
               </Field>
-              {echeq && <p className="text-[12px] text-amber-300 leading-snug">E-cheq: Xubio no deja crear esta orden de pago por API. En seco se verifica igual; en real hay que cargarla a mano.</p>}
+              {echeq && <p className="text-[0.75rem] text-amber-300 leading-snug">E-cheq: Xubio no deja crear esta orden de pago por API. En seco se verifica igual; en real hay que cargarla a mano.</p>}
               <Field
                 label="Cuenta contable"
                 marcado={!cuenta ? 'falta' : p.sugerenciaOrigen && !p.cuentaContable ? 'ia' : undefined}
@@ -202,16 +201,10 @@ function TarjetaPago({ p, empresaNombre, erp, nueva }: { p: Pago; empresaNombre:
                 <SelectorCuenta value={cuenta} onChange={setCuenta} opciones={planEmpresa} />
               </Field>
               <Field label="Forma de carga en Xubio" hint={FORMAS.find((f) => f.id === forma)?.desc}>
-                <select value={forma} onChange={(e) => setForma(e.target.value as FormaCargaXubio)} className={inputCls}>
-                  {FORMAS.map((f) => (
-                    <option key={f.id} value={f.id}>
-                      {f.label}
-                    </option>
-                  ))}
-                </select>
+                <Desplegable value={forma} onChange={(v) => setForma(v as FormaCargaXubio)} opciones={FORMAS.map((f) => ({ value: f.id, label: f.label }))} />
               </Field>
               <div className="flex items-center justify-end gap-3 pt-1">
-                {falta && <p className="text-[12px] text-red-300">{falta}</p>}
+                {falta && <p className="text-[0.75rem] text-red-300">{falta}</p>}
                 <Btn disabled={!!falta || enviando} onClick={contabilizar} title={falta}>
                   {enviando ? 'Registrando en Xubio…' : 'Contabilizar en Xubio'}
                 </Btn>
@@ -226,7 +219,7 @@ function TarjetaPago({ p, empresaNombre, erp, nueva }: { p: Pago; empresaNombre:
               </Btn>
             </>
           )}
-          {(hecho || p.estado === 'REVISADO') && p.detalleXubio && <p className="text-[13px] text-seco leading-snug">{p.detalleXubio}</p>}
+          {(hecho || p.estado === 'REVISADO') && p.detalleXubio && <p className="text-[0.8125rem] text-seco leading-snug">{p.detalleXubio}</p>}
           {hecho && (
             <TablaDatos
               filas={[

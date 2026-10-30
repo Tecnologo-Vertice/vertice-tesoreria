@@ -3,10 +3,11 @@
   <head>
     <meta charset="UTF-8" />
     <script>
-      // Modo claro u oscuro antes de pintar (sin parpadeo): lo elegido, o el del sistema.
+      // Modo claro u oscuro y tamaño de letra antes de pintar (sin parpadeo): lo elegido, o el del sistema.
       try {
         var t = localStorage.getItem('tema') || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')
         document.documentElement.dataset.theme = t
+        document.documentElement.dataset.letra = localStorage.getItem('letra') || 'normal'
       } catch (e) {}
     </script>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
