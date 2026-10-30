@@ -6,7 +6,7 @@
  * "Facturas automatizadas": Facturas, Facturas_Aprobadas, Pagos y, una vez por
  * hora, los catálogos. El sistema nuevo traduce las filas (lib/espejo.ts).
  *
- * SEGURIDAD: este script SOLO LEE la hoja real (openById + getValues). No escribe,
+ * SEGURIDAD: este script SOLO LEE la hoja real (API de Sheets, values.get). No escribe,
  * no borra, no mueve filas, no lee Gmail ni Drive y no habla con Xubio.
  * Además, el manifiesto (PuenteHojas.appsscript.json → appsscript.json del proyecto)
  * pide a Google solo el permiso "spreadsheets.readonly": aunque el código tuviera
@@ -47,31 +47,42 @@ function propsPuente_() {
   };
 }
 
-/** Celda → valor que viaja en JSON. Fechas como texto (aaaa-mm-dd o aaaa-mm-dd HH:mm, hora de la hoja). */
-function valorPuente_(v, zona) {
-  if (v instanceof Date) {
-    if (isNaN(v.getTime())) return "";
-    var conHora = v.getHours() !== 0 || v.getMinutes() !== 0;
-    return Utilities.formatDate(v, zona, conHora ? "yyyy-MM-dd HH:mm" : "yyyy-MM-dd");
-  }
-  return v;
+/**
+ * Lectura por la API de Google Sheets con el permiso spreadsheets.readonly (SpreadsheetApp exige el
+ * permiso completo de lectura y escritura, aunque solo se lea). Números sin formato y fechas como
+ * número de serie: no dependen del formato de cada celda (Facturas_Aprobadas usa mm/dd/aaaa).
+ */
+function apiHojas_(cfg, ruta) {
+  var resp = UrlFetchApp.fetch("https://sheets.googleapis.com/v4/spreadsheets/" + cfg.hoja + ruta, {
+    headers: { Authorization: "Bearer " + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true
+  });
+  return { code: resp.getResponseCode(), texto: resp.getContentText() };
+}
+
+function nombreHoja_(cfg) {
+  var r = apiHojas_(cfg, "?fields=properties.title");
+  if (r.code !== 200) throw new Error("No se pudo abrir la hoja " + cfg.hoja + " (" + r.code + "): " + r.texto.slice(0, 200));
+  return JSON.parse(r.texto).properties.title;
 }
 
 /** Filas de una pestaña como objetos { encabezado: valor, _fila }. Salta filas vacías y columnas sin encabezado. */
-function filasComoObjetos_(ss, nombre) {
-  var sh = ss.getSheetByName(nombre);
-  if (!sh || sh.getLastRow() < 2) return [];
-  var datos = sh.getDataRange().getValues(); // SOLO LECTURA
-  var zona = ss.getSpreadsheetTimeZone();
+function filasComoObjetos_(cfg, nombre) {
+  var r = apiHojas_(cfg, "/values/" + encodeURIComponent("'" + nombre + "'") +
+    "?valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=SERIAL_NUMBER");
+  if (r.code === 400 && /Unable to parse range/i.test(r.texto)) return []; // la pestaña no existe
+  if (r.code !== 200) throw new Error("No se pudo leer la pestaña " + nombre + " (" + r.code + "): " + r.texto.slice(0, 200));
+  var datos = JSON.parse(r.texto).values || [];
+  if (datos.length < 2) return [];
   var h = datos[0].map(function (x) { return String(x).trim(); });
   var salida = [];
   for (var i = 1; i < datos.length; i++) {
-    var fila = datos[i];
-    if (!fila.some(function (c) { return c !== "" && c !== null; })) continue;
+    var fila = datos[i] || [];
+    if (!fila.some(function (c) { return c !== "" && c !== null && c !== undefined; })) continue;
     var o = { _fila: i + 1 };
     for (var j = 0; j < h.length; j++) {
       if (!h[j] || o.hasOwnProperty(h[j])) continue; // encabezado vacío o repetido: se toma el primero
-      o[h[j]] = valorPuente_(fila[j], zona);
+      o[h[j]] = fila[j] === undefined ? "" : fila[j];
     }
     salida.push(o);
   }
@@ -107,21 +118,21 @@ function espejarHojaReal() {
   try {
     var cfg = propsPuente_();
     if (!cfg.url || !cfg.token) throw new Error("Faltan SISTEMA_URL o INGESTA_TOKEN en las propiedades del script.");
-    var ss = SpreadsheetApp.openById(cfg.hoja);
+    nombreHoja_(cfg); // falla rápido si no hay acceso a la hoja
     var log = [];
 
     var ultimaCat = Number(cfg.props.getProperty("PUENTE_ULTIMOS_CATALOGOS") || 0);
     if (Date.now() - ultimaCat > CATALOGOS_CADA_MIN * 60000) {
       var cat = {};
-      Object.keys(PESTANAS_CATALOGO).forEach(function (k) { cat[k] = filasComoObjetos_(ss, PESTANAS_CATALOGO[k]); });
+      Object.keys(PESTANAS_CATALOGO).forEach(function (k) { cat[k] = filasComoObjetos_(cfg, PESTANAS_CATALOGO[k]); });
       var rc = postPuente_(cfg, { tipo: "catalogos", catalogos: cat }, true);
       cfg.props.setProperty("PUENTE_ULTIMOS_CATALOGOS", String(Date.now()));
       log.push("Catálogos: " + JSON.stringify({ cuentas: rc.cuentas, origen: rc.origen, porEmpresa: rc.porEmpresa, emails: rc.emails, productos: rc.productos }));
     }
 
-    log.push(enviarPestanaEnLotes_(cfg, "facturas", "Facturas", filasComoObjetos_(ss, "Facturas")));
-    log.push(enviarPestanaEnLotes_(cfg, "facturas", "Facturas_Aprobadas", filasComoObjetos_(ss, "Facturas_Aprobadas")));
-    log.push(enviarPestanaEnLotes_(cfg, "pagos", "Pagos", filasComoObjetos_(ss, "Pagos")));
+    log.push(enviarPestanaEnLotes_(cfg, "facturas", "Facturas", filasComoObjetos_(cfg, "Facturas")));
+    log.push(enviarPestanaEnLotes_(cfg, "facturas", "Facturas_Aprobadas", filasComoObjetos_(cfg, "Facturas_Aprobadas")));
+    log.push(enviarPestanaEnLotes_(cfg, "pagos", "Pagos", filasComoObjetos_(cfg, "Pagos")));
     Logger.log(log.join("\n"));
     return log.join("\n");
   } finally {
@@ -138,12 +149,12 @@ function espejarCatalogosAhora() {
 /** No manda nada: muestra cuántas filas copiaría y cómo viaja una fila de cada pestaña. */
 function probarPuente() {
   var cfg = propsPuente_();
-  var ss = SpreadsheetApp.openById(cfg.hoja);
-  var log = ["Hoja: " + ss.getName() + " (" + cfg.hoja + ")",
+
+  var log = ["Hoja: " + nombreHoja_(cfg) + " (" + cfg.hoja + ")",
     "SISTEMA_URL: " + (cfg.url || "FALTA"), "INGESTA_TOKEN: " + (cfg.token ? "cargado" : "FALTA")];
   ["Facturas", "Facturas_Aprobadas", "Pagos"].concat(Object.keys(PESTANAS_CATALOGO).map(function (k) { return PESTANAS_CATALOGO[k]; }))
     .forEach(function (n) {
-      var f = filasComoObjetos_(ss, n);
+      var f = filasComoObjetos_(cfg, n);
       log.push(n + ": " + f.length + " filas" + (f.length ? " · ejemplo: " + JSON.stringify(f[f.length - 1]).slice(0, 400) : ""));
     });
   Logger.log(log.join("\n"));

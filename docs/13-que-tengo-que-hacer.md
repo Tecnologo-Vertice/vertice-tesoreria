@@ -41,12 +41,12 @@ La versión nueva se publica sola cuando Claude haga el commit y el push (al ter
 
 ## 3 · Darle permiso a Claude para crear el puente (1 min)
 
-- [ ] En la terminal de VS Code:
+- [x] En la terminal de VS Code:
   ```powershell
   clasp login
   ```
   Se abre el navegador: elegí **tecnologia@verticebi.com** → Permitir.
-- [ ] Avisale a Claude "listo el clasp". Claude crea el proyecto **"Puente sistema nuevo"** (aparte, no toca producción ni el de Santi), sube el código y te pasa el link.
+- [x] Avisale a Claude "listo el clasp". ✅ 29/10: proyecto creado → https://script.google.com/d/1-xqFG1inPKbfK9Mm9olbBcFtQRVAHnXKDGsMzytQq_pScRxFR3Rl28EC/edit (scriptId 1-xqFG1inPKbfK9Mm9olbBcFtQRVAHnXKDGsMzytQq_pScRxFR3Rl28EC). Claude crea el proyecto **"Puente sistema nuevo"** (aparte, no toca producción ni el de Santi), sube el código y te pasa el link.
 
 ## 4 · Configurar el puente (3 min)
 

@@ -55,8 +55,19 @@ export function importe(v: unknown): number {
 
 const redondear = (n: number) => Math.round(n * 100) / 100
 
-/** Fecha ISO (aaaa-mm-dd) desde aaaa-mm-dd[...] o dd/mm/aaaa. null si no hay fecha válida. */
+/**
+ * Fecha de una celda con formato de fecha, como la manda el puente: número de serie de la planilla
+ * (días desde el 30/12/1899, la fracción es la hora). Así no importa si la celda muestra 2026-10-09
+ * o 10/9/2026 (Facturas_Aprobadas tiene formato de EE.UU.). Devuelve "aaaa-mm-ddTHH:MM" en hora local.
+ */
+function desdeSerial(v: number): string | null {
+  if (!(v > 20000 && v < 80000)) return null
+  return new Date(Math.round((v - 25569) * 86400000)).toISOString().slice(0, 16)
+}
+
+/** Fecha ISO (aaaa-mm-dd) desde número de serie, aaaa-mm-dd[...] o dd/mm/aaaa (texto escrito por producción). null si no hay fecha válida. */
 export function fecha(v: unknown): string | null {
+  if (typeof v === 'number') return desdeSerial(v)?.slice(0, 10) ?? null
   const s = String(v ?? '').trim()
   let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/)
   if (m) return `${m[1]}-${m[2]}-${m[3]}`
@@ -71,6 +82,10 @@ export function fecha(v: unknown): string | null {
 
 /** Fecha y hora de la hoja ("2026-10-28 14:05", hora de Buenos Aires) como timestamp con zona. */
 export function fechaHora(v: unknown): string | null {
+  if (typeof v === 'number') {
+    const d = desdeSerial(v)
+    return d ? `${d}:00-03:00` : null
+  }
   const s = String(v ?? '').trim()
   const d = fecha(s)
   if (!d) return null
