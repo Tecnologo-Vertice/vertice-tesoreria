@@ -83,6 +83,11 @@ r = facturaDesdeFila({ ...base, TIPO: 'Nota de Crédito A', SALDO_NC: 100000, TO
 check('nota de crédito aprobada: no se paga, conserva su saldo', r.ok && r.dato.estado === 'PAGADA' && r.dato.saldo_nc === 100000)
 r = facturaDesdeFila({ ...base, PERCEPCIONES_JSON: '[{"importe":3000},{"importe":"1500"}]' }, 'Facturas', 2)
 check('percepciones sumadas desde PERCEPCIONES_JSON', r.ok && r.dato.percepciones === 4500)
+// Fila 24 de la hoja real: alquiler sin tipo, aprobado y pagado, que Xubio omitió
+r = facturaDesdeFila({ ...base, RECEPTOR: 'INDIA ADV S.A.', CUIT_PROVEEDOR: 30710100337, TIPO: '', LETRA: 'OTRA', NUMERO: '00001-003336', ESTADO_VALIDACION: 'ERROR',
+  MOTIVO_VALIDACION: 'Comprobante sin TIPO válido. No se carga como factura de compra.', ESTADO_XUBIO: "OMITIDA: TIPO '' no válido" }, 'Facturas', 24)
+check('sin tipo pero con CUIT y número: entra como "Sin tipo" con la validación en error', r.ok && r.dato.tipo === 'Sin tipo' && r.dato.validacion_ok === false && r.dato.estado === 'PAGADA' && r.dato.estado_xubio === 'ERROR')
+check('CUIT que viene como número de la planilla', r.ok && r.dato.cuit_proveedor === '30710100337')
 r = facturaDesdeFila({ ...base, RECEPTOR: 'SORAIRES SANTACRUZ MARIA CRISTINA' }, 'Facturas', 2)
 check('receptor desconocido: se omite con motivo', !r.ok && r.motivo.includes('Receptor'))
 r = facturaDesdeFila({ ...base, CUIT_PROVEEDOR: '20-1704' }, 'Facturas', 2)

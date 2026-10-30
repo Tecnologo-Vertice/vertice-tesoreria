@@ -308,3 +308,21 @@ Para frenarlo: `borrarActivadorPuente()`. No toca ni el proyecto de producción 
 **Pruebas:** `npm test` = 28 IA + 23 Xubio + 80 espejo y cuentas + 94 base = 225.
 
 **Siguiente (paso 3):** escribir en las hojas DEV lo que hace el sistema nuevo (estados de facturas, `Pagos`, `CHEQUES EMITIDOS`, `POSICIÓN DIARIA`).
+
+### Primera copia real (30/10/2026)
+
+Catálogos: 1.339 cuentas, 22 cuentas de origen, 570 proveedores por empresa, 24 mails, 109 productos. Facturas: 493 + 40 del historial. Pagos: 519.
+
+Omitidas a propósito (se ven en la app al pasar el mouse por "filas sin copiar"):
+
+| Qué | Cuántas | Por qué |
+|---|---|---|
+| Pagos anulados | 25 | No existen para el sistema |
+| Receptor vacío | 14 | Archivos que la IA no pudo leer: sin receptor, CUIT, tipo ni número. En producción quedan como "Comprobante sin TIPO válido" |
+| CUIT vacío | 10 | Sin CUIT ni número (por ejemplo, consorcio "S/N"); producción tampoco los puede subir a Xubio |
+| Receptor de afuera del grupo | 7 | "Consumidor Final", "Dax", personas: producción los muestra como "Otros" |
+| Pagos sin empresa | 10 | Lecturas viejas de agosto sin importe ("S/D") o pagos de facturas a nombre de personas |
+
+Las 4 facturas "sin tipo" que tienen CUIT y número (aprobadas y pagadas en producción) entran como tipo "Sin tipo" con la validación en error.
+
+Al copiar se encontró y corrigió: `SpreadsheetApp` exige el permiso completo de hojas (el puente lee por la API de Sheets con solo lectura) y `Facturas_Aprobadas` muestra las fechas como mm/dd/aaaa (el puente las pide como número de serie).

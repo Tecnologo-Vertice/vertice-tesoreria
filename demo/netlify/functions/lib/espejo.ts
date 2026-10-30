@@ -169,8 +169,9 @@ export function facturaDesdeFila(f: FilaHoja, hoja: HojaFacturas, fila: number):
   if (!nro) return { ok: false, motivo: `Número de comprobante ilegible: "${String(f.NUMERO ?? '')}"` }
   const fechaEmision = fecha(f.FECHA)
   if (!fechaEmision) return { ok: false, motivo: `Sin fecha de emisión` }
-  const tipo = texto(f.TIPO)
-  if (!tipo) return { ok: false, motivo: 'Sin tipo de comprobante' }
+  // Sin tipo (la IA no lo reconoció): producción la guarda igual con "Comprobante sin TIPO válido" y el
+  // equipo la aprueba y la paga. Entra como "Sin tipo", con la validación en error, para que se vea.
+  const tipo = texto(f.TIPO) ?? 'Sin tipo'
 
   const total = redondear(Math.abs(importe(f.TOTAL)))
   const nc = esNotaDeCredito(tipo)
