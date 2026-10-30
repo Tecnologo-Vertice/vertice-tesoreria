@@ -111,6 +111,13 @@ function enviarPestanaEnLotes_(cfg, tipo, hoja, filas) {
     tot.sin_cambios + " sin cambios · " + tot.omitidas + " omitidas";
 }
 
+/** Misma factura: CUIT del proveedor + tipo + punto de venta y número (sin ceros a la izquierda). */
+function claveFactura_(f) {
+  var grupos = String(f.NUMERO || "").match(/\d+/g) || [];
+  var nro = grupos.slice(-2).map(function (g) { return String(parseInt(g, 10)); }).join("-");
+  return String(f.CUIT_PROVEEDOR || "").replace(/\D/g, "") + "|" + String(f.TIPO || "").trim().toLowerCase() + "|" + nro;
+}
+
 /** Lo que corre el activador. Facturas antes que Pagos: los pagos se vinculan con facturas ya copiadas. */
 function espejarHojaReal() {
   var lock = LockService.getScriptLock();
@@ -130,8 +137,16 @@ function espejarHojaReal() {
       log.push("Catálogos: " + JSON.stringify({ cuentas: rc.cuentas, origen: rc.origen, porEmpresa: rc.porEmpresa, emails: rc.emails, productos: rc.productos }));
     }
 
-    log.push(enviarPestanaEnLotes_(cfg, "facturas", "Facturas", filasComoObjetos_(cfg, "Facturas")));
-    log.push(enviarPestanaEnLotes_(cfg, "facturas", "Facturas_Aprobadas", filasComoObjetos_(cfg, "Facturas_Aprobadas")));
+    // Una factura que ya pasó al historial manda: si quedó también en Facturas (duplicada en producción),
+    // esa fila se saltea. Si no, las dos versiones se pisarían una a la otra en cada corrida.
+    var aprobadas = filasComoObjetos_(cfg, "Facturas_Aprobadas");
+    var enHistorial = {};
+    aprobadas.forEach(function (f) { enHistorial[claveFactura_(f)] = true; });
+    var facturas = filasComoObjetos_(cfg, "Facturas");
+    var pendientes = facturas.filter(function (f) { return !enHistorial[claveFactura_(f)]; });
+    log.push(enviarPestanaEnLotes_(cfg, "facturas", "Facturas", pendientes) +
+      (facturas.length - pendientes.length ? " · " + (facturas.length - pendientes.length) + " salteadas (ya están en el historial)" : ""));
+    log.push(enviarPestanaEnLotes_(cfg, "facturas", "Facturas_Aprobadas", aprobadas));
     log.push(enviarPestanaEnLotes_(cfg, "pagos", "Pagos", filasComoObjetos_(cfg, "Pagos")));
     Logger.log(log.join("\n"));
     return log.join("\n");
