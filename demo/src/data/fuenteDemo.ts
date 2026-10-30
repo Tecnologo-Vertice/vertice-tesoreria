@@ -2,7 +2,7 @@
 // Toda la lógica de negocio de acá tiene su equivalente en supabase/migrations/0003_funciones.sql.
 
 import type { Auditoria, ComprobanteEjemplo, Documento, Factura, LecturaComprobante, Pago, Usuario } from '../types'
-import type { Datos, DatosAprobacion, DatosContabilizacion, Fuente, NuevoPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
+import type { Datos, DatosAprobacion, DatosContabilizacion, DatosEdicion, Fuente, ResultadoEdicion, NuevoPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
 import {
   auditoriaInicial,
   comprobantesEjemplo,
@@ -80,7 +80,7 @@ export class FuenteDemo implements Fuente {
       pagos: this.e.pagos,
       auditoria: this.e.auditoria,
       documentos: this.e.documentos,
-      catalogos: { empresas: EMPRESAS, proveedores: PROVEEDORES, cuentasOrigen: CUENTAS_ORIGEN, planCuentas: PLAN_CUENTAS, planPorEmpresa: {}, productos: [] },
+      catalogos: { empresas: EMPRESAS, proveedores: PROVEEDORES, cuentasOrigen: CUENTAS_ORIGEN, planCuentas: PLAN_CUENTAS, planPorEmpresa: {}, productos: [], codigosProducto: {} },
       espejo: [],
     }
   }
@@ -114,6 +114,30 @@ export class FuenteDemo implements Fuente {
     this.e.facturas = this.e.facturas.map((f): Factura => (f.id === id ? { ...f, estado: 'PENDIENTE_APROBACION', validacionOk: true, motivoValidacion: undefined } : f))
     this.log(u, { accion: 'CORRECCION', entidad: 'FACTURA', entidadId: id, detalle: 'Datos corregidos a mano; vuelve a pendientes' })
     this.commit()
+  }
+
+  /** Misma validación que editar_factura en SQL. En la demo el proveedor no cambia (los CUIT son ficticios). */
+  async editarFactura(id: string, d: DatosEdicion, u: Usuario): Promise<ResultadoEdicion> {
+    const f = this.e.facturas.find((x) => x.id === id)
+    if (!f) throw new Error('Factura inexistente')
+    if (f.pagado > 0 || !['PENDIENTE_APROBACION', 'ERROR', 'PARA_PAGAR'].includes(f.estado)) throw new Error('Solo se editan facturas sin pagos')
+    const percepciones = d.percepciones.reduce((a, p) => a + (Number(p.importe) || 0), 0)
+    const dif = Math.round((d.total - (d.neto + d.iva + d.exento + percepciones)) * 100) / 100
+    const cae = d.cae.replace(/\D/g, '')
+    const motivo = !d.tipo || d.tipo === 'Sin tipo' ? 'Comprobante sin tipo válido' : d.total <= 0 ? 'El total tiene que ser mayor a cero'
+      : cae.length !== 14 ? `El CAE tiene que tener 14 dígitos (tiene ${cae.length})` : Math.abs(dif) >= 1 ? `Descuadre de ${Math.abs(dif)} entre el total y neto + IVA + exento + percepciones` : null
+    const estado = f.estado === 'PARA_PAGAR' ? 'PARA_PAGAR' : motivo ? 'ERROR' : 'PENDIENTE_APROBACION'
+    this.e.facturas = this.e.facturas.map((x): Factura =>
+      x.id === id
+        ? { ...x, empresaId: d.empresaId, tipo: d.tipo as Factura['tipo'], letra: d.letra, puntoVenta: d.puntoVenta, numero: d.numero, fecha: d.fecha, vencimiento: d.vencimiento || d.fecha,
+            moneda: d.moneda, cotizacion: d.cotizacion, neto: d.neto, iva: d.iva, exento: d.exento, percepciones, percepcionesJson: d.percepciones, total: d.total, cae, caeVencimiento: d.caeVencimiento,
+            categoriaVertice: (d.categoriaVertice || x.categoriaVertice) as Factura['categoriaVertice'], cuentaContable: d.cuentaContable || x.cuentaContable, codigoProducto: d.codigoProducto || x.codigoProducto,
+            validacionOk: !motivo, motivoValidacion: motivo ?? undefined, estado }
+        : x,
+    )
+    this.log(u, { accion: 'EDICION', entidad: 'FACTURA', entidadId: id, detalle: 'Datos corregidos a mano' + (motivo ? ` · queda en excepciones: ${motivo}` : '') })
+    this.commit()
+    return { estado, motivo }
   }
 
   async registrarPago(d: NuevoPago, u: Usuario): Promise<Pago> {

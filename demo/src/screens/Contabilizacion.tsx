@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useStore } from '../store'
 import { Badge, Btn, Card, Empty, Field, inputCls, Kpi, SelectorCuenta, Tabs } from '../components/ui'
 import { cuentasOrigenDe, cuentasPara, enLista, sugerirCuentaOrigen } from '../lib/cuentas'
+import { useFiltro } from '../components/Filtros'
 import { fecha, fechaHora, money, moneyShort, nroComprobante } from '../lib/format'
 import { puede } from '../lib/permisos'
 import type { FormaCargaXubio, Pago } from '../types'
@@ -13,13 +14,26 @@ const FORMAS: { id: FormaCargaXubio; label: string; desc: string }[] = [
 ]
 
 export function Contabilizacion() {
-  const { pagos, empresa } = useStore()
+  const { pagos, empresa, proveedor } = useStore()
   const [tab, setTab] = useState<'PENDIENTES' | 'HECHOS'>('PENDIENTES')
   const pendientes = pagos.filter((p) => p.estado === 'CARGADO' || p.estado === 'REVISADO').sort((a, b) => b.cargadoEn.localeCompare(a.cargadoEn))
   const ralpharma = pagos.filter((p) => p.estado === 'PENDIENTE_RALPHARMA')
   const hechos = pagos.filter((p) => p.estado === 'CONTABILIZADO' || p.estado === 'CONCILIADO').sort((a, b) => (b.contabilizadoEn ?? '').localeCompare(a.contabilizadoEn ?? ''))
   const sinCuenta = pendientes.filter((p) => !p.cuentaContable).length
   const lista = tab === 'PENDIENTES' ? pendientes : hechos
+  const filtro = useFiltro(lista, {
+    clave: 'contabilizacion',
+    texto: (p) =>
+      [proveedor(p.proveedorId)?.nombre, proveedor(p.proveedorId)?.cuit, p.proveedorDestino, p.descripcion, p.observaciones, p.numeroCheque, p.cuentaOrigen, p.bancoOrigen,
+        p.cuentaContable, p.medio, empresa(p.empresaId).nombre, p.importe.toFixed(2)].join(' '),
+    empresa: (p) => p.empresaId,
+    proveedor: (p) => proveedor(p.proveedorId)?.nombre ?? p.proveedorDestino ?? '',
+    cuenta: (p) => p.cuentaContable,
+    alta: (p) => p.cargadoEn,
+    vencimiento: (p) => p.fecha,
+    etiquetaFecha: 'Fecha del pago',
+    importe: (p) => p.importe,
+  })
 
   return (
     <div className="space-y-6">
@@ -46,17 +60,19 @@ export function Contabilizacion() {
         ]}
       />
 
+      {lista.length > 0 && filtro.barra}
       {lista.length === 0 && <Empty texto="Bandeja vacía." />}
+      {lista.length > 0 && filtro.visibles.length === 0 && <Empty texto="Nada coincide con la búsqueda o los filtros." />}
       <div className="space-y-4">
-        {lista.map((p) => (
-          <TarjetaPago key={p.id} p={p} empresaNombre={empresa(p.empresaId).corto} erp={empresa(p.empresaId).erp} />
+        {filtro.visibles.map((p) => (
+          <TarjetaPago key={p.id} p={p} empresaNombre={empresa(p.empresaId).corto} erp={empresa(p.empresaId).erp} nueva={filtro.esNueva(p)} />
         ))}
       </div>
     </div>
   )
 }
 
-function TarjetaPago({ p, empresaNombre, erp }: { p: Pago; empresaNombre: string; erp: string }) {
+function TarjetaPago({ p, empresaNombre, erp, nueva }: { p: Pago; empresaNombre: string; erp: string; nueva?: boolean }) {
   const { facturas, proveedor, catalogos, usuario, contabilizarPago, marcarRalpharma, abrirArchivo } = useStore()
   const puedeContabilizar = puede(usuario.rol, 'CONTABILIZAR')
   const planEmpresa = cuentasPara(catalogos, p.empresaId)
@@ -86,6 +102,7 @@ function TarjetaPago({ p, empresaNombre, erp }: { p: Pago; empresaNombre: string
       <div className="flex flex-col lg:flex-row gap-5">
         <div className="flex-1 min-w-0 space-y-3">
           <div className="flex flex-wrap items-center gap-2">
+            {nueva && <Badge tone="azul">Nuevo</Badge>}
             <Badge tone="dorado">{empresaNombre}</Badge>
             <Badge>{p.medio}</Badge>
             {p.gestion === 'HOJA' && <Badge title="Copiado del dashboard de producción. Si lo contabilizás acá, la copia ya no lo pisa.">De la hoja</Badge>}

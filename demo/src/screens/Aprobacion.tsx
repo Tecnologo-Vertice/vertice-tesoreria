@@ -3,6 +3,8 @@ import { useStore } from '../store'
 import { CATEGORIAS } from '../data/demo'
 import { Badge, BadgeVencimiento, Btn, Card, Empty, Field, inputCls, SelectorCuenta, Tabs } from '../components/ui'
 import { cuentasFactura, enLista } from '../lib/cuentas'
+import { useFiltro } from '../components/Filtros'
+import { FormFactura } from '../components/FormFactura'
 import { fecha, fechaHora, fmtCuit, money, nroComprobante } from '../lib/format'
 import { puede } from '../lib/permisos'
 import type { Documento, Factura, MetodoPago } from '../types'
@@ -20,7 +22,7 @@ const METODOS: { id: MetodoPago; label: string }[] = [
 const enEntrada = (d: Documento) => d.estado === 'PENDIENTE' || d.estado === 'LEYENDO' || d.estado === 'ERROR' || d.estado === 'DUPLICADO'
 
 export function Aprobacion() {
-  const { modo, facturas, documentos, usuario, toast, subirFactura, leerAhora } = useStore()
+  const { modo, facturas, documentos, usuario, toast, subirFactura, leerAhora, proveedor, empresa } = useStore()
   const [tab, setTab] = useState<'PENDIENTES' | 'ERRORES' | 'ENTRADA' | 'HISTORIAL'>('PENDIENTES')
   const [subiendo, setSubiendo] = useState(false)
   const inputArchivo = useRef<HTMLInputElement>(null)
@@ -32,6 +34,19 @@ export function Aprobacion() {
   const puedeSubir = puede(usuario.rol, 'APROBAR') || puede(usuario.rol, 'PAGAR')
 
   const lista = tab === 'PENDIENTES' ? pendientes : tab === 'ERRORES' ? errores : historial
+  const filtro = useFiltro(lista, {
+    clave: 'aprobacion',
+    texto: (f) => {
+      const p = proveedor(f.proveedorId)
+      return [p?.nombre, p?.cuit, f.tipo, nroComprobante(f.puntoVenta, f.numero), f.cae, f.cuentaContable, empresa(f.empresaId).nombre, f.total.toFixed(2)].join(' ')
+    },
+    empresa: (f) => f.empresaId,
+    proveedor: (f) => proveedor(f.proveedorId)?.nombre ?? '',
+    cuenta: (f) => f.cuentaContable,
+    alta: (f) => f.creadoEn ?? f.fecha,
+    vencimiento: (f) => f.vencimiento,
+    importe: (f) => f.total,
+  })
 
   async function elegir(archivo: File) {
     if (archivo.size > 4 * 1024 * 1024) return toast('El archivo pesa más de 4 MB. Mandá un PDF más liviano o una foto.', 'error')
@@ -98,10 +113,12 @@ export function Aprobacion() {
         </div>
       ) : (
         <>
+          {lista.length > 0 && filtro.barra}
           {lista.length === 0 && <Empty texto="Nada pendiente en esta bandeja." />}
+          {lista.length > 0 && filtro.visibles.length === 0 && <Empty texto="Nada coincide con la búsqueda o los filtros." />}
           <div className="space-y-4">
-            {lista.map((f) => (
-              <TarjetaFactura key={f.id} f={f} modo={tab} />
+            {filtro.visibles.map((f) => (
+              <TarjetaFactura key={f.id} f={f} modo={tab} nueva={filtro.esNueva(f)} />
             ))}
           </div>
         </>
@@ -182,8 +199,8 @@ function TarjetaDocumento({ d }: { d: Documento }) {
   )
 }
 
-function TarjetaFactura({ f, modo }: { f: Factura; modo: 'PENDIENTES' | 'ERRORES' | 'HISTORIAL' }) {
-  const { modo: modoApp, proveedor, empresa, catalogos, usuario, aprobarFactura, rechazarFactura, corregirFactura, abrirArchivo } = useStore()
+function TarjetaFactura({ f, modo, nueva }: { f: Factura; modo: 'PENDIENTES' | 'ERRORES' | 'HISTORIAL'; nueva?: boolean }) {
+  const { modo: modoApp, proveedor, empresa, catalogos, usuario, aprobarFactura, rechazarFactura, abrirArchivo } = useStore()
   const opcionesCuenta = cuentasFactura(catalogos, f.empresaId)
   const p = proveedor(f.proveedorId) ?? { nombre: f.proveedorId, cuit: '', cuentaHabitual: undefined }
   const e = empresa(f.empresaId)
@@ -194,6 +211,8 @@ function TarjetaFactura({ f, modo }: { f: Factura; modo: 'PENDIENTES' | 'ERRORES
   const [dias, setDias] = useState(30)
   const [rechazando, setRechazando] = useState(false)
   const [motivo, setMotivo] = useState('')
+  const [editando, setEditando] = useState(false)
+  const editable = puedeAprobar && modo !== 'HISTORIAL' && f.pagado === 0 && f.estadoXubio !== 'SUBIDA'
   const esCheque = metodo === 'CHEQUE' || metodo === 'ECHEQ'
   const cuentaValida = enLista(opcionesCuenta, cuenta)
 
@@ -218,6 +237,7 @@ function TarjetaFactura({ f, modo }: { f: Factura; modo: 'PENDIENTES' | 'ERRORES
       <button onClick={() => setAbierta((a) => !a)} className="w-full text-left px-5 py-4 flex flex-col md:flex-row md:items-center gap-3 hover:bg-pino/70 transition-colors">
         <div className="flex-1 min-w-0">
           <div className="flex flex-wrap items-center gap-2 mb-1">
+            {nueva && <Badge tone="azul">Nueva</Badge>}
             <Badge tone="dorado">{e.corto}</Badge>
             <Badge>{f.origen}</Badge>
             <Badge>{CATEGORIAS[f.categoriaVertice] ?? f.categoriaVertice}</Badge>
@@ -238,10 +258,23 @@ function TarjetaFactura({ f, modo }: { f: Factura; modo: 'PENDIENTES' | 'ERRORES
         </div>
       </button>
 
-      {abierta && (
+      {abierta && editando && (
+        <div className="px-5 pb-5 border-t border-borde pt-4 grid md:grid-cols-2 gap-5">
+          <FormFactura f={f} onCerrar={() => setEditando(false)} />
+        </div>
+      )}
+
+      {abierta && !editando && (
         <div className="px-5 pb-5 border-t border-borde pt-4 grid md:grid-cols-2 gap-5 fade-up">
           <div className="space-y-2 text-sm">
-            <h4 className="text-[10px] uppercase tracking-widest text-seco">Lo que leyó la IA</h4>
+            <div className="flex items-center justify-between">
+              <h4 className="text-[10px] uppercase tracking-widest text-seco">Lo que leyó la IA</h4>
+              {editable && (
+                <button onClick={() => setEditando(true)} className="text-xs text-dorado hover:text-crema underline">
+                  Editar datos
+                </button>
+              )}
+            </div>
             <dl className="grid grid-cols-2 gap-y-1 text-xs">
               <dt className="text-seco">Neto</dt>
               <dd>{money(f.neto)}</dd>
@@ -340,8 +373,8 @@ function TarjetaFactura({ f, modo }: { f: Factura; modo: 'PENDIENTES' | 'ERRORES
                 <Btn variant="peligro" onClick={() => setRechazando(true)}>
                   Descartar
                 </Btn>
-                <Btn variant="secundario" onClick={() => corregirFactura(f.id)}>
-                  Corregir datos y reenviar
+                <Btn variant="secundario" onClick={() => setEditando(true)}>
+                  Corregir datos
                 </Btn>
               </div>
             </div>

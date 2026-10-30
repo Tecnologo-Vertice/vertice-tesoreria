@@ -28,6 +28,8 @@ export interface Catalogos {
   planPorEmpresa: Record<string, string[]>
   /** Productos de compra de Xubio: la "cuenta" de una factura en producción. Vacío en demo. */
   productos: string[]
+  /** Nombre del producto → código en Xubio (Catalogo_Productos). */
+  codigosProducto: Record<string, string>
 }
 
 export interface Datos {
@@ -46,6 +48,33 @@ export type ResultadoSubida = { estado: 'LEIDO' | 'DUPLICADO' | 'ERROR' | 'PENDI
 export type Bucket = 'comprobantes' | 'facturas'
 export type ResultadoXubioFactura = { estado: 'SUBIDA' | 'EN_SECO' | 'ERROR' | 'NO_APLICA'; xubioId?: string; detalle: string }
 
+/** Lo que se puede corregir a mano de una factura (editar_factura en SQL). */
+export interface DatosEdicion {
+  empresaId: string
+  proveedor: string
+  cuit: string
+  tipo: string
+  letra: string
+  puntoVenta: number
+  numero: number
+  fecha: string
+  vencimiento: string
+  moneda: string
+  cotizacion: number
+  neto: number
+  iva: number
+  exento: number
+  percepciones: { nombre: string; importe: number }[]
+  total: number
+  cae: string
+  caeVencimiento: string
+  categoriaVertice: string
+  cuentaContable: string
+  codigoProducto: string
+}
+/** Cómo quedó después de guardar: si la validación falla, en Excepciones con el motivo. */
+export type ResultadoEdicion = { estado: string; motivo?: string | null }
+
 export type DatosAprobacion = { cuentaContable: string; metodoPago: MetodoPago; diasCheque?: number }
 export type DatosContabilizacion = { cuentaContable: string; formaCargaXubio: Pago['formaCargaXubio']; cuentaOrigen?: string }
 export type NuevoPago = Omit<Pago, 'id' | 'estado' | 'cargadoPor' | 'cargadoEn'>
@@ -57,6 +86,7 @@ export interface Fuente {
   aprobarFactura(id: string, datos: DatosAprobacion, u: Usuario): Promise<void>
   rechazarFactura(id: string, motivo: string, u: Usuario): Promise<void>
   corregirFactura(id: string, u: Usuario): Promise<void>
+  editarFactura(id: string, datos: DatosEdicion, u: Usuario): Promise<ResultadoEdicion>
   registrarPago(datos: NuevoPago, u: Usuario): Promise<Pago>
   contabilizarPago(id: string, datos: DatosContabilizacion, u: Usuario): Promise<ResultadoXubio>
   marcarRalpharma(id: string, u: Usuario): Promise<void>

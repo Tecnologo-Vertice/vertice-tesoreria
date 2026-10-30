@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { Badge, BadgeVencimiento, Btn, Empty, Field, inputCls, Modal, SelectorCuenta, Tabs } from '../components/ui'
 import { cuentasOrigenDe, cuentasPara, enLista } from '../lib/cuentas'
+import { useFiltro } from '../components/Filtros'
 import { addDays, diasHasta, fecha, iso, money, nroComprobante, parseIso, pendiente } from '../lib/format'
 import { formaDeCarga, sugerirCuenta, type Sugerencia } from '../lib/ia'
 import { puede } from '../lib/permisos'
@@ -39,6 +40,22 @@ export function Pagos() {
   )
   const pagadas = useMemo(() => facturas.filter((f) => f.estado === 'PAGADA'), [facturas])
 
+  const filtro = useFiltro(tab === 'PARA_PAGAR' ? paraPagar : pagadas, {
+    clave: 'pagos',
+    texto: (f) => {
+      const p = proveedor(f.proveedorId)
+      return [p?.nombre, p?.cuit, f.tipo, nroComprobante(f.puntoVenta, f.numero), f.cae, f.cuentaContable, f.metodoPago, empresa(f.empresaId).nombre, f.total.toFixed(2)].join(' ')
+    },
+    empresa: (f) => f.empresaId,
+    proveedor: (f) => proveedor(f.proveedorId)?.nombre ?? '',
+    cuenta: (f) => f.cuentaContable,
+    // Para Tesorería, "nueva" es la que se aprobó desde la última visita.
+    alta: (f) => f.aprobadoEn ?? f.creadoEn ?? f.fecha,
+    vencimiento: (f) => f.vencimiento,
+    importe: (f) => pendiente(f),
+    ordenInicial: 'VENCIMIENTO',
+  })
+
   const toggle = (id: string) => setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]))
   const empresaSel = sel.length ? facturas.find((f) => f.id === sel[0])?.empresaId : undefined
 
@@ -74,8 +91,10 @@ export function Pagos() {
 
       {tab === 'PARA_PAGAR' && (
         <div className="space-y-2">
+          {paraPagar.length > 0 && filtro.barra}
           {paraPagar.length === 0 && <Empty texto="No hay facturas para pagar." />}
-          {paraPagar.map((f) => {
+          {paraPagar.length > 0 && filtro.visibles.length === 0 && <Empty texto="Nada coincide con la búsqueda o los filtros." />}
+          {filtro.visibles.map((f) => {
             const p = proveedor(f.proveedorId)
             const e = empresa(f.empresaId)
             const marcada = sel.includes(f.id)
@@ -91,6 +110,7 @@ export function Pagos() {
                 {puedePagar && <input type="checkbox" readOnly checked={marcada} className="accent-dorado w-4 h-4" />}
                 <div className="flex-1 min-w-0">
                   <div className="flex flex-wrap items-center gap-2 mb-0.5">
+                    {filtro.esNueva(f) && <Badge tone="azul">Nueva</Badge>}
                     <Badge tone="dorado">{e.corto}</Badge>
                     <BadgeVencimiento vencimiento={f.vencimiento} />
                     <Badge tone={xubio.tone}>{xubio.label}</Badge>
@@ -125,8 +145,10 @@ export function Pagos() {
 
       {tab === 'PAGADAS' && (
         <div className="space-y-2">
+          {pagadas.length > 0 && filtro.barra}
           {pagadas.length === 0 && <Empty texto="Todavía no hay facturas pagadas." />}
-          {pagadas.map((f) => {
+          {pagadas.length > 0 && filtro.visibles.length === 0 && <Empty texto="Nada coincide con la búsqueda o los filtros." />}
+          {filtro.visibles.map((f) => {
             const p = proveedor(f.proveedorId)
             const pg = pagos.find((x) => x.facturaIds.includes(f.id))
             return (

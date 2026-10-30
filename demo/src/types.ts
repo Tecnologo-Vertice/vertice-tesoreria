@@ -87,6 +87,20 @@ export interface Factura {
   aprobadoEn?: string
   /** Facturas copiadas de la hoja real: HOJA mientras nadie la toque en el sistema nuevo. */
   gestion?: 'HOJA' | 'SISTEMA'
+  /** Datos completos del comprobante, para editarlos a mano (como la tarjeta del dashboard de producción). */
+  letra?: string
+  exento?: number
+  percepcionesJson?: Percepcion[]
+  moneda?: string
+  cotizacion?: number
+  codigoProducto?: string
+  /** Cuándo entró al sistema: marca de "Nueva" y orden "más nuevo primero". */
+  creadoEn?: string
+}
+
+export interface Percepcion {
+  nombre: string
+  importe: number
 }
 
 export type EstadoDocumento = 'PENDIENTE' | 'LEYENDO' | 'LEIDO' | 'DUPLICADO' | 'ERROR' | 'DESCARTADO'

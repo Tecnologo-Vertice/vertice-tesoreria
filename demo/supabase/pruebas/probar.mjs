@@ -301,5 +301,38 @@ for (const r of ['anon', 'authenticated'])
   check(`${r} NO puede copiar facturas de la hoja`, !(await val(`select has_function_privilege($1, 'espejar_facturas(jsonb)', 'execute') p`, [r])).p)
 check('los usuarios ven el estado de la copia', (await val(`select has_table_privilege('authenticated', 'espejo_estado', 'select') p`)).p)
 
+// ================================================================ Edición a mano de la factura (0009)
+await db.exec(`reset role`)
+const fed = (await val(`select ingresar_factura($1) id`, [factura({ cuit_proveedor: '30-71666666-2', proveedor: 'Imprenta Sur', numero: 4401, total: 121000, neto: 100000, iva: 21000, cae: '86439916039416' })])).id
+const fotra = (await val(`select ingresar_factura($1) id`, [factura({ cuit_proveedor: '30-71666666-2', proveedor: 'Imprenta Sur', numero: 4402, total: 121000, neto: 100000, iva: 21000, cae: '86439916039416' })])).id
+const datosEd = (x = {}) => ({ empresa_id: 'beratung', proveedor: 'Imprenta Sur S.A.', cuit_proveedor: '30-71666666-2', tipo: 'Factura A', letra: 'a', punto_venta: 5, numero: 4401,
+  fecha: '2026-10-01', vencimiento: '2026-10-31', moneda: 'ARS', cotizacion: 1, neto: 100000, iva: 21000, exento: 0, percepciones_json: [{ nombre: 'Percepción IIBB CABA', importe: 1500 }],
+  total: 122500, cae: '86439916039416', cae_vencimiento: '2026-11-07', categoria_vertice: 'PROVEEDOR', cuenta_contable: 'Gastos Generales', codigo_producto: 'GASTOS_GENERALES', ...x })
+await db.exec(`set role authenticated`)
+await como('tesoreria@verticebi.com')
+await falla('Tesorería no edita facturas', `select editar_factura($1, $2)`, [fed, JSON.stringify(datosEd())], /rol/)
+await como('aprobador@verticebi.com')
+let re = (await val(`select editar_factura($1, $2) r`, [fed, JSON.stringify(datosEd({ total: 130000 }))])).r
+let fEd = await val(`select estado, validacion_ok, motivo_validacion, gestion from facturas where id = $1`, [fed])
+check('edición que no cierra el total: pasa a Excepciones con el motivo', re.estado === 'ERROR' && fEd.estado === 'ERROR' && !fEd.validacion_ok && /Descuadre/.test(fEd.motivo_validacion), fEd.motivo_validacion)
+check('editada a mano: la gestiona el sistema (la copia de la hoja no la pisa)', fEd.gestion === 'SISTEMA')
+re = (await val(`select editar_factura($1, $2) r`, [fed, JSON.stringify(datosEd())])).r
+fEd = await val(`select estado, validacion_ok, percepciones, total, letra, p.nombre from facturas f join proveedores p on p.id = f.proveedor_id where f.id = $1`, [fed])
+check('corregida (neto + IVA + percepción = total): vuelve a Pendientes', re.estado === 'PENDIENTE_APROBACION' && fEd.estado === 'PENDIENTE_APROBACION' && fEd.validacion_ok)
+check('percepciones sumadas desde la lista, letra en mayúscula, nombre del proveedor', Number(fEd.percepciones) === 1500 && Number(fEd.total) === 122500 && fEd.letra === 'A' && fEd.nombre === 'Imprenta Sur S.A.')
+check('auditoría de la edición con lo que cambió, antes y después', (await val(`select count(*)::int n from auditoria where entidad_id = $1 and accion = 'EDICION' and detalle like '%total%' and antes is not null and despues is not null`, [fed])).n >= 1)
+re = (await val(`select editar_factura($1, $2) r`, [fed, JSON.stringify(datosEd({ cae: '123' }))])).r
+check('CAE corto: queda en Excepciones con el motivo', re.estado === 'ERROR' && (await val(`select motivo_validacion m from facturas where id = $1`, [fed])).m?.includes('CAE'))
+await db.query(`select editar_factura($1, $2)`, [fed, JSON.stringify(datosEd())])
+await falla('mismo proveedor, tipo y número que otra factura: mensaje claro', `select editar_factura($1, $2)`, [fotra, JSON.stringify(datosEd())], /Ya hay otra factura/)
+await falla('CUIT incompleto', `select editar_factura($1, $2)`, [fed, JSON.stringify(datosEd({ cuit_proveedor: '30-7166' }))], /11 dígitos/)
+await db.exec(`reset role`)
+await db.query(`update facturas set estado = 'PAGADA_PARCIAL', pagado = 1000 where id = $1`, [fotra])
+await db.exec(`set role authenticated`)
+await como('aprobador@verticebi.com')
+await falla('factura con pagos: no se edita', `select editar_factura($1, $2)`, [fotra, JSON.stringify(datosEd({ numero: 4402 }))], /sin pagos/)
+await db.exec(`reset role`)
+check('anon no puede editar facturas', !(await val(`select has_function_privilege('anon', 'editar_factura(uuid,jsonb)', 'execute') p`)).p)
+
 console.log(`\n${ok} OK · ${mal} MAL`)
 process.exit(mal ? 1 : 0)

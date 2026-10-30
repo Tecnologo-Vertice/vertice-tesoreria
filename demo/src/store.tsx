@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { Auditoria, ComprobanteEjemplo, Documento, Empresa, EstadoEspejo, Factura, LecturaComprobante, Pago, Proveedor, Usuario } from './types'
-import type { Bucket, Catalogos, DatosAprobacion, DatosContabilizacion, Fuente, NuevoPago } from './data/fuente'
+import type { Bucket, Catalogos, DatosAprobacion, DatosContabilizacion, DatosEdicion, Fuente, NuevoPago } from './data/fuente'
 import { addDays, parseIso, pendiente } from './lib/format'
 
 type Toast = { id: number; texto: string; tipo: 'ok' | 'error' | 'info' }
@@ -19,6 +19,7 @@ interface Store {
   aprobarFactura: (id: string, datos: DatosAprobacion) => Promise<void>
   rechazarFactura: (id: string, motivo: string) => Promise<void>
   corregirFactura: (id: string) => Promise<void>
+  editarFactura: (id: string, datos: DatosEdicion) => Promise<boolean>
   registrarPago: (p: NuevoPago) => Promise<Pago | null>
   contabilizarPago: (id: string, datos: DatosContabilizacion) => Promise<void>
   marcarRalpharma: (id: string) => Promise<void>
@@ -42,7 +43,7 @@ interface Store {
 
 const Ctx = createContext<Store | null>(null)
 
-const CATALOGOS_VACIOS: Catalogos = { empresas: [], proveedores: [], cuentasOrigen: [], planCuentas: [], planPorEmpresa: {}, productos: [] }
+const CATALOGOS_VACIOS: Catalogos = { empresas: [], proveedores: [], cuentasOrigen: [], planCuentas: [], planPorEmpresa: {}, productos: [], codigosProducto: {} }
 
 export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fuente; usuarioInicial: Usuario; children: ReactNode }) {
   const [facturas, setFacturas] = useState<Factura[]>([])
@@ -132,6 +133,13 @@ export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fu
       },
       corregirFactura: async (id) => {
         await accion(() => fuente.corregirFactura(id, usuario), 'Corregida: vuelve a la bandeja de aprobación')
+      },
+      editarFactura: async (id, d) => {
+        const r = await accion(() => fuente.editarFactura(id, d, usuario))
+        if (!r) return false
+        if (r.motivo) toast(`Guardado. Queda en Excepciones: ${r.motivo}`, 'info')
+        else toast(r.estado === 'PENDIENTE_APROBACION' ? 'Guardado: los datos cierran y la factura queda lista para aprobar' : 'Guardado')
+        return true
       },
       registrarPago: (p) =>
         accion(

@@ -4,7 +4,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Auditoria, ComprobanteEjemplo, CuentaOrigen, Documento, Empresa, EstadoEspejo, Factura, LecturaComprobante, Pago, Proveedor, Usuario } from '../types'
-import type { Bucket, Datos, DatosAprobacion, DatosContabilizacion, Fuente, NuevoPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
+import type { Bucket, Datos, DatosAprobacion, DatosContabilizacion, DatosEdicion, Fuente, ResultadoEdicion, NuevoPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
 import { archivoABase64, llamarFuncion } from '../lib/supabase'
 
 type Row = Record<string, unknown>
@@ -49,6 +49,15 @@ function mapFactura(r: Row): Factura {
     aprobadoPor: s(r.aprobado_por),
     aprobadoEn: s(r.aprobado_en),
     gestion: s(r.gestion) as Factura['gestion'],
+    letra: s(r.letra),
+    exento: n(r.exento),
+    percepcionesJson: Array.isArray(r.percepciones_json)
+      ? (r.percepciones_json as Record<string, unknown>[]).map((p) => ({ nombre: String(p.nombre ?? p.descripcion ?? 'Percepción'), importe: n(p.importe) }))
+      : [],
+    moneda: s(r.moneda),
+    cotizacion: r.cotizacion == null ? undefined : n(r.cotizacion),
+    codigoProducto: s(r.codigo_producto),
+    creadoEn: s(r.creado_en),
   }
 }
 
@@ -191,7 +200,7 @@ export class FuenteSupabase implements Fuente {
         }),
         [['hoja', 'asc']],
       ).catch(() => [] as EstadoEspejo[]),
-      this.lista<string>('productos_xubio', (r) => String(r.nombre), [['nombre', 'asc']]).catch(() => [] as string[]),
+      this.lista<{ nombre: string; codigo: string }>('productos_xubio', (r) => ({ nombre: String(r.nombre), codigo: String(r.codigo) }), [['nombre', 'asc']]).catch(() => [] as { nombre: string; codigo: string }[]),
     ])
     const comunes = plan.filter((c) => !c.empresa && c.activa).map((c) => c.nombre)
     const planPorEmpresa: Record<string, string[]> = {}
@@ -200,7 +209,7 @@ export class FuenteSupabase implements Fuente {
     const facturasDePago = new Map<string, string[]>()
     for (const v of vinculos) facturasDePago.set(v.pago, [...(facturasDePago.get(v.pago) ?? []), v.factura])
     const pagos = pagosRaw.map((r) => mapPago(r, facturasDePago.get(String(r.id)) ?? []))
-    return { facturas, pagos, documentos, auditoria: auditoria.sort((a, b) => a.fecha.localeCompare(b.fecha)), catalogos: { empresas, proveedores, cuentasOrigen, planCuentas: [...new Set(comunes)].sort(), planPorEmpresa, productos }, espejo }
+    return { facturas, pagos, documentos, auditoria: auditoria.sort((a, b) => a.fecha.localeCompare(b.fecha)), catalogos: { empresas, proveedores, cuentasOrigen, planCuentas: [...new Set(comunes)].sort(), planPorEmpresa, productos: productos.map((p) => p.nombre), codigosProducto: Object.fromEntries(productos.map((p) => [p.nombre, p.codigo])) }, espejo }
   }
 
   private async rpc<T = unknown>(fn: string, args: Record<string, unknown>): Promise<T> {
@@ -215,6 +224,18 @@ export class FuenteSupabase implements Fuente {
 
   async rechazarFactura(id: string, motivo: string) {
     await this.rpc('rechazar_factura', { p_id: id, p_motivo: motivo })
+  }
+
+  async editarFactura(id: string, d: DatosEdicion): Promise<ResultadoEdicion> {
+    return this.rpc<ResultadoEdicion>('editar_factura', {
+      p_id: id,
+      p: {
+        empresa_id: d.empresaId, proveedor: d.proveedor, cuit_proveedor: d.cuit, tipo: d.tipo, letra: d.letra, punto_venta: d.puntoVenta, numero: d.numero,
+        fecha: d.fecha, vencimiento: d.vencimiento || null, moneda: d.moneda, cotizacion: d.cotizacion, neto: d.neto, iva: d.iva, exento: d.exento,
+        percepciones_json: d.percepciones, total: d.total, cae: d.cae, cae_vencimiento: d.caeVencimiento || null,
+        categoria_vertice: d.categoriaVertice, cuenta_contable: d.cuentaContable, codigo_producto: d.codigoProducto,
+      },
+    })
   }
 
   async corregirFactura(id: string) {
