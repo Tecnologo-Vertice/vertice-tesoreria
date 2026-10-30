@@ -1,18 +1,49 @@
 @import 'tailwindcss';
 
-@theme {
-  --color-botella: #0e1d15;
-  --color-pino: #16291e;
-  --color-borde: #243d2c;
-  --color-crema: #edf0e5;
-  --color-seco: #7a9080;
-  --color-dorado: #e5d079;
+/*
+ * Identidad Vértice (skill estudio-diseno-vertice): bosque, salvias y oro como único acento;
+ * Cormorant Garamond en títulos y Carlito (Calibri) en el cuerpo. Dos modos:
+ *  - oscuro: fondo bosque (el de siempre)
+ *  - claro: fondo blanco, bordes verde salvia, texto bosque; el oro solo como relleno o línea
+ *    (como texto no se lee sobre blanco).
+ * Las pantallas usan estos nombres de color; cada modo les da su valor.
+ */
+@theme inline {
+  --color-botella: var(--c-fondo);
+  --color-pino: var(--c-panel);
+  --color-suave: var(--c-suave);
+  --color-borde: var(--c-borde);
+  --color-crema: var(--c-tinta);
+  --color-seco: var(--c-tenue);
+  --color-dorado: var(--c-oro);
+  --color-acento: var(--c-acento);
+  --color-sobre-oro: #16291e;
   --font-serif: 'Cormorant Garamond', Georgia, serif;
-  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-sans: 'Carlito', Calibri, 'Segoe UI', Arial, sans-serif;
 }
 
 :root {
+  --c-fondo: #0e1d15;
+  --c-panel: #16291e;
+  --c-suave: #1e3528;
+  --c-borde: #243d2c;
+  --c-tinta: #edf0e5;
+  --c-tenue: #8fa394;
+  --c-oro: #e5d079;
+  --c-acento: #e5d079;
   color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  --c-fondo: #ffffff;
+  --c-panel: #ffffff;
+  --c-suave: #f2f5ef;
+  --c-borde: #b8c8bc;
+  --c-tinta: #16291e;
+  --c-tenue: #33503f;
+  --c-oro: #e5d079;
+  --c-acento: #3f6b43;
+  color-scheme: light;
 }
 
 html,
@@ -22,35 +53,70 @@ body,
 }
 
 body {
-  background: var(--color-botella);
-  color: var(--color-crema);
+  background: var(--c-fondo);
+  color: var(--c-tinta);
   font-family: var(--font-sans);
+  font-size: 15px;
   -webkit-font-smoothing: antialiased;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* Importes siempre alineados */
+.font-serif,
+.tabular {
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+/* Título de pantalla: Cormorant con la línea dorada de la marca debajo */
+.titulo-pagina {
+  font-family: var(--font-serif);
+  font-size: 2.35rem;
+  line-height: 1.1;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.titulo-pagina {
+  margin-bottom: 10px;
+}
+.titulo-pagina::after {
+  content: '';
+  display: block;
+  width: 64px;
+  height: 3px;
+  margin-top: 10px;
+  border-radius: 2px;
+  background: var(--c-oro);
+}
+
+/* Logo según el modo */
+.logo-claro {
+  display: none;
+}
+:root[data-theme='light'] .logo-claro {
+  display: block;
+}
+:root[data-theme='light'] .logo-oscuro {
+  display: none;
 }
 
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: var(--color-botella);
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--color-borde);
-  border-radius: 3px;
+  background: var(--c-borde);
+  border-radius: 4px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-dorado);
+  background: var(--c-oro);
 }
 
-select,
-input,
-textarea {
-  color-scheme: dark;
-}
 select option {
-  background: var(--color-pino);
-  color: var(--color-crema);
+  background: var(--c-panel);
+  color: var(--c-tinta);
 }
 
 @keyframes fadeUp {
@@ -76,7 +142,72 @@ select option {
   }
 }
 .shimmer {
-  background: linear-gradient(90deg, #16291e 25%, #243d2c 50%, #16291e 75%);
+  background: linear-gradient(90deg, var(--c-panel) 25%, var(--c-borde) 50%, var(--c-panel) 75%);
   background-size: 200% 100%;
   animation: shimmer 1.2s linear infinite;
+}
+
+/*
+ * Modo claro: los colores de estado (rojo, ámbar, verde, celeste) están pensados para fondo oscuro.
+ * Sobre blanco se pasan a las alertas de la marca para crema (contraste ≥ 4.5).
+ */
+:root[data-theme='light'] {
+  & .text-red-100,
+  & .text-red-200,
+  & .text-red-300 {
+    color: #a3422f;
+  }
+  & .text-amber-200,
+  & .text-amber-300,
+  & .text-amber-300\/90 {
+    color: #8a6212;
+  }
+  & .text-emerald-100,
+  & .text-emerald-200,
+  & .text-emerald-300 {
+    color: #3f6b43;
+  }
+  & .text-sky-300 {
+    color: #2f5d7c;
+  }
+  & .bg-red-950,
+  & .bg-red-950\/30,
+  & .bg-red-950\/40,
+  & .bg-red-900\/60 {
+    background-color: #f8e9e5;
+  }
+  & .hover\:bg-red-800:hover {
+    background-color: #efd3cb;
+  }
+  & .bg-amber-950\/30,
+  & .bg-amber-950\/40 {
+    background-color: #fbf3dc;
+  }
+  & .bg-emerald-950,
+  & .bg-emerald-950\/30 {
+    background-color: #e8f0e6;
+  }
+  & .bg-sky-950\/30 {
+    background-color: #e5eef4;
+  }
+  & .border-red-600,
+  & .border-red-700,
+  & .border-red-800,
+  & .border-red-900 {
+    border-color: #d9a99c;
+  }
+  & .border-amber-600,
+  & .border-amber-900 {
+    border-color: #e2c98a;
+  }
+  & .border-emerald-700,
+  & .border-emerald-800 {
+    border-color: #a9c4a5;
+  }
+  & .border-sky-700 {
+    border-color: #a8c2d3;
+  }
+  & .bg-black\/70 {
+    background-color: rgb(22 41 30 / 0.45);
+  }
 }

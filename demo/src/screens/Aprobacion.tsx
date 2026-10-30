@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { useStore } from '../store'
 import { CATEGORIAS } from '../data/demo'
-import { Badge, BadgeVencimiento, Btn, Card, Empty, Field, inputCls, SelectorCuenta, Tabs } from '../components/ui'
+import { Badge, BadgeVencimiento, Btn, Card, Empty, Field, inputCls, SelectorCuenta, TablaDatos, Tabs } from '../components/ui'
 import { cuentasFactura, enLista } from '../lib/cuentas'
 import { useFiltro } from '../components/Filtros'
 import { FormFactura } from '../components/FormFactura'
@@ -59,7 +59,7 @@ export function Aprobacion() {
     <div className="space-y-6">
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-3">
         <div>
-          <h2 className="font-serif text-3xl">Bandeja de aprobación</h2>
+          <h2 className="titulo-pagina">Bandeja de aprobación</h2>
           <p className="text-sm text-seco">
             Las facturas llegan solas desde el mail de proveedores o se suben a mano. La IA las lee y valida CAE y totales. Acá se decide cuenta contable y método de pago.
           </p>
@@ -234,7 +234,7 @@ function TarjetaFactura({ f, modo, nueva }: { f: Factura; modo: 'PENDIENTES' | '
 
   return (
     <Card className="p-0 overflow-hidden">
-      <button onClick={() => setAbierta((a) => !a)} className="w-full text-left px-5 py-4 flex flex-col md:flex-row md:items-center gap-3 hover:bg-pino/70 transition-colors">
+      <button onClick={() => setAbierta((a) => !a)} className="w-full text-left px-6 py-5 flex flex-col md:flex-row md:items-center gap-3 hover:bg-suave/60 transition-colors">
         <div className="flex-1 min-w-0">
           <div className="flex flex-wrap items-center gap-2 mb-1">
             {nueva && <Badge tone="azul">Nueva</Badge>}
@@ -259,126 +259,138 @@ function TarjetaFactura({ f, modo, nueva }: { f: Factura; modo: 'PENDIENTES' | '
       </button>
 
       {abierta && editando && (
-        <div className="px-5 pb-5 border-t border-borde pt-4 grid md:grid-cols-2 gap-5">
+        <div className="px-6 pb-6 border-t border-borde pt-5 grid md:grid-cols-2 gap-6">
           <FormFactura f={f} onCerrar={() => setEditando(false)} />
         </div>
       )}
 
       {abierta && !editando && (
-        <div className="px-5 pb-5 border-t border-borde pt-4 grid md:grid-cols-2 gap-5 fade-up">
-          <div className="space-y-2 text-sm">
-            <div className="flex items-center justify-between">
-              <h4 className="text-[10px] uppercase tracking-widest text-seco">Lo que leyó la IA</h4>
-              {editable && (
-                <button onClick={() => setEditando(true)} className="text-xs text-dorado hover:text-crema underline">
-                  Editar datos
-                </button>
-              )}
-            </div>
-            <dl className="grid grid-cols-2 gap-y-1 text-xs">
-              <dt className="text-seco">Neto</dt>
-              <dd>{money(f.neto)}</dd>
-              <dt className="text-seco">IVA</dt>
-              <dd>{money(f.iva)}</dd>
-              <dt className="text-seco">Percepciones</dt>
-              <dd>{money(f.percepciones)}</dd>
-              <dt className="text-seco">Total</dt>
-              <dd className="font-semibold">{money(f.total)}</dd>
-              <dt className="text-seco">CAE</dt>
-              <dd className="font-mono">{f.cae}</dd>
-              <dt className="text-seco">CAE vence</dt>
-              <dd>{fecha(f.caeVencimiento)}</dd>
-              <dt className="text-seco">Vencimiento</dt>
-              <dd>{fecha(f.vencimiento)}</dd>
-              <dt className="text-seco">PDF</dt>
-              <dd>
-                {f.pdfPath ? (
-                  <button onClick={() => void abrirArchivo('facturas', f.pdfPath!)} className="text-dorado underline">
-                    Abrir PDF
+        <div className="px-6 pb-6 border-t border-borde pt-5 grid md:grid-cols-2 gap-6 fade-up">
+          {/* Izquierda: el comprobante */}
+          <div className="space-y-3 text-sm min-w-0">
+            <TablaDatos
+              titulo="Lo que leyó la IA · comprobante"
+              accion={
+                editable && (
+                  <button onClick={() => setEditando(true)} className="text-[12px] font-bold text-acento hover:underline">
+                    Editar datos
                   </button>
-                ) : f.driveUrl ? (
-                  <a href={f.driveUrl} target="_blank" rel="noreferrer" className="text-dorado underline">
-                    Abrir en Drive
-                  </a>
-                ) : (
-                  <span className="text-seco">{modoApp === 'demo' ? `Drive › ${e.corto} › ${p.nombre.split(' ')[0]}` : 'Sin link a Drive'}</span>
-                )}
-              </dd>
-            </dl>
+                )
+              }
+              filas={[
+                ['Empresa', e.nombre],
+                ['Proveedor', p.nombre],
+                ['CUIT', fmtCuit(p.cuit)],
+                ['Comprobante', `${f.tipo} ${nroComprobante(f.puntoVenta, f.numero)}`],
+                ['Emitida', fecha(f.fecha)],
+                ['Vencimiento del pago', fecha(f.vencimiento)],
+                ['CAE', <span key="c" className="font-mono text-[13px]">{f.cae || '—'}</span>],
+                ['CAE vence', fecha(f.caeVencimiento)],
+                [
+                  'PDF',
+                  f.pdfPath ? (
+                    <button key="pdf" onClick={() => void abrirArchivo('facturas', f.pdfPath!)} className="text-acento font-bold hover:underline">
+                      Abrir PDF
+                    </button>
+                  ) : f.driveUrl ? (
+                    <a key="pdf" href={f.driveUrl} target="_blank" rel="noreferrer" className="text-acento font-bold hover:underline">
+                      Abrir en Drive
+                    </a>
+                  ) : (
+                    <span key="pdf" className="text-seco">{modoApp === 'demo' ? `Drive › ${e.corto} › ${p.nombre.split(' ')[0]}` : 'Sin link a Drive'}</span>
+                  ),
+                ],
+              ]}
+            />
             {f.advertencia && (
-              <div className="mt-3 p-3 rounded-lg bg-amber-950/40 border border-amber-900 text-amber-200 text-xs">
+              <div className="p-3 rounded-xl bg-amber-950/40 border border-amber-900 text-amber-200 text-[13px]">
                 <strong>Aviso:</strong> {f.advertencia}
               </div>
             )}
             {f.motivoValidacion && (
-              <div className="mt-3 p-3 rounded-lg bg-red-950/40 border border-red-900 text-red-200 text-xs">
+              <div className="p-3 rounded-xl bg-red-950/40 border border-red-900 text-red-200 text-[13px]">
                 <strong>Motivo:</strong> {f.motivoValidacion}
               </div>
             )}
             {f.aprobadoEn && (
-              <p className="text-xs text-seco mt-2">
+              <p className="text-xs text-seco">
                 Aprobada por <span className="text-crema">{f.aprobadoPor}</span> el {new Date(f.aprobadoEn).toLocaleString('es-AR')}
               </p>
             )}
           </div>
 
-          {modo !== 'HISTORIAL' && !puedeAprobar && <p className="text-xs text-seco self-end">Solo consulta: aprueba el responsable de aprobaciones o Administración.</p>}
+          {/* Derecha: los importes y la decisión */}
+          <div className="space-y-4 min-w-0">
+            <TablaDatos
+              titulo="Importes"
+              filas={[
+                ['Neto', money(f.neto)],
+                ['IVA', money(f.iva)],
+                ['Exento', f.exento ? money(f.exento) : undefined],
+                ['Percepciones', money(f.percepciones)],
+                ['Moneda', f.moneda && f.moneda !== 'ARS' ? `${f.moneda} · cotización ${f.cotizacion}` : undefined],
+                ['Total', <strong key="t" className="font-serif text-xl">{money(f.total)}</strong>],
+              ]}
+            />
 
-          {modo === 'PENDIENTES' && puedeAprobar && rechazando && panelRechazo}
+            {modo !== 'HISTORIAL' && !puedeAprobar && <p className="text-sm text-seco">Solo consulta: aprueba el responsable de aprobaciones o Administración.</p>}
 
-          {modo === 'PENDIENTES' && puedeAprobar && !rechazando && (
-            <div className="space-y-3">
-              <Field
-                label="Cuenta contable (plan de Xubio)"
-                hint={`Regla de oro: siempre la cuenta del plan, nunca una categoría genérica.${f.categoriaIa ? ` La IA lo clasificó como "${f.categoriaIa}".` : ''}${f.cuentaContable && modo === 'PENDIENTES' ? ' La cuenta viene de lo que se eligió la última vez para este proveedor.' : ''}`}
-                marcado={cuenta ? undefined : 'falta'}
-              >
-                <SelectorCuenta value={cuenta} onChange={setCuenta} opciones={opcionesCuenta} />
-              </Field>
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Método de pago">
-                  <select value={metodo} onChange={(ev) => setMetodo(ev.target.value as MetodoPago)} className={inputCls}>
-                    {METODOS.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.label}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-                {esCheque && (
-                  <Field label="Días del cheque">
-                    <input type="number" value={dias} onChange={(ev) => setDias(Number(ev.target.value))} className={inputCls} />
-                  </Field>
+            {modo !== 'HISTORIAL' && puedeAprobar && (
+              <div className="rounded-xl border border-borde bg-suave/40 p-5 space-y-4">
+                <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-seco">{modo === 'ERRORES' ? 'Excepción' : 'Aprobar'}</p>
+
+                {rechazando && panelRechazo}
+
+                {modo === 'PENDIENTES' && !rechazando && (
+                  <>
+                    <Field
+                      label="Cuenta contable (plan de Xubio)"
+                      hint={`Regla de oro: siempre la cuenta del plan, nunca una categoría genérica.${f.categoriaIa ? ` La IA lo clasificó como "${f.categoriaIa}".` : ''}${f.cuentaContable ? ' La cuenta viene de lo que se eligió la última vez para este proveedor.' : ''}`}
+                      marcado={cuenta ? undefined : 'falta'}
+                    >
+                      <SelectorCuenta value={cuenta} onChange={setCuenta} opciones={opcionesCuenta} />
+                    </Field>
+                    <div className="grid grid-cols-2 gap-3">
+                      <Field label="Método de pago">
+                        <select value={metodo} onChange={(ev) => setMetodo(ev.target.value as MetodoPago)} className={inputCls}>
+                          {METODOS.map((m) => (
+                            <option key={m.id} value={m.id}>
+                              {m.label}
+                            </option>
+                          ))}
+                        </select>
+                      </Field>
+                      {esCheque && (
+                        <Field label="Días del cheque">
+                          <input type="number" value={dias} onChange={(ev) => setDias(Number(ev.target.value))} className={inputCls} />
+                        </Field>
+                      )}
+                    </div>
+                    <div className="flex flex-wrap justify-end gap-2 pt-1">
+                      <Btn variant="peligro" onClick={() => setRechazando(true)}>
+                        Rechazar
+                      </Btn>
+                      <Btn disabled={!cuentaValida} onClick={() => aprobarFactura(f.id, { cuentaContable: cuentaValida!, metodoPago: metodo, diasCheque: esCheque ? dias : undefined })}>
+                        {e.erp !== 'XUBIO' ? 'Aprobar (carga manual en Ralpharma)' : modoApp === 'demo' ? 'Aprobar y enviar a Xubio' : 'Aprobar'}
+                      </Btn>
+                    </div>
+                  </>
+                )}
+
+                {modo === 'ERRORES' && !rechazando && (
+                  <>
+                    <p className="text-sm text-seco">No pasó la validación automática. Corregí los datos (se vuelve a validar al guardar) o descartala con motivo.</p>
+                    <div className="flex justify-end gap-2">
+                      <Btn variant="peligro" onClick={() => setRechazando(true)}>
+                        Descartar
+                      </Btn>
+                      <Btn onClick={() => setEditando(true)}>Corregir datos</Btn>
+                    </div>
+                  </>
                 )}
               </div>
-              <div className="flex justify-end gap-2 pt-2">
-                <Btn variant="peligro" onClick={() => setRechazando(true)}>
-                  Rechazar
-                </Btn>
-                <Btn disabled={!cuentaValida} onClick={() => aprobarFactura(f.id, { cuentaContable: cuentaValida!, metodoPago: metodo, diasCheque: esCheque ? dias : undefined })}>
-                  {e.erp !== 'XUBIO' ? 'Aprobar (carga manual en Ralpharma)' : modoApp === 'demo' ? 'Aprobar y enviar a Xubio' : 'Aprobar'}
-                </Btn>
-              </div>
-            </div>
-          )}
-
-          {modo === 'ERRORES' && puedeAprobar && rechazando && panelRechazo}
-
-          {modo === 'ERRORES' && puedeAprobar && !rechazando && (
-            <div className="space-y-3">
-              <p className="text-sm text-seco">
-                Esta factura no pasó la validación automática. Hoy esto llega como un mail de alerta; acá queda en una bandeja de excepciones con responsable.
-              </p>
-              <div className="flex justify-end gap-2">
-                <Btn variant="peligro" onClick={() => setRechazando(true)}>
-                  Descartar
-                </Btn>
-                <Btn variant="secundario" onClick={() => setEditando(true)}>
-                  Corregir datos
-                </Btn>
-              </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       )}
     </Card>

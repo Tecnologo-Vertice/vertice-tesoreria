@@ -24,7 +24,7 @@ export function Ralpharma() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="font-serif text-3xl">Ralpharma</h2>
+        <h2 className="titulo-pagina">Ralpharma</h2>
         <p className="text-sm text-seco">
           Droguería Robles, Héctor Robles y Farma Control no usan Xubio y Ralpharma no tiene conexión automática. Acá está todo lo que hay que cargar a mano allá. Nada se da por
           cargado hasta que alguien lo confirma con su nombre.
@@ -70,7 +70,7 @@ export function Ralpharma() {
                     <>
                       {' '}
                       ·{' '}
-                      <button onClick={() => void abrirArchivo('facturas', f.pdfPath!)} className="text-dorado underline">
+                      <button onClick={() => void abrirArchivo('facturas', f.pdfPath!)} className="text-acento underline">
                         ver PDF
                       </button>
                     </>
@@ -129,7 +129,7 @@ export function Ralpharma() {
         <div className="space-y-2">
           {facturasHechas.length + pagosHechos.length === 0 && <Empty texto="Todavía no se confirmó ninguna carga." />}
           {facturasHechas.map((f) => (
-            <div key={f.id} className="flex items-center gap-3 px-4 py-2 rounded-xl border border-borde bg-pino/40 text-sm">
+            <div key={f.id} className="flex items-center gap-3 px-4 py-2 rounded-xl border border-borde bg-pino text-sm">
               <Badge tone="verde">Factura</Badge>
               <span className="flex-1 truncate">
                 {empresa(f.empresaId).corto} · {proveedor(f.proveedorId)?.nombre} · {nroComprobante(f.puntoVenta, f.numero)}
@@ -141,7 +141,7 @@ export function Ralpharma() {
             </div>
           ))}
           {pagosHechos.map((p) => (
-            <div key={p.id} className="flex items-center gap-3 px-4 py-2 rounded-xl border border-borde bg-pino/40 text-sm">
+            <div key={p.id} className="flex items-center gap-3 px-4 py-2 rounded-xl border border-borde bg-pino text-sm">
               <Badge tone="verde">Pago</Badge>
               <span className="flex-1 truncate">
                 {empresa(p.empresaId).corto} · {proveedor(p.proveedorId)?.nombre ?? p.descripcion}

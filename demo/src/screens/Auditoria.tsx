@@ -29,7 +29,7 @@ export function Auditoria() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="font-serif text-3xl">Auditoría</h2>
+        <h2 className="titulo-pagina">Auditoría</h2>
         <p className="text-sm text-seco">Registro de solo inserción: quién aprobó, pagó y contabilizó cada cosa. Hoy la hoja no guarda esto.</p>
       </div>
       <div className="flex flex-wrap gap-3">
@@ -52,7 +52,7 @@ export function Auditoria() {
       <Card className="p-0 overflow-hidden">
         <Table head={['Cuándo', 'Quién', 'Rol', 'Acción', 'Entidad', 'Detalle']}>
           {lista.slice(0, 120).map((a) => (
-            <tr key={a.id} className="hover:bg-pino/60">
+            <tr key={a.id} className="hover:bg-suave/60">
               <td className="px-4 py-2 text-xs text-seco whitespace-nowrap">{fechaHora(a.fecha)}</td>
               <td className="px-4 py-2 font-semibold">{a.usuario}</td>
               <td className="px-4 py-2 text-xs text-seco">{a.rol}</td>

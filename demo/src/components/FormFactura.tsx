@@ -156,7 +156,7 @@ export function FormFactura({ f, onCerrar }: { f: Factura; onCerrar: () => void 
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <span className="text-[10px] uppercase tracking-widest text-seco">Percepciones e impuestos</span>
-          <button onClick={() => set('percepciones', [...d.percepciones, { nombre: '', importe: 0 }])} className="text-xs text-dorado hover:text-crema">
+          <button onClick={() => set('percepciones', [...d.percepciones, { nombre: '', importe: 0 }])} className="text-xs text-acento hover:text-crema">
             + Agregar percepción
           </button>
         </div>

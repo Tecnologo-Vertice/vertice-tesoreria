@@ -39,7 +39,7 @@ export function Vencimientos() {
     <div className="space-y-6">
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-3">
         <div>
-          <h2 className="font-serif text-3xl">Vencimientos</h2>
+          <h2 className="titulo-pagina">Vencimientos</h2>
           <p className="text-sm text-seco">Lo que el grupo debe pagar, ordenado por urgencia.</p>
         </div>
         <select value={empresaId} onChange={(e) => setEmpresaId(e.target.value)} className="bg-pino border border-borde text-crema text-sm rounded-lg px-3 py-2 focus:border-dorado outline-none">
@@ -64,13 +64,13 @@ export function Vencimientos() {
         <h3 className="font-serif text-xl mb-3">Por empresa</h3>
         <Table head={['Empresa', 'ERP', 'Vencido', 'Esta semana', 'Hasta 30 días', 'Total pendiente']}>
           {porEmpresa.map(({ e, vencido, semana, mes, total }) => (
-            <tr key={e.id} className="hover:bg-pino/60">
+            <tr key={e.id} className="hover:bg-suave/60">
               <td className="px-4 py-2.5 font-semibold">{e.nombre}</td>
               <td className="px-4 py-2.5">
                 <Badge tone={e.erp === 'XUBIO' ? 'verde' : 'naranja'}>{e.erp === 'XUBIO' ? 'Xubio' : 'Ralpharma'}</Badge>
               </td>
               <td className={`px-4 py-2.5 ${vencido > 0 ? 'text-red-300' : 'text-seco'}`}>{vencido > 0 ? money(vencido) : '—'}</td>
-              <td className={`px-4 py-2.5 ${semana > 0 ? 'text-dorado' : 'text-seco'}`}>{semana > 0 ? money(semana) : '—'}</td>
+              <td className={`px-4 py-2.5 ${semana > 0 ? 'text-acento' : 'text-seco'}`}>{semana > 0 ? money(semana) : '—'}</td>
               <td className="px-4 py-2.5">{mes > 0 ? money(mes) : '—'}</td>
               <td className="px-4 py-2.5 font-semibold">{money(total)}</td>
             </tr>
@@ -82,7 +82,7 @@ export function Vencimientos() {
         <h3 className="font-serif text-xl mb-3">Detalle por urgencia</h3>
         <Table head={['Vencimiento', 'Empresa', 'Proveedor', 'Comprobante', 'Cuenta contable', 'Método', 'Pendiente']}>
           {deuda.lista.map(({ f, pendiente }) => (
-            <tr key={f.id} className="hover:bg-pino/60">
+            <tr key={f.id} className="hover:bg-suave/60">
               <td className="px-4 py-2.5">
                 <div className="flex items-center gap-2">
                   <BadgeVencimiento vencimiento={f.vencimiento} />

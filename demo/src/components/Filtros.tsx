@@ -126,7 +126,7 @@ export function useFiltro<T>(items: T[], cfg: ConfigFiltro<T>) {
   const sel = 'bg-botella border border-borde text-crema text-sm rounded-lg px-2 py-2 focus:border-dorado outline-none max-w-[220px]'
 
   const barra: ReactNode = (
-    <div className="flex flex-wrap items-center gap-2 bg-pino/40 border border-borde rounded-xl p-3">
+    <div className="flex flex-wrap items-center gap-2 bg-pino border border-borde rounded-2xl p-3">
       <input
         value={f.q}
         onChange={(e) => setF({ ...f, q: e.target.value })}
@@ -165,7 +165,7 @@ export function useFiltro<T>(items: T[], cfg: ConfigFiltro<T>) {
         <option value="IMPORTE">Importe mayor</option>
       </select>
       {activos && (
-        <button onClick={() => setF({ ...VACIO, orden: f.orden })} className="text-xs text-seco hover:text-dorado px-2">
+        <button onClick={() => setF({ ...VACIO, orden: f.orden })} className="text-xs text-seco hover:text-acento px-2">
           Limpiar
         </button>
       )}

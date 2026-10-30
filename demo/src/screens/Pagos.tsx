@@ -63,7 +63,7 @@ export function Pagos() {
     <div className="space-y-6">
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-3">
         <div>
-          <h2 className="font-serif text-3xl">Pagos</h2>
+          <h2 className="titulo-pagina">Pagos</h2>
           <p className="text-sm text-seco">Vivi sube el comprobante, la IA lo lee y el pago queda vinculado a su factura. Nada se tipea dos veces.</p>
         </div>
         {puedePagar ? (
@@ -104,7 +104,7 @@ export function Pagos() {
               <div
                 key={f.id}
                 onClick={() => puedePagar && !otraEmpresa && toggle(f.id)}
-                className={`flex items-center gap-4 px-4 py-3 rounded-xl border transition-colors ${puedePagar ? 'cursor-pointer' : ''} ${marcada ? 'border-dorado bg-dorado/10' : 'border-borde bg-pino/40 hover:bg-pino/70'} ${otraEmpresa ? 'opacity-40 cursor-not-allowed' : ''}`}
+                className={`flex items-center gap-4 px-4 py-3 rounded-xl border transition-colors ${puedePagar ? 'cursor-pointer' : ''} ${marcada ? 'border-dorado bg-dorado/10' : 'border-borde bg-pino hover:bg-suave/60'} ${otraEmpresa ? 'opacity-40 cursor-not-allowed' : ''}`}
                 title={otraEmpresa ? 'Un pago agrupa facturas de una sola empresa' : ''}
               >
                 {puedePagar && <input type="checkbox" readOnly checked={marcada} className="accent-dorado w-4 h-4" />}
@@ -127,7 +127,7 @@ export function Pagos() {
                         ev.stopPropagation()
                         void subirFacturaXubio(f.id)
                       }}
-                      className="text-[11px] text-dorado underline mt-0.5"
+                      className="text-[11px] text-acento underline mt-0.5"
                     >
                       {f.estadoXubio === 'ERROR' ? 'Reintentar subida a Xubio' : modo === 'demo' ? 'Subir a Xubio (simulado)' : 'Subir a Xubio'}
                     </button>
@@ -152,7 +152,7 @@ export function Pagos() {
             const p = proveedor(f.proveedorId)
             const pg = pagos.find((x) => x.facturaIds.includes(f.id))
             return (
-              <div key={f.id} className="flex items-center gap-4 px-4 py-3 rounded-xl border border-borde bg-pino/40">
+              <div key={f.id} className="flex items-center gap-4 px-4 py-3 rounded-xl border border-borde bg-pino">
                 <div className="flex-1 min-w-0">
                   <div className="flex flex-wrap items-center gap-2 mb-0.5">
                     <Badge tone="dorado">{empresa(f.empresaId).corto}</Badge>
@@ -357,7 +357,7 @@ function ModalCargarPago({ facturaIds, onClose }: { facturaIds: string[]; onClos
               <div className="flex items-center justify-between">
                 <p className="text-sm font-semibold truncate">{archivo.nombre}</p>
                 <button
-                  className="text-xs text-seco hover:text-dorado"
+                  className="text-xs text-seco hover:text-acento"
                   onClick={() => {
                     setArchivo(null)
                     setLectura(null)
@@ -371,12 +371,12 @@ function ModalCargarPago({ facturaIds, onClose }: { facturaIds: string[]; onClos
                 <div className="space-y-2">
                   <div className="h-3 rounded shimmer" />
                   <div className="h-3 rounded shimmer w-3/4" />
-                  <p className="text-xs text-dorado">✦ La IA está leyendo el comprobante…</p>
+                  <p className="text-xs text-acento">✦ La IA está leyendo el comprobante…</p>
                 </div>
               )}
               {lectura && (
                 <div className="text-xs space-y-1">
-                  <p className="text-dorado">✦ Leído · confianza {Math.round(lectura.confianza * 100)}%</p>
+                  <p className="text-acento">✦ Leído · confianza {Math.round(lectura.confianza * 100)}%</p>
                   {lectura.confianza < 0.7 && <p className="text-amber-300">Imagen poco legible: revisá importe y fecha antes de confirmar.</p>}
                   {lectura.beneficiario && (
                     <p className="text-seco">
@@ -508,7 +508,7 @@ function ModalCargarPago({ facturaIds, onClose }: { facturaIds: string[]; onClos
             {facturasEmpresa.map((f) => {
               const on = vinculadas.includes(f.id)
               return (
-                <label key={f.id} className={`flex items-center gap-3 px-3 py-2 text-xs cursor-pointer ${on ? 'bg-dorado/10' : 'hover:bg-pino/60'}`}>
+                <label key={f.id} className={`flex items-center gap-3 px-3 py-2 text-xs cursor-pointer ${on ? 'bg-dorado/10' : 'hover:bg-suave/60'}`}>
                   <input type="checkbox" checked={on} onChange={() => setVinculadas((v) => (on ? v.filter((x) => x !== f.id) : [...v, f.id]))} className="accent-dorado" />
                   <span className="flex-1 truncate">
                     {proveedor(f.proveedorId)?.nombre} · {f.tipo} {nroComprobante(f.puntoVenta, f.numero)}

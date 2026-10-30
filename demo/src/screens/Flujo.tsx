@@ -40,7 +40,7 @@ export function Flujo() {
     <div className="space-y-6">
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-3">
         <div>
-          <h2 className="font-serif text-3xl">Flujo de fondos</h2>
+          <h2 className="titulo-pagina">Flujo de fondos</h2>
           <p className="text-sm text-seco">Pagos reales, facturas aprobadas por vencer y cheques a acreditar, por cuenta contable. Hoy esto se arma a mano.</p>
         </div>
         <div className="flex gap-2">
@@ -88,7 +88,7 @@ export function Flujo() {
                   </div>
                   <Barra v={s.cheques} max={max} cls="bg-sky-400/80" titulo={`Cheques ${money(s.cheques)}`} />
                 </div>
-                <p className={`text-[10px] ${esActual ? 'text-dorado font-bold' : 'text-seco'}`}>{esActual ? 'esta sem.' : fecha(iso(s.ini)).slice(0, 5)}</p>
+                <p className={`text-[10px] ${esActual ? 'text-acento font-bold' : 'text-seco'}`}>{esActual ? 'esta sem.' : fecha(iso(s.ini)).slice(0, 5)}</p>
               </div>
             )
           })}

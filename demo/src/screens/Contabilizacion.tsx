@@ -1,9 +1,9 @@
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useStore } from '../store'
-import { Badge, Btn, Card, Empty, Field, inputCls, Kpi, SelectorCuenta, Tabs } from '../components/ui'
+import { Badge, Btn, Card, Empty, Field, inputCls, Kpi, SelectorCuenta, TablaDatos, Tabs } from '../components/ui'
 import { cuentasOrigenDe, cuentasPara, enLista, sugerirCuentaOrigen } from '../lib/cuentas'
 import { useFiltro } from '../components/Filtros'
-import { fecha, fechaHora, money, moneyShort, nroComprobante } from '../lib/format'
+import { fecha, fechaHora, fmtCuit, money, moneyShort, nroComprobante } from '../lib/format'
 import { puede } from '../lib/permisos'
 import type { FormaCargaXubio, Pago } from '../types'
 
@@ -38,7 +38,7 @@ export function Contabilizacion() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="font-serif text-3xl">Contabilización</h2>
+        <h2 className="titulo-pagina">Contabilización</h2>
         <p className="text-sm text-seco">
           La bandeja de Guido. Cada pago llega con el comentario de Vivi, la cuenta sugerida y la forma de carga en Xubio. Un clic lo registra. Nada pasa a "contabilizado" sin un id de Xubio o un responsable en Ralpharma.
         </p>
@@ -97,82 +97,85 @@ function TarjetaPago({ p, empresaNombre, erp, nueva }: { p: Pago; empresaNombre:
     setEnviando(false)
   }
 
+  const comprobante = p.comprobanteUrl ? (
+    <a href={p.comprobanteUrl} target="_blank" rel="noreferrer" className="text-acento font-bold hover:underline">
+      Abrir en Drive
+    </a>
+  ) : p.comprobante ? (
+    <button onClick={() => void abrirArchivo('comprobantes', p.comprobante)} className="text-acento font-bold hover:underline">
+      {p.comprobante.split('/').pop()}
+    </button>
+  ) : undefined
+
   return (
-    <Card>
-      <div className="flex flex-col lg:flex-row gap-5">
-        <div className="flex-1 min-w-0 space-y-3">
+    <Card className="p-0 overflow-hidden">
+      {/* Encabezado: quién, cuánto y en qué estado */}
+      <div className="px-6 py-5 flex flex-col md:flex-row md:items-start justify-between gap-4">
+        <div className="min-w-0 space-y-2">
           <div className="flex flex-wrap items-center gap-2">
             {nueva && <Badge tone="azul">Nuevo</Badge>}
             <Badge tone="dorado">{empresaNombre}</Badge>
             <Badge>{p.medio}</Badge>
-            {p.gestion === 'HOJA' && <Badge title="Copiado del dashboard de producción. Si lo contabilizás acá, la copia ya no lo pisa.">De la hoja</Badge>}
             <Badge tone={facts.length ? 'azul' : 'naranja'}>{facts.length ? `${facts.length} factura(s)` : 'Sin factura'}</Badge>
-            {p.numeroCheque && <Badge>Cheque {p.numeroCheque} · acredita {fecha(p.fechaAcreditacion)}</Badge>}
+            {p.gestion === 'HOJA' && <Badge title="Copiado del dashboard de producción. Si lo contabilizás acá, la copia ya no lo pisa.">De la hoja</Badge>}
             {hecho && <Badge tone="verde">{p.xubioId === 'RALPHARMA' ? 'Cargado en Ralpharma' : `Xubio ${p.xubioId}`}</Badge>}
+            {p.estado === 'REVISADO' && <Badge tone="verde">Revisado en seco</Badge>}
             {p.mailProveedorEnviado && <Badge tone="azul">Mail al proveedor</Badge>}
           </div>
-          <div>
-            <p className="font-semibold">{prov?.nombre ?? p.proveedorDestino ?? p.descripcion}</p>
-            <p className="text-xs text-seco">
-              {fecha(p.fecha)} · desde {p.cuentaOrigen || p.bancoOrigen || 'cuenta sin definir'}
-              {p.bancoDestino ? ` → ${p.bancoDestino}` : ''}
-              {p.comprobanteUrl ? (
-                <>
-                  {' · '}
-                  <a href={p.comprobanteUrl} target="_blank" rel="noreferrer" className="text-dorado underline hover:text-crema">
-                    comprobante en Drive
-                  </a>
-                </>
-              ) : p.comprobante ? (
-                <>
-                  {' · comprobante '}
-                  <button onClick={() => void abrirArchivo('comprobantes', p.comprobante)} className="text-dorado underline hover:text-crema">
-                    {p.comprobante.split('/').pop()}
-                  </button>
-                </>
-              ) : null}
-            </p>
-          </div>
+          <p className="text-lg font-bold text-crema leading-tight">{prov?.nombre ?? p.proveedorDestino ?? p.descripcion}</p>
+          <p className="text-sm text-seco">
+            {fecha(p.fecha)}
+            {p.descripcion && (prov?.nombre || p.proveedorDestino) ? ` · ${p.descripcion}` : ''}
+          </p>
+        </div>
+        <div className="md:text-right shrink-0">
+          <p className="font-serif text-[2.2rem] leading-none text-crema">{money(p.importe)}</p>
+          <p className="text-[11px] text-seco mt-1.5">Cargado por {p.cargadoPor} · {fechaHora(p.cargadoEn)}</p>
+        </div>
+      </div>
+
+      {/* Cuerpo: detalle a la izquierda, decisión a la derecha */}
+      <div className="border-t border-borde p-6 grid lg:grid-cols-2 gap-6">
+        <div className="space-y-3 min-w-0">
+          <TablaDatos
+            titulo="Detalle del pago"
+            filas={[
+              ['Pagado a', prov?.nombre ?? p.proveedorDestino],
+              ['CUIT', prov?.cuit ? fmtCuit(prov.cuit) : undefined],
+              ['Fecha', fecha(p.fecha)],
+              ['Medio', p.medio],
+              ['Desde', p.cuentaOrigen || p.bancoOrigen || 'Sin definir'],
+              ['N° de cuenta', p.numeroCuenta],
+              ['Banco destino', p.bancoDestino],
+              ['Cheque', p.numeroCheque ? `N° ${p.numeroCheque}${p.tipoCheque ? ' · ' + p.tipoCheque : ''} · acredita ${fecha(p.fechaAcreditacion)}` : undefined],
+              ['Comprobante', comprobante],
+              ...facts.map((f): [string, ReactNode] => [
+                `${f.tipo} ${nroComprobante(f.puntoVenta, f.numero)}`,
+                <span key={f.id}>
+                  {money(f.total)}
+                  {f.pagadoPct < 100 && <span className="text-amber-300"> · {f.pagadoPct}% pagado</span>}
+                </span>,
+              ]),
+              ['Contabilizado', p.contabilizadoEn ? `${p.contabilizadoPor} · ${fechaHora(p.contabilizadoEn)}` : undefined],
+            ]}
+          />
           {sinLeer && (
-            <div className="rounded-lg bg-amber-950/40 border border-amber-900 text-amber-200 text-xs p-3">
+            <div className="rounded-xl bg-amber-950/40 border border-amber-900 text-amber-200 text-[13px] p-3">
               La IA no pudo leer el comprobante ({p.estadoExtraccion}). Revisá importe, banco y fecha mirándolo antes de contabilizar.
             </div>
           )}
-          {p.avisoImporte && <div className="rounded-lg bg-amber-950/40 border border-amber-900 text-amber-200 text-xs p-3">{p.avisoImporte}</div>}
+          {p.avisoImporte && <div className="rounded-xl bg-amber-950/40 border border-amber-900 text-amber-200 text-[13px] p-3">{p.avisoImporte}</div>}
           {p.observaciones && (
-            <div className="rounded-lg bg-botella border border-borde p-3 text-sm">
-              <p className="text-[10px] uppercase tracking-widest text-seco mb-1">Comentario de {p.cargadoPor}</p>
+            <div className="rounded-xl bg-suave border border-borde p-4">
+              <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-seco mb-1">Comentario de {p.cargadoPor}</p>
               <p className="italic text-crema">"{p.observaciones}"</p>
             </div>
           )}
-          {facts.length > 0 && (
-            <ul className="text-xs space-y-1">
-              {facts.map((f) => (
-                <li key={f.id} className="flex justify-between gap-3 border-b border-borde/40 pb-1">
-                  <span className="text-seco">
-                    {f.tipo} {nroComprobante(f.puntoVenta, f.numero)} · {f.cuentaContable}
-                  </span>
-                  <span>
-                    {money(f.total)} {f.pagadoPct < 100 && <span className="text-amber-300">({f.pagadoPct}%)</span>}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-          <p className="text-[11px] text-seco">
-            Cargado por <span className="text-crema">{p.cargadoPor}</span> el {fechaHora(p.cargadoEn)}
-            {p.contabilizadoEn && (
-              <>
-                {' '}
-                · contabilizado por <span className="text-crema">{p.contabilizadoPor}</span> el {fechaHora(p.contabilizadoEn)}
-              </>
-            )}
-          </p>
         </div>
 
-        <div className="lg:w-80 shrink-0 space-y-3 lg:border-l lg:border-borde lg:pl-5">
-          <p className="font-serif text-2xl text-right">{money(p.importe)}</p>
-          {!hecho && !puedeContabilizar && <p className="text-xs text-seco text-right">Lo contabiliza Administración.</p>}
+        <div className="rounded-xl border border-borde bg-suave/40 p-5 space-y-4 self-start w-full">
+          <p className="text-[10px] uppercase tracking-[0.16em] font-bold text-seco">{hecho ? 'Cómo quedó' : erp === 'XUBIO' ? 'Contabilizar en Xubio' : 'Carga en Ralpharma'}</p>
+          {!hecho && !puedeContabilizar && <p className="text-sm text-seco">Lo contabiliza Administración.</p>}
           {!hecho && puedeContabilizar && erp === 'XUBIO' && (
             <>
               <Field
@@ -190,7 +193,7 @@ function TarjetaPago({ p, empresaNombre, erp, nueva }: { p: Pago; empresaNombre:
                   ))}
                 </select>
               </Field>
-              {echeq && <p className="text-[11px] text-amber-300">E-cheq: Xubio no deja crear esta orden de pago por API. En seco se verifica igual; en real hay que cargarla a mano.</p>}
+              {echeq && <p className="text-[12px] text-amber-300 leading-snug">E-cheq: Xubio no deja crear esta orden de pago por API. En seco se verifica igual; en real hay que cargarla a mano.</p>}
               <Field
                 label="Cuenta contable"
                 marcado={!cuenta ? 'falta' : p.sugerenciaOrigen && !p.cuentaContable ? 'ia' : undefined}
@@ -207,30 +210,31 @@ function TarjetaPago({ p, empresaNombre, erp, nueva }: { p: Pago; empresaNombre:
                   ))}
                 </select>
               </Field>
-              <Btn className="w-full justify-center" disabled={!!falta || enviando} onClick={contabilizar} title={falta}>
-                {enviando ? 'Registrando en Xubio…' : 'Contabilizar en Xubio'}
-              </Btn>
-              {falta && <p className="text-[11px] text-red-300 text-right">{falta}</p>}
+              <div className="flex items-center justify-end gap-3 pt-1">
+                {falta && <p className="text-[12px] text-red-300">{falta}</p>}
+                <Btn disabled={!!falta || enviando} onClick={contabilizar} title={falta}>
+                  {enviando ? 'Registrando en Xubio…' : 'Contabilizar en Xubio'}
+                </Btn>
+              </div>
             </>
           )}
           {!hecho && puedeContabilizar && erp === 'RALPHARMA' && (
             <>
-              <p className="text-xs text-seco">Esta empresa no usa Xubio. Hoy estas facturas pasaban a "contabilizadas" solas; acá alguien tiene que confirmar la carga.</p>
-              <Btn className="w-full justify-center" variant="secundario" onClick={() => marcarRalpharma(p.id)}>
+              <p className="text-sm text-seco">Esta empresa no usa Xubio: se carga a mano en Ralpharma y acá se confirma con tu nombre.</p>
+              <Btn className="w-full" variant="secundario" onClick={() => marcarRalpharma(p.id)}>
                 Confirmo que lo cargué en Ralpharma
               </Btn>
             </>
           )}
-          {(hecho || p.estado === 'REVISADO') && p.detalleXubio && <p className="text-[11px] text-seco">{p.detalleXubio}</p>}
+          {(hecho || p.estado === 'REVISADO') && p.detalleXubio && <p className="text-[13px] text-seco leading-snug">{p.detalleXubio}</p>}
           {hecho && (
-            <div className="text-xs text-seco space-y-1">
-              <p>
-                Cuenta: <span className="text-crema">{p.cuentaContable}</span>
-              </p>
-              <p>
-                Forma: <span className="text-crema">{FORMAS.find((f) => f.id === p.formaCargaXubio)?.label}</span>
-              </p>
-            </div>
+            <TablaDatos
+              filas={[
+                ['Cuenta', p.cuentaContable],
+                ['Forma', FORMAS.find((f) => f.id === p.formaCargaXubio)?.label],
+                ['Desde', p.cuentaOrigen],
+              ]}
+            />
           )}
         </div>
       </div>
