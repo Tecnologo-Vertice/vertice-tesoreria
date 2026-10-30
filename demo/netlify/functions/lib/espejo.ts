@@ -200,7 +200,10 @@ export function facturaDesdeFila(f: FilaHoja, hoja: HojaFacturas, fila: number):
   const xn = normalizar(x)
   let estadoXubio = 'PENDIENTE'
   let xubioError: string | null = null
-  if (EMPRESAS_SIN_XUBIO.includes(empresa)) estadoXubio = 'PENDIENTE_RALPHARMA'
+  // Empresas sin Xubio: producción no registra la carga de la factura en Ralpharma; la marca CONTABILIZADA
+  // al pagarla (o al pasarla al historial). Esas cuentan como cargadas; el resto queda pendiente para Guido.
+  if (EMPRESAS_SIN_XUBIO.includes(empresa))
+    estadoXubio = hoja === 'Facturas_Aprobadas' || estadoPago === 'contabilizada' ? 'CARGADA_RALPHARMA' : 'PENDIENTE_RALPHARMA'
   else if (xn.startsWith('subido') || xn.includes('yaexiste')) estadoXubio = 'SUBIDA'
   else if (xn.includes('sinerp')) estadoXubio = 'SIN_ERP'
   else if (xn.includes('error') || xn.startsWith('omitida')) {
