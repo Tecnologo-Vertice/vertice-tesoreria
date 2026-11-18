@@ -23,6 +23,19 @@ select lower(trim(email)), nombre, rol::rol from (values
 ) as equipo(email, nombre, rol)
 on conflict (email) do update set nombre = excluded.nombre, rol = excluded.rol, activo = true;
 
+-- 1b) Qué empresas ve cada persona (0010_aislamiento_por_empresa.sql).
+--     todas_empresas = true → ve las 8. Si es false, ve SOLO las que figuren en usuarios_empresas;
+--     un usuario nuevo arranca en false y sin empresas: no ve nada hasta que se le asignen.
+--     Hoy todo el equipo ve todas (como antes de 0010). Para limitar a alguien:
+--       update usuarios set todas_empresas = false where email = 'tesoreria@verticebi.com';
+--       insert into usuarios_empresas (email, empresa_id) values
+--         ('tesoreria@verticebi.com', 'beratung'), ('tesoreria@verticebi.com', 'india')
+--       on conflict do nothing;
+--     Ids de empresa: beratung, india, controlb, ysd, vertice, robles, hrobles, farmacontrol.
+update usuarios set todas_empresas = true where email in (
+  'tecnologia@verticebi.com', 'md@verticebi.com', 'controller@verticebi.com',
+  'contabilidad@verticebi.com', 'tesoreria@verticebi.com', 'administracion@verticebi.com');
+
 -- 2) CUIT reales de las empresas (11 dígitos, sin guiones). Sirven para que la IA reconozca la
 --    empresa receptora de cada factura y nunca tome su CUIT como el del proveedor.
 update empresas set cuit = '33716515929' where id = 'beratung';      -- Beratung S.A.
@@ -43,6 +56,6 @@ update empresas set cuit = '33717962279' where id = 'farmacontrol';  -- Farma Co
 -- on conflict (empresa_id, nombre) do nothing;
 
 -- Verificación: tiene que mostrar los mails reales activos y ningún CUIT 'COMPLETAR'.
-select 'usuario' as que, email as detalle, rol::text as extra from usuarios where activo
+select 'usuario' as que, email as detalle, rol::text || case when todas_empresas then ' · todas' else ' · ' || coalesce((select string_agg(empresa_id, ', ') from usuarios_empresas ue where ue.email = usuarios.email), 'SIN EMPRESAS') end as extra from usuarios where activo
 union all select 'empresa', nombre, cuit from empresas
 union all select 'cuenta origen', empresa_id, nombre from cuentas_origen;

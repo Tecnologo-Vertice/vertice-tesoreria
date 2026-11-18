@@ -4,7 +4,7 @@
 //   - XUBIO_ENVIO_REAL=true: lo envía, guarda el id de Xubio y el pago queda CONTABILIZADO.
 
 import type { Config } from '@netlify/functions'
-import { env, exigirRol, json, leerJson, manejar, supabaseAdmin, usuarioDesde, ErrorHttp } from './lib/comun'
+import { env, exigirEmpresa, exigirRol, json, leerJson, manejar, supabaseAdmin, usuarioDesde, ErrorHttp } from './lib/comun'
 import * as xubio from './lib/xubio'
 import { itemPagoEnFactura, pagoYaExiste } from './lib/xubio-armado'
 
@@ -31,6 +31,7 @@ export default manejar(async (req) => {
   const db = supabaseAdmin()
   const { data: pago, error } = await db.from('pagos').select('*, proveedores(nombre, cuit), empresas(id, nombre, erp)').eq('id', b.pagoId).single()
   if (error || !pago) throw new ErrorHttp(404, 'Pago inexistente')
+  await exigirEmpresa(u, pago.empresas?.id)
   if (!['CARGADO', 'REVISADO'].includes(pago.estado)) throw new ErrorHttp(409, `El pago está en estado ${pago.estado}`)
   if (pago.empresas.erp !== 'XUBIO') throw new ErrorHttp(422, 'Esta empresa no usa Xubio: confirmá la carga en Ralpharma')
   if (!(Number(pago.importe) > 0)) throw new ErrorHttp(422, 'Falta el importe del pago: la IA no lo leyó del comprobante')

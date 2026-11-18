@@ -25,6 +25,7 @@ await db.exec(`
   create table storage.buckets (id text primary key, name text, public boolean);
   create table storage.objects (id uuid primary key default gen_random_uuid(), bucket_id text, name text);
   alter table storage.objects enable row level security;
+  grant select, insert on storage.objects to authenticated; -- como en Supabase: el RLS decide
   grant usage on schema public, auth, storage to anon, authenticated, service_role;
   grant execute on function auth.jwt() to anon, authenticated;
 `)
@@ -34,7 +35,8 @@ for (const f of readdirSync(dir).filter((x) => x.endsWith('.sql')).sort()) {
   catch (e) { check(`migración ${f}`, false, e.message); process.exit(1) }
 }
 // Proyecto creado con "Automatically expose new tables" desmarcado: los únicos permisos son los de 0007.
-await db.exec(`insert into usuarios (email, nombre, rol) values ('aprobador@verticebi.com', 'Aprobador', 'APROBADOR'), ('direccion@verticebi.com', 'Dirección', 'DIRECCION')`)
+// todas_empresas = true: estos usuarios de prueba ven las 8 empresas, como el equipo hoy (0010).
+await db.exec(`insert into usuarios (email, nombre, rol, todas_empresas) values ('aprobador@verticebi.com', 'Aprobador', 'APROBADOR', true), ('direccion@verticebi.com', 'Dirección', 'DIRECCION', true)`)
 check('anon no tiene ningún permiso sobre las tablas', !(await val(`select has_table_privilege('anon', 'facturas', 'select') p`)).p && !(await val(`select has_table_privilege('anon', 'pagos', 'select') p`)).p)
 check('authenticated solo lee (no escribe directo en las tablas)', (await val(`select has_table_privilege('authenticated', 'pagos', 'select') p`)).p && !(await val(`select has_table_privilege('authenticated', 'pagos', 'insert') p`)).p)
 check('service_role (funciones de Netlify) escribe', (await val(`select has_table_privilege('service_role', 'documentos', 'insert') p`)).p)
@@ -333,6 +335,64 @@ await como('aprobador@verticebi.com')
 await falla('factura con pagos: no se edita', `select editar_factura($1, $2)`, [fotra, JSON.stringify(datosEd({ numero: 4402 }))], /sin pagos/)
 await db.exec(`reset role`)
 check('anon no puede editar facturas', !(await val(`select has_function_privilege('anon', 'editar_factura(uuid,jsonb)', 'execute') p`)).p)
+
+// ================================================================ Aislamiento por empresa (0010)
+await db.exec(`reset role`)
+check('los usuarios que ya existían siguen viendo todas las empresas', (await val(`select bool_and(todas_empresas) b from usuarios where email in ('tecnologia@verticebi.com', 'tesoreria@verticebi.com', 'administracion@verticebi.com')`)).b === true)
+await db.exec(`insert into usuarios (email, nombre, rol) values
+  ('aprob.india@verticebi.com', 'Aprobador India', 'APROBADOR'),
+  ('teso.india@verticebi.com', 'Tesorería India', 'TESORERIA'),
+  ('nuevo@verticebi.com', 'Sin asignar', 'APROBADOR')`)
+await db.exec(`insert into usuarios_empresas (email, empresa_id) values ('aprob.india@verticebi.com', 'india'), ('teso.india@verticebi.com', 'india')`)
+// Una factura y un pago de cada empresa, cargados por el servidor (sin control: no es una persona).
+const fBer = (await val(`select ingresar_factura($1) id`, [factura({ numero: 9001, total: 1000, neto: 1000, iva: 0 })])).id
+const fInd = (await val(`select ingresar_factura($1) id`, [factura({ empresa_id: 'india', numero: 9002, total: 2000, neto: 2000, iva: 0 })])).id
+check('el servidor (ingesta) sigue escribiendo en cualquier empresa', !!fBer && !!fInd)
+await db.query(`update facturas set pdf_path = 'aisl/ber.pdf' where id = $1`, [fBer])
+await db.query(`update facturas set pdf_path = 'aisl/ind.pdf' where id = $1`, [fInd])
+await db.exec(`insert into storage.objects (bucket_id, name) values ('facturas', 'aisl/ber.pdf'), ('facturas', 'aisl/ind.pdf')`)
+const nEmpresas = (await val(`select count(*)::int n from empresas`)).n
+
+await db.exec(`set role authenticated`)
+await como('aprob.india@verticebi.com')
+check('usuario de India ve solo su empresa', (await db.query(`select id from empresas`)).rows.map((x) => x.id).join() === 'india')
+check('usuario de India no ve facturas de otras empresas', (await val(`select count(*)::int n from facturas where empresa_id <> 'india'`)).n === 0)
+check('usuario de India sí ve las facturas de India', (await val(`select count(*)::int n from facturas where id = $1`, [fInd])).n === 1)
+check('usuario de India no ve pagos de otras empresas', (await val(`select count(*)::int n from pagos where empresa_id <> 'india'`)).n === 0)
+check('la vista del flujo solo trae India', (await val(`select count(*)::int n from export_cashflow where empresa <> 'INDIA ADV S.A.'`)).n === 0)
+check('auditoría: no ve la de facturas de otras empresas', (await val(`select count(*)::int n from auditoria where entidad_id = $1`, [fBer])).n === 0)
+check('auditoría: sí ve la de sus facturas', (await val(`select count(*)::int n from auditoria where entidad_id = $1`, [fInd])).n >= 1)
+check('documentos sin empresa (sin leer) no los ve', (await val(`select count(*)::int n from documentos where factura_id is null`)).n === 0)
+check('PDF de otra empresa: no lo ve', (await val(`select count(*)::int n from storage.objects where name = 'aisl/ber.pdf'`)).n === 0)
+check('PDF de su empresa: sí lo ve', (await val(`select count(*)::int n from storage.objects where name = 'aisl/ind.pdf'`)).n === 1)
+check('ve su propio usuario y no al resto del equipo', (await db.query(`select email from usuarios`)).rows.map((x) => x.email).join() === 'aprob.india@verticebi.com')
+check('las cuentas comunes (sin empresa) las sigue viendo', (await val(`select count(*)::int n from cuentas_contables where empresa_id is null`)).n === nCuentas)
+await falla('no puede aprobar una factura de Beratung', `select aprobar_factura($1, 'SEGUROS', 'TRANSFERENCIA')`, [fBer], /acceso a la empresa beratung/)
+await falla('no puede rechazar una factura de Beratung', `select rechazar_factura($1, 'no')`, [fBer], /acceso a la empresa beratung/)
+await falla('no puede editar una factura de Beratung', `select editar_factura($1, $2)`, [fBer, JSON.stringify(datosEd({ numero: 9101 }))], /acceso a la empresa/)
+await db.query(`select aprobar_factura($1, 'SEGUROS', 'TRANSFERENCIA')`, [fInd])
+check('sí aprueba una factura de India', (await val(`select estado from facturas where id = $1`, [fInd])).estado === 'PARA_PAGAR')
+await falla('no puede reintentar un documento sin empresa', `select reintentar_documento($1)`, [d5.id], /acceso a este documento/)
+
+await como('teso.india@verticebi.com')
+await falla('Tesorería de India no carga pagos en Beratung', `select registrar_pago($1)`, [pago({ importe: 10 })], /acceso a la empresa beratung/)
+await db.query(`select registrar_pago($1)`, [pago({ empresa_id: 'india', importe: 2000, factura_ids: [fInd] })])
+check('Tesorería de India sí paga su factura', (await val(`select estado from facturas where id = $1`, [fInd])).estado === 'PAGADA')
+
+await como('nuevo@verticebi.com')
+check('usuario nuevo sin empresas asignadas no ve ninguna', (await val(`select count(*)::int n from empresas`)).n === 0 && (await val(`select count(*)::int n from facturas`)).n === 0)
+
+await como('aprobador@verticebi.com')
+check('usuario con todas_empresas sigue viendo las 8', (await val(`select count(*)::int n from empresas`)).n === nEmpresas)
+check('y ve los documentos sin empresa', (await val(`select count(*)::int n from documentos where factura_id is null`)).n > 0)
+await db.exec(`reset role`)
+
+check('servidor: usuario_ve_empresa dice que India no ve Beratung', (await val(`select usuario_ve_empresa('aprob.india@verticebi.com', 'beratung') v`)).v === false)
+check('servidor: usuario_ve_empresa dice que India ve India', (await val(`select usuario_ve_empresa('APROB.INDIA@verticebi.com', 'india') v`)).v === true)
+await db.exec(`update usuarios set activo = false where email = 'aprob.india@verticebi.com'`)
+check('usuario dado de baja no ve ninguna empresa', (await val(`select usuario_ve_empresa('aprob.india@verticebi.com', 'india') v`)).v === false)
+check('authenticated no puede consultar usuario_ve_empresa de otros', !(await val(`select has_function_privilege('authenticated', 'usuario_ve_empresa(text,text)', 'execute') p`)).p)
+check('authenticated no escribe en usuarios_empresas', !(await val(`select has_table_privilege('authenticated', 'usuarios_empresas', 'insert') p`)).p)
 
 console.log(`\n${ok} OK · ${mal} MAL`)
 process.exit(mal ? 1 : 0)

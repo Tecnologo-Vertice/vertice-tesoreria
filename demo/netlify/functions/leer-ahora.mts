@@ -7,9 +7,12 @@ import { json, manejar, supabaseAdmin, usuarioDesde } from './lib/comun'
 import { leerCola } from './lib/entrada'
 
 export default manejar(async (req) => {
-  await usuarioDesde(req)
-  const resultados = await leerCola(supabaseAdmin(), 3_000)
-  return json({ ok: true, resultados })
+  const u = await usuarioDesde(req)
+  const db = supabaseAdmin()
+  const resultados = await leerCola(db, 3_000)
+  // La cola mezcla empresas: el detalle solo para quien ve todas; al resto, cuántos se leyeron.
+  const { data: todas } = await db.from('usuarios').select('todas_empresas').eq('email', u.email).maybeSingle()
+  return json({ ok: true, resultados: todas?.todas_empresas ? resultados : resultados.map(() => ({})) })
 })
 
 export const config: Config = { path: '/api/documentos/leer' }

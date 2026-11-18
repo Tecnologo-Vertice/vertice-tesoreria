@@ -49,6 +49,14 @@ export function exigirRol(u: UsuarioFn, ...roles: Rol[]) {
   if (!roles.includes(u.rol)) throw new ErrorHttp(403, `Tu rol (${u.rol}) no puede hacer esta acción`)
 }
 
+/** La función corre con la clave de servicio (salta RLS): controla a mano que la persona vea esa empresa. */
+export async function exigirEmpresa(u: UsuarioFn, empresaId: string | null | undefined) {
+  if (!empresaId) throw new ErrorHttp(422, 'El registro no tiene empresa')
+  const { data, error } = await supabaseAdmin().rpc('usuario_ve_empresa', { p_email: u.email, p_empresa: empresaId })
+  if (error) throw new ErrorHttp(500, error.message)
+  if (data !== true) throw new ErrorHttp(403, `No tenés acceso a la empresa ${empresaId}`)
+}
+
 export function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json; charset=utf-8' } })
 }
