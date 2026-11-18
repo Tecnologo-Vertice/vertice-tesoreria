@@ -6,7 +6,7 @@ import { useFiltro } from '../components/Filtros'
 import { addDays, diasHasta, fecha, fmtCuit, iso, money, nroComprobante, parseIso, pendiente } from '../lib/format'
 import { formaDeCarga, sugerirCuenta, type Sugerencia } from '../lib/ia'
 import { puede } from '../lib/permisos'
-import type { ComprobanteEjemplo, EstadoXubio, LecturaComprobante, MetodoPago } from '../types'
+import type { ComprobanteEjemplo, EstadoXubio, Factura, LecturaComprobante, MetodoPago } from '../types'
 
 const ESTADO_XUBIO: Record<EstadoXubio, { label: string; tone: 'verde' | 'rojo' | 'naranja' | 'neutro' }> = {
   SUBIDA: { label: 'En Xubio', tone: 'verde' },
@@ -33,6 +33,7 @@ export function Pagos() {
   const [tab, setTab] = useState<'PARA_PAGAR' | 'PAGADAS'>('PARA_PAGAR')
   const [sel, setSel] = useState<string[]>([])
   const [modal, setModal] = useState<null | { facturaIds: string[] }>(null)
+  const [ncModal, setNcModal] = useState<string | null>(null)
 
   const paraPagar = useMemo(
     () => facturas.filter((f) => f.estado === 'PARA_PAGAR' || f.estado === 'PAGADA_PARCIAL').sort((a, b) => diasHasta(a.vencimiento) - diasHasta(b.vencimiento)),
@@ -98,29 +99,43 @@ export function Pagos() {
             const p = proveedor(f.proveedorId)
             const e = empresa(f.empresaId)
             const marcada = sel.includes(f.id)
-            const otraEmpresa = empresaSel !== undefined && empresaSel !== f.empresaId
+            const esNc = esNotaCredito(f)
+            const otraEmpresa = esNc || (empresaSel !== undefined && empresaSel !== f.empresaId)
             const xubio = ESTADO_XUBIO[f.estadoXubio] ?? { label: f.estadoXubio, tone: 'neutro' as const }
             return (
               <div
                 key={f.id}
                 onClick={() => puedePagar && !otraEmpresa && toggle(f.id)}
-                className={`flex items-center gap-4 px-4 py-3 rounded-xl border transition-colors ${puedePagar ? 'cursor-pointer' : ''} ${marcada ? 'border-dorado bg-dorado/10' : 'border-borde bg-pino hover:bg-suave/60'} ${otraEmpresa ? 'opacity-40 cursor-not-allowed' : ''}`}
-                title={otraEmpresa ? 'Un pago agrupa facturas de una sola empresa' : ''}
+                className={`flex items-center gap-4 px-4 py-3 rounded-xl border transition-colors ${puedePagar && !esNc ? 'cursor-pointer' : ''} ${marcada ? 'border-dorado bg-dorado/10' : 'border-borde bg-pino hover:bg-suave/60'} ${otraEmpresa && !esNc ? 'opacity-40 cursor-not-allowed' : ''}`}
+                title={esNc ? 'Una nota de crédito no se paga: se aplica a una factura' : otraEmpresa ? 'Un pago agrupa facturas de una sola empresa' : ''}
               >
-                {puedePagar && <input type="checkbox" readOnly checked={marcada} className="accent-dorado w-4 h-4" />}
+                {puedePagar && !esNc && <input type="checkbox" readOnly checked={marcada} className="accent-dorado w-4 h-4" />}
                 <div className="flex-1 min-w-0">
                   <div className="flex flex-wrap items-center gap-2 mb-0.5">
                     {filtro.esNueva(f) && <Badge tone="azul">Nueva</Badge>}
                     <Badge tone="dorado">{e.corto}</Badge>
                     <BadgeVencimiento vencimiento={f.vencimiento} />
                     <Badge tone={xubio.tone}>{xubio.label}</Badge>
-                    {f.pagadoPct > 0 && <Badge tone="azul">{f.pagadoPct}% pagado</Badge>}
+                    {f.pagadoPct > 0 && !esNc && <Badge tone="azul">{f.pagadoPct}% pagado</Badge>}
+                    {esNc && <Badge tone="verde">Nota de crédito · saldo {money(f.saldoNc ?? f.total)}</Badge>}
+                    {f.yaPagadaSegunAdmin && <Badge tone="naranja" title={f.yaPagadaSegunAdmin}>Ya pagada: falta el comprobante</Badge>}
                   </div>
                   <p className="font-semibold truncate">{p?.nombre ?? f.proveedorId}</p>
                   <p className="text-xs text-seco">
                     {f.tipo} {nroComprobante(f.puntoVenta, f.numero)} · {f.metodoPago} · {f.cuentaContable}
                   </p>
                   {f.xubioError && <p className="text-[0.6875rem] text-red-300 mt-0.5">Xubio: {f.xubioError}</p>}
+                  {esNc && puedePagar && (
+                    <button
+                      onClick={(ev) => {
+                        ev.stopPropagation()
+                        setNcModal(f.id)
+                      }}
+                      className="text-[0.6875rem] text-acento underline mt-0.5 mr-3"
+                    >
+                      Aplicar a una factura
+                    </button>
+                  )}
                   {puedeXubio && e.erp === 'XUBIO' && (f.estadoXubio === 'PENDIENTE' || f.estadoXubio === 'ERROR') && (
                     <button
                       onClick={(ev) => {
@@ -134,7 +149,7 @@ export function Pagos() {
                   )}
                 </div>
                 <div className="text-right">
-                  <p className="font-serif text-xl">{money(pendiente(f))}</p>
+                  <p className="font-serif text-xl">{money(esNc ? (f.saldoNc ?? f.total) : pendiente(f))}</p>
                   <p className="text-[0.625rem] text-seco">vence {fecha(f.vencimiento)}</p>
                 </div>
               </div>
@@ -150,7 +165,7 @@ export function Pagos() {
           {pagadas.length > 0 && filtro.visibles.length === 0 && <Empty texto="Nada coincide con la búsqueda o los filtros." />}
           {filtro.visibles.map((f) => {
             const p = proveedor(f.proveedorId)
-            const pg = pagos.find((x) => x.facturaIds.includes(f.id))
+            const pg = pagos.find((x) => x.facturaIds.includes(f.id) && x.estado !== 'ANULADO')
             return (
               <div key={f.id} className="flex items-center gap-4 px-4 py-3 rounded-xl border border-borde bg-pino">
                 <div className="flex-1 min-w-0">
@@ -172,6 +187,8 @@ export function Pagos() {
         </div>
       )}
 
+      {ncModal && <ModalAplicarNc ncId={ncModal} onClose={() => setNcModal(null)} />}
+
       {modal && (
         <ModalCargarPago
           facturaIds={modal.facturaIds}
@@ -182,6 +199,70 @@ export function Pagos() {
         />
       )}
     </div>
+  )
+}
+
+const esNotaCredito = (f: Factura) => f.tipo.startsWith('Nota de Cr')
+
+/** Aplicar una nota de crédito (aplicarNotaCreditoAFactura del Apps Script): mismo proveedor y empresa. */
+function ModalAplicarNc({ ncId, onClose }: { ncId: string; onClose: () => void }) {
+  const { facturas, proveedor, aplicarNotaCredito } = useStore()
+  const nc = facturas.find((f) => f.id === ncId)
+  const candidatas = facturas.filter(
+    (f) => nc && f.id !== nc.id && !esNotaCredito(f) && f.empresaId === nc.empresaId && f.proveedorId === nc.proveedorId && (f.estado === 'PARA_PAGAR' || f.estado === 'PAGADA_PARCIAL'),
+  )
+  const [facturaId, setFacturaId] = useState(candidatas[0]?.id ?? '')
+  const saldo = nc ? (nc.saldoNc ?? nc.total) : 0
+  const destino = candidatas.find((f) => f.id === facturaId)
+  const tope = destino ? Math.min(saldo, pendiente(destino)) : saldo
+  const [importe, setImporte] = useState(tope)
+  const [guardando, setGuardando] = useState(false)
+  if (!nc) return null
+  const excede = importe > tope + 0.001
+  return (
+    <Modal titulo="Aplicar nota de crédito" onClose={onClose} ancho="max-w-lg">
+      <div className="space-y-4">
+        <p className="text-sm text-seco">
+          {proveedor(nc.proveedorId)?.nombre} · NC {nroComprobante(nc.puntoVenta, nc.numero)} · saldo {money(saldo)}
+        </p>
+        {candidatas.length === 0 ? (
+          <Empty texto="No hay facturas para pagar de este proveedor en esta empresa." />
+        ) : (
+          <>
+            <Field label="Factura">
+              <Desplegable
+                value={facturaId}
+                onChange={(v) => {
+                  setFacturaId(v)
+                  const f = candidatas.find((x) => x.id === v)
+                  if (f) setImporte(Math.min(saldo, pendiente(f)))
+                }}
+                opciones={candidatas.map((f) => ({ value: f.id, label: `${f.tipo} ${nroComprobante(f.puntoVenta, f.numero)} · pendiente ${money(pendiente(f))}` }))}
+              />
+            </Field>
+            <Field label="Importe a aplicar" hint={`Hasta ${money(tope)}`} marcado={excede ? 'falta' : undefined}>
+              <input id="nc-importe" type="number" step="0.01" value={importe} onChange={(ev) => setImporte(Number(ev.target.value))} className={inputCls} />
+            </Field>
+          </>
+        )}
+        <div className="flex justify-end gap-2">
+          <Btn variant="fantasma" onClick={onClose}>
+            Cancelar
+          </Btn>
+          <Btn
+            disabled={!destino || !(importe > 0) || excede || guardando}
+            onClick={async () => {
+              setGuardando(true)
+              const ok = await aplicarNotaCredito(nc.id, facturaId, importe)
+              setGuardando(false)
+              if (ok) onClose()
+            }}
+          >
+            Aplicar
+          </Btn>
+        </div>
+      </div>
+    </Modal>
   )
 }
 

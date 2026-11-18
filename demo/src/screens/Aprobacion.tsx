@@ -200,7 +200,7 @@ function TarjetaDocumento({ d }: { d: Documento }) {
 }
 
 function TarjetaFactura({ f, modo, nueva }: { f: Factura; modo: 'PENDIENTES' | 'ERRORES' | 'HISTORIAL'; nueva?: boolean }) {
-  const { modo: modoApp, proveedor, empresa, catalogos, usuario, aprobarFactura, rechazarFactura, abrirArchivo } = useStore()
+  const { modo: modoApp, proveedor, empresa, catalogos, usuario, aprobarFactura, aprobarYaPagada, rechazarFactura, abrirArchivo } = useStore()
   const opcionesCuenta = cuentasFactura(catalogos, f.empresaId)
   const p = proveedor(f.proveedorId) ?? { nombre: f.proveedorId, cuit: '', cuentaHabitual: undefined }
   const e = empresa(f.empresaId)
@@ -212,6 +212,13 @@ function TarjetaFactura({ f, modo, nueva }: { f: Factura; modo: 'PENDIENTES' | '
   const [rechazando, setRechazando] = useState(false)
   const [motivo, setMotivo] = useState('')
   const [editando, setEditando] = useState(false)
+  // "Aprobar · ya pagada" (PagoAlAprobar.gs del Apps Script)
+  const [yaPagada, setYaPagada] = useState(false)
+  const [yaEnXubio, setYaEnXubio] = useState(false)
+  const [origenYa, setOrigenYa] = useState('')
+  const [fechaYa, setFechaYa] = useState(() => new Date().toISOString().slice(0, 10))
+  const [chequeYa, setChequeYa] = useState('')
+  const [acreditaYa, setAcreditaYa] = useState('')
   const editable = puedeAprobar && modo !== 'HISTORIAL' && f.pagado === 0 && f.estadoXubio !== 'SUBIDA'
   const esCheque = metodo === 'CHEQUE' || metodo === 'ECHEQ'
   const cuentaValida = enLista(opcionesCuenta, cuenta)
@@ -360,10 +367,63 @@ function TarjetaFactura({ f, modo, nueva }: { f: Factura; modo: 'PENDIENTES' | '
                         </Field>
                       )}
                     </div>
+                    {yaPagada && (
+                      <div className="rounded-lg border border-borde p-4 space-y-3">
+                        <p className="text-sm text-seco">La factura ya se pagó. Elegí cómo, con el método de pago de arriba. Sin banco, queda en Para pagar marcada y Tesorería solo adjunta el comprobante.</p>
+                        <label className="flex items-center gap-2 text-sm">
+                          <input id={`ya-xubio-${f.id}`} type="checkbox" checked={yaEnXubio} onChange={(ev) => setYaEnXubio(ev.target.checked)} />
+                          El pago ya está cargado a mano en Xubio (queda contabilizado, no se envía nada)
+                        </label>
+                        <div className="grid sm:grid-cols-2 gap-3">
+                          <Field label="Banco o caja de donde salió" hint="Vacío si no lo sabés">
+                            <Desplegable
+                              value={origenYa}
+                              onChange={setOrigenYa}
+                              opciones={[{ value: '', label: 'No lo sé' }, ...catalogos.cuentasOrigen.filter((c) => c.empresaId === f.empresaId).map((c) => ({ value: c.nombre, label: c.nombre }))]}
+                            />
+                          </Field>
+                          <Field label="Fecha del pago">
+                            <input id={`ya-fecha-${f.id}`} type="date" value={fechaYa} onChange={(ev) => setFechaYa(ev.target.value)} className={inputCls} />
+                          </Field>
+                          {esCheque && (yaEnXubio || origenYa) && (
+                            <>
+                              <Field label="Número de cheque" marcado={chequeYa ? undefined : 'falta'}>
+                                <input id={`ya-cheque-${f.id}`} value={chequeYa} onChange={(ev) => setChequeYa(ev.target.value)} className={inputCls} />
+                              </Field>
+                              <Field label="Vencimiento del cheque" marcado={acreditaYa ? undefined : 'falta'}>
+                                <input id={`ya-acredita-${f.id}`} type="date" value={acreditaYa} onChange={(ev) => setAcreditaYa(ev.target.value)} className={inputCls} />
+                              </Field>
+                            </>
+                          )}
+                        </div>
+                        <div className="flex justify-end gap-2">
+                          <Btn variant="fantasma" onClick={() => setYaPagada(false)}>
+                            Cancelar
+                          </Btn>
+                          <Btn
+                            disabled={!cuentaValida}
+                            onClick={() =>
+                              aprobarYaPagada(
+                                f.id,
+                                { cuentaContable: cuentaValida!, metodoPago: metodo, diasCheque: esCheque ? dias : undefined },
+                                { yaEnXubio, cuentaOrigen: origenYa, fecha: fechaYa, numeroCheque: chequeYa, fechaAcreditacion: acreditaYa },
+                              )
+                            }
+                          >
+                            Confirmar: aprobada y ya pagada
+                          </Btn>
+                        </div>
+                      </div>
+                    )}
                     <div className="flex flex-wrap justify-end gap-2 pt-1">
                       <Btn variant="peligro" onClick={() => setRechazando(true)}>
                         Rechazar
                       </Btn>
+                      {!yaPagada && (
+                        <Btn variant="fantasma" onClick={() => setYaPagada(true)}>
+                          Aprobar · ya pagada
+                        </Btn>
+                      )}
                       <Btn disabled={!cuentaValida} onClick={() => aprobarFactura(f.id, { cuentaContable: cuentaValida!, metodoPago: metodo, diasCheque: esCheque ? dias : undefined })}>
                         {e.erp !== 'XUBIO' ? 'Aprobar (carga manual en Ralpharma)' : modoApp === 'demo' ? 'Aprobar y enviar a Xubio' : 'Aprobar'}
                       </Btn>

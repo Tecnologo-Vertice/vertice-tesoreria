@@ -76,6 +76,20 @@ export interface DatosEdicion {
 export type ResultadoEdicion = { estado: string; motivo?: string | null }
 
 export type DatosAprobacion = { cuentaContable: string; metodoPago: MetodoPago; diasCheque?: number }
+/** Cómo se pagó una factura que Administración aprueba ya pagada (PagoAlAprobar.gs). */
+export interface DatosYaPagada {
+  /** El pago ya está cargado a mano en Xubio: queda contabilizado y no se envía nada. */
+  yaEnXubio: boolean
+  /** Banco o caja de donde salió. Vacío = no se sabe: Tesorería adjunta el comprobante después. */
+  cuentaOrigen?: string
+  fecha?: string
+  numeroCheque?: string
+  fechaAcreditacion?: string
+  observaciones?: string
+}
+/** Cómo quedó: el pago ya contabilizado, el pago en Contabilización, o la factura en Para pagar. */
+export type ResultadoYaPagada = 'CONTABILIZADO' | 'PARA_CONTABILIZAR' | 'PARA_PAGAR'
+
 export type DatosContabilizacion = { cuentaContable: string; formaCargaXubio: Pago['formaCargaXubio']; cuentaOrigen?: string }
 export type NuevoPago = Omit<Pago, 'id' | 'estado' | 'cargadoPor' | 'cargadoEn'>
 export type ResultadoXubio = { ok: true; id: string; enSeco: boolean; detalle?: string } | { ok: false; error: string }
@@ -85,6 +99,11 @@ export interface Fuente {
   cargar(): Promise<Datos>
   aprobarFactura(id: string, datos: DatosAprobacion, u: Usuario): Promise<void>
   rechazarFactura(id: string, motivo: string, u: Usuario): Promise<void>
+  aprobarYaPagada(id: string, datos: DatosAprobacion, pago: DatosYaPagada, u: Usuario): Promise<ResultadoYaPagada>
+  /** Aplica una nota de crédito aprobada a una factura del mismo proveedor y empresa. */
+  aplicarNotaCredito(ncId: string, facturaId: string, importe: number, u: Usuario): Promise<void>
+  /** Anula un pago que todavía no está en Xubio ni en Ralpharma y devuelve lo aplicado a sus facturas. */
+  anularPago(id: string, motivo: string, u: Usuario): Promise<void>
   corregirFactura(id: string, u: Usuario): Promise<void>
   editarFactura(id: string, datos: DatosEdicion, u: Usuario): Promise<ResultadoEdicion>
   registrarPago(datos: NuevoPago, u: Usuario): Promise<Pago>

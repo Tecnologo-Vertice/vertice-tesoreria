@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { Auditoria, ComprobanteEjemplo, Documento, Empresa, EstadoEspejo, Factura, LecturaComprobante, Pago, Proveedor, Usuario } from './types'
-import type { Bucket, Catalogos, DatosAprobacion, DatosContabilizacion, DatosEdicion, Fuente, NuevoPago } from './data/fuente'
+import type { Bucket, Catalogos, DatosAprobacion, DatosContabilizacion, DatosEdicion, DatosYaPagada, Fuente, NuevoPago } from './data/fuente'
 import { addDays, parseIso, pendiente } from './lib/format'
 
 type Toast = { id: number; texto: string; tipo: 'ok' | 'error' | 'info' }
@@ -18,6 +18,9 @@ interface Store {
   setUsuario: (u: Usuario) => void
   aprobarFactura: (id: string, datos: DatosAprobacion) => Promise<void>
   rechazarFactura: (id: string, motivo: string) => Promise<void>
+  aprobarYaPagada: (id: string, datos: DatosAprobacion, pago: DatosYaPagada) => Promise<boolean>
+  aplicarNotaCredito: (ncId: string, facturaId: string, importe: number) => Promise<boolean>
+  anularPago: (id: string, motivo: string) => Promise<boolean>
   corregirFactura: (id: string) => Promise<void>
   editarFactura: (id: string, datos: DatosEdicion) => Promise<boolean>
   registrarPago: (p: NuevoPago) => Promise<Pago | null>
@@ -128,6 +131,25 @@ export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fu
         // Xubio automático: al aprobar, la factura se sube sola. Si falla, queda el motivo y se reintenta.
         if (ok && erp === 'XUBIO') await subirXubio(id)
       },
+      aprobarYaPagada: async (id, d, p) => {
+        const f = facturas.find((x) => x.id === id)
+        const erp = f ? empresaDe(f.empresaId).erp : 'NINGUNO'
+        const r = await accion(
+          () => fuente.aprobarYaPagada(id, d, p, usuario),
+          (r) =>
+            r === 'CONTABILIZADO'
+              ? 'Aprobada y pagada: el pago ya estaba en Xubio y queda contabilizado'
+              : r === 'PARA_CONTABILIZAR'
+                ? 'Aprobada y pagada: el pago quedó en la bandeja de Contabilización'
+                : 'Aprobada: queda en Para pagar marcada como ya pagada; Tesorería adjunta el comprobante',
+        )
+        if (r && erp === 'XUBIO') await subirXubio(id)
+        return r !== null
+      },
+      aplicarNotaCredito: async (nc, f, imp) =>
+        (await accion(() => fuente.aplicarNotaCredito(nc, f, imp, usuario).then(() => true), 'Nota de crédito aplicada; queda registrado quién y por cuánto')) === true,
+      anularPago: async (id, m) =>
+        (await accion(() => fuente.anularPago(id, m, usuario).then(() => true), 'Pago anulado: lo aplicado vuelve a sus facturas')) === true,
       rechazarFactura: async (id, m) => {
         await accion(() => fuente.rechazarFactura(id, m, usuario), 'Factura rechazada; queda registrado quién y por qué')
       },
@@ -236,7 +258,7 @@ export function useFlujo(empresaId: string | 'TODAS') {
     const enRango = (d: Date) => semanas.findIndex((s) => d >= s.ini && d <= s.fin)
     const filtro = (eid: string) => empresaId === 'TODAS' || eid === empresaId
     for (const p of pagos) {
-      if (!filtro(p.empresaId)) continue
+      if (!filtro(p.empresaId) || p.estado === 'ANULADO') continue
       // Un cheque sale del banco cuando se acredita, no cuando se entrega: va a una sola barra.
       if (p.fechaAcreditacion) {
         const j = enRango(parseIso(p.fechaAcreditacion))
@@ -249,6 +271,7 @@ export function useFlujo(empresaId: string | 'TODAS') {
     for (const f of facturas) {
       if (!filtro(f.empresaId)) continue
       if (f.estado !== 'PARA_PAGAR' && f.estado !== 'PAGADA_PARCIAL') continue
+      if (f.tipo.startsWith('Nota de Cr')) continue
       const resto = pendiente(f)
       const v = parseIso(f.vencimiento)
       if (v < t) {

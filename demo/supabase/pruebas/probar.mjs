@@ -394,5 +394,92 @@ check('usuario dado de baja no ve ninguna empresa', (await val(`select usuario_v
 check('authenticated no puede consultar usuario_ve_empresa de otros', !(await val(`select has_function_privilege('authenticated', 'usuario_ve_empresa(text,text)', 'execute') p`)).p)
 check('authenticated no escribe en usuarios_empresas', !(await val(`select has_table_privilege('authenticated', 'usuarios_empresas', 'insert') p`)).p)
 
+// ================================================================ NC, aprobar ya pagada, anular pago (0011)
+await db.exec(`reset role`)
+await db.exec(`update usuarios set activo = true where email = 'aprob.india@verticebi.com'`)
+const fac = (n, extra = {}) => factura({ empresa_id: 'ysd', cuit_proveedor: '30-70000001-9', proveedor: 'Prov NC', numero: n, total: 1000, neto: 1000, iva: 0, ...extra })
+const fFac = (await val(`select ingresar_factura($1) id`, [fac(5001)])).id
+const fNc = (await val(`select ingresar_factura($1) id`, [fac(5002, { tipo: 'Nota de Crédito A', total: 300, neto: 300 })])).id
+const fOtroProv = (await val(`select ingresar_factura($1) id`, [factura({ empresa_id: 'ysd', cuit_proveedor: '30-70000002-7', proveedor: 'Otro', numero: 5003, total: 500, neto: 500, iva: 0 })])).id
+check('NC nueva arranca con todo su total como saldo', Number((await val(`select saldo_nc from facturas where id = $1`, [fNc])).saldo_nc) === 300)
+await db.exec(`set role authenticated`)
+await como('aprobador@verticebi.com')
+for (const id of [fFac, fOtroProv]) await db.query(`select aprobar_factura($1, 'SEGUROS', 'TRANSFERENCIA')`, [id])
+await como('tesoreria@verticebi.com')
+await falla('NC sin aprobar no se aplica', `select aplicar_nota_credito($1, $2, 100)`, [fNc, fFac], /aprobada/)
+await como('aprobador@verticebi.com')
+await db.query(`select aprobar_factura($1, 'SEGUROS', 'TRANSFERENCIA')`, [fNc])
+await como('tesoreria@verticebi.com')
+await falla('NC de otro proveedor no se aplica', `select aplicar_nota_credito($1, $2, 100)`, [fNc, fOtroProv], /otro proveedor/)
+await falla('NC por más de su saldo no se aplica', `select aplicar_nota_credito($1, $2, 301)`, [fNc, fFac], /saldo/)
+await falla('NC a otra NC no se aplica', `select aplicar_nota_credito($1, $2, 10)`, [fNc, fNc], /no a otra nota/)
+await como('direccion@verticebi.com')
+await falla('Dirección no aplica NC', `select aplicar_nota_credito($1, $2, 100)`, [fNc, fFac], /rol/)
+await como('tesoreria@verticebi.com')
+await db.query(`select aplicar_nota_credito($1, $2, 200)`, [fNc, fFac])
+r = await val(`select f.estado, f.pagado, n.saldo_nc, n.estado nc_estado from facturas f, facturas n where f.id = $1 and n.id = $2`, [fFac, fNc])
+check('NC parcial: la factura queda PAGADA_PARCIAL y la NC con saldo 100', r.estado === 'PAGADA_PARCIAL' && Number(r.pagado) === 200 && Number(r.saldo_nc) === 100 && r.nc_estado === 'PARA_PAGAR', JSON.stringify(r))
+await db.query(`select aplicar_nota_credito($1, $2, 100)`, [fNc, fFac])
+r = await val(`select n.saldo_nc, n.estado from facturas n where n.id = $1`, [fNc])
+check('NC agotada queda PAGADA', Number(r.saldo_nc) === 0 && r.estado === 'PAGADA')
+check('registro de NC aplicadas: 2 renglones', (await val(`select count(*)::int n from notas_credito_aplicadas where nc_id = $1`, [fNc])).n === 2)
+check('la NC no se proyecta como egreso en el flujo', (await val(`select count(*)::int n from export_cashflow where referencia = $1`, [fNc])).n === 0)
+await como('teso.india@verticebi.com')
+await falla('Tesorería de India no aplica NC en YSD', `select aplicar_nota_credito($1, $2, 1)`, [fNc, fFac], /acceso a la empresa ysd/)
+
+// --- Aprobar ya pagada
+await db.exec(`reset role`)
+const yp = async (n) => (await val(`select ingresar_factura($1) id`, [factura({ empresa_id: 'ysd', numero: n, total: 800, neto: 800, iva: 0 })])).id
+const fYa1 = await yp(6001), fYa2 = await yp(6002), fYa3 = await yp(6003), fYa4 = await yp(6004)
+await db.exec(`set role authenticated`)
+await como('tesoreria@verticebi.com')
+await falla('Tesorería no aprueba ya pagada', `select aprobar_factura_ya_pagada($1, 'SEGUROS', 'TRANSFERENCIA', '{}')`, [fYa1], /rol/)
+await como('aprobador@verticebi.com')
+let res = (await val(`select aprobar_factura_ya_pagada($1, 'SEGUROS', 'TRANSFERENCIA', $2) r`, [fYa1, { ya_en_xubio: true }])).r
+r = await val(`select f.estado, p.estado pe, p.xubio_id, p.importe from facturas f join pagos_facturas pf on pf.factura_id = f.id join pagos p on p.id = pf.pago_id where f.id = $1`, [fYa1])
+check('ya pagada y ya en Xubio: factura PAGADA y pago CONTABILIZADO sin envío', res === 'CONTABILIZADO' && r.estado === 'PAGADA' && r.pe === 'CONTABILIZADO' && r.xubio_id === 'CARGADO_A_MANO' && Number(r.importe) === 800)
+res = (await val(`select aprobar_factura_ya_pagada($1, 'SEGUROS', 'TRANSFERENCIA', $2) r`, [fYa2, { cuenta_origen: 'Banco Galicia CC $', fecha: '2026-11-10' }])).r
+r = await val(`select f.estado, p.estado pe, p.cuenta_origen, p.fecha::text fecha from facturas f join pagos_facturas pf on pf.factura_id = f.id join pagos p on p.id = pf.pago_id where f.id = $1`, [fYa2])
+check('ya pagada con banco: factura PAGADA y pago para Contabilización', res === 'PARA_CONTABILIZAR' && r.estado === 'PAGADA' && r.pe === 'CARGADO' && r.cuenta_origen === 'Banco Galicia CC $' && r.fecha === '2026-11-10')
+res = (await val(`select aprobar_factura_ya_pagada($1, 'SEGUROS', 'TRANSFERENCIA', '{}') r`, [fYa3])).r
+r = await val(`select estado, ya_pagada_segun_admin m, (select count(*)::int from pagos_facturas where factura_id = $1) n from facturas where id = $1`, [fYa3])
+check('ya pagada sin banco: queda Para pagar marcada y sin pago', res === 'PARA_PAGAR' && r.estado === 'PARA_PAGAR' && /falta el comprobante/.test(r.m) && r.n === 0)
+await falla('ya pagada con cheque sin número falla', `select aprobar_factura_ya_pagada($1, 'SEGUROS', 'CHEQUE', $2)`, [fYa4, { cuenta_origen: 'Banco Galicia CC $' }], /cheque/)
+check('la falla no dejó la factura aprobada a medias', (await val(`select estado from facturas where id = $1`, [fYa4])).estado === 'PENDIENTE_APROBACION')
+await como('tesoreria@verticebi.com')
+await db.query(`select registrar_pago($1)`, [pago({ empresa_id: 'ysd', importe: 800, factura_ids: [fYa3] })])
+check('al pagarla, la marca de ya pagada se limpia', (await val(`select ya_pagada_segun_admin m from facturas where id = $1`, [fYa3])).m === null)
+
+// --- Anular pago
+await db.exec(`reset role`)
+const fAn = (await val(`select ingresar_factura($1) id`, [factura({ empresa_id: 'ysd', numero: 7001, total: 1000, neto: 1000, iva: 0 })])).id
+await db.exec(`set role authenticated`)
+await como('aprobador@verticebi.com')
+await db.query(`select aprobar_factura($1, 'SEGUROS', 'TRANSFERENCIA')`, [fAn])
+await como('tesoreria@verticebi.com')
+const pAn1 = (await val(`select registrar_pago($1) id`, [pago({ empresa_id: 'ysd', importe: 400, factura_ids: [fAn] })])).id
+const pAn2 = (await val(`select registrar_pago($1) id`, [pago({ empresa_id: 'ysd', importe: 600, factura_ids: [fAn] })])).id
+check('dos pagos cancelan la factura', (await val(`select estado from facturas where id = $1`, [fAn])).estado === 'PAGADA')
+await falla('anular sin motivo falla', `select anular_pago($1, ' ')`, [pAn2], /motivo/)
+await db.query(`select anular_pago($1, 'Comprobante equivocado')`, [pAn2])
+r = await val(`select f.estado, f.pagado, p.estado pe, p.anulado_por from facturas f, pagos p where f.id = $1 and p.id = $2`, [fAn, pAn2])
+check('anular devuelve lo aplicado: factura PAGADA_PARCIAL con 400', r.estado === 'PAGADA_PARCIAL' && Number(r.pagado) === 400 && r.pe === 'ANULADO' && r.anulado_por === 'Vivi', JSON.stringify(r))
+await db.query(`select anular_pago($1, 'Duplicado')`, [pAn1])
+check('anulando todo vuelve a PARA_PAGAR', (await val(`select estado, pagado from facturas where id = $1`, [fAn])).estado === 'PARA_PAGAR')
+await falla('un pago anulado no se anula dos veces', `select anular_pago($1, 'otra vez')`, [pAn1], /no se anula/)
+check('el flujo no cuenta pagos anulados', (await val(`select count(*)::int n from export_cashflow where estado = 'REAL' and egreso in (400, 600) and empresa = 'YSD Pharma S.A.'`)).n === 0)
+check('el flujo vuelve a proyectar la factura', (await val(`select count(*)::int n from export_cashflow where referencia = $1`, [fAn])).n === 1)
+await db.exec(`reset role`)
+const pCont = (await val(`select id from pagos where estado = 'CONTABILIZADO' limit 1`)).id
+await db.exec(`set role authenticated`)
+await como('tesoreria@verticebi.com')
+await falla('un pago contabilizado no se anula acá', `select anular_pago($1, 'x')`, [pCont], /Xubio/)
+await como('teso.india@verticebi.com')
+await falla('Tesorería de India no anula pagos de YSD (ni ve su estado)', `select anular_pago($1, 'x')`, [pCont], /acceso a la empresa ysd/)
+await como('aprob.india@verticebi.com')
+await falla('Aprobador no anula pagos', `select anular_pago($1, 'x')`, [pAn1], /rol/)
+await db.exec(`reset role`)
+check('auditoría: NC, ya pagada y anulación quedan registradas', (await val(`select count(distinct accion)::int n from auditoria where accion in ('NC_APLICADA', 'APROBADA_YA_PAGADA', 'PAGO_ANULADO')`)).n === 3)
+
 console.log(`\n${ok} OK · ${mal} MAL`)
 process.exit(mal ? 1 : 0)

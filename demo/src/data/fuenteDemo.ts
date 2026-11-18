@@ -2,7 +2,7 @@
 // Toda la lógica de negocio de acá tiene su equivalente en supabase/migrations/0003_funciones.sql.
 
 import type { Auditoria, ComprobanteEjemplo, Documento, Factura, LecturaComprobante, Pago, Usuario } from '../types'
-import type { Datos, DatosAprobacion, DatosContabilizacion, DatosEdicion, Fuente, ResultadoEdicion, NuevoPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
+import type { Datos, DatosAprobacion, DatosContabilizacion, DatosEdicion, DatosYaPagada, Fuente, ResultadoYaPagada, ResultadoEdicion, NuevoPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
 import {
   auditoriaInicial,
   comprobantesEjemplo,
@@ -101,6 +101,84 @@ export class FuenteDemo implements Fuente {
         : f,
     )
     this.log(u, { accion: 'APROBACION', entidad: 'FACTURA', entidadId: id, detalle: `Cuenta ${d.cuentaContable} · ${d.metodoPago}` })
+    this.commit()
+  }
+
+  /** Mismas reglas que aprobar_factura_ya_pagada en SQL. */
+  async aprobarYaPagada(id: string, d: DatosAprobacion, p: DatosYaPagada, u: Usuario): Promise<ResultadoYaPagada> {
+    const cheque = d.metodoPago === 'CHEQUE' || d.metodoPago === 'ECHEQ'
+    const conPago = p.yaEnXubio || !!p.cuentaOrigen?.trim() || d.metodoPago === 'CAJA'
+    if (cheque && conPago && (!p.numeroCheque || !p.fechaAcreditacion)) throw new Error('Un pago con cheque necesita número y fecha de vencimiento del cheque')
+    await this.aprobarFactura(id, d, u)
+    const f = this.e.facturas.find((x) => x.id === id)!
+    if (!conPago) {
+      this.e.facturas = this.e.facturas.map((x): Factura => (x.id === id ? { ...x, yaPagadaSegunAdmin: `Ya pagada según ${u.nombre} (${d.metodoPago}), falta el comprobante` } : x))
+      this.log(u, { accion: 'APROBADA_YA_PAGADA', entidad: 'FACTURA', entidadId: id, detalle: 'Sin banco: queda en Para pagar para que Tesorería adjunte el comprobante' })
+      this.commit()
+      return 'PARA_PAGAR'
+    }
+    const erp = EMPRESAS.find((x) => x.id === f.empresaId)?.erp
+    const ahora = new Date().toISOString()
+    const nuevo: Pago = {
+      id: `pg${Date.now().toString().slice(-6)}`, empresaId: f.empresaId, proveedorId: f.proveedorId, fecha: p.fecha || iso(new Date()),
+      importe: pendiente(f), medio: d.metodoPago, cuentaOrigen: p.cuentaOrigen?.trim() || 'Caja', numeroCheque: p.numeroCheque, fechaAcreditacion: p.fechaAcreditacion,
+      facturaIds: [id], descripcion: `Factura ${f.puntoVenta}-${f.numero} pagada antes de aprobar`, observaciones: p.observaciones, cuentaContable: d.cuentaContable,
+      formaCargaXubio: 'ORDEN_PAGO', estado: p.yaEnXubio ? 'CONTABILIZADO' : erp === 'RALPHARMA' ? 'PENDIENTE_RALPHARMA' : 'CARGADO', comprobante: '',
+      cargadoPor: u.nombre, cargadoEn: ahora,
+      ...(p.yaEnXubio ? { xubioId: 'CARGADO_A_MANO', contabilizadoPor: u.nombre, contabilizadoEn: ahora } : {}),
+    }
+    this.e.pagos.push(nuevo)
+    this.e.facturas = this.e.facturas.map((x): Factura => (x.id === id ? { ...x, pagado: x.total, pagadoPct: 100, estado: 'PAGADA' } : x))
+    this.log(u, { accion: 'APROBADA_YA_PAGADA', entidad: 'PAGO', entidadId: nuevo.id, detalle: p.yaEnXubio ? 'Ya cargado a mano en Xubio: queda contabilizado sin enviar nada' : 'Pago creado al aprobar: va a Contabilización' })
+    this.commit()
+    return p.yaEnXubio ? 'CONTABILIZADO' : 'PARA_CONTABILIZAR'
+  }
+
+  /** Mismas reglas que aplicar_nota_credito en SQL. */
+  async aplicarNotaCredito(ncId: string, facturaId: string, importe: number, u: Usuario) {
+    const nc = this.e.facturas.find((x) => x.id === ncId)
+    const f = this.e.facturas.find((x) => x.id === facturaId)
+    if (!nc || !f) throw new Error('Nota de crédito o factura inexistente')
+    const saldo = nc.saldoNc ?? nc.total
+    const imp = Math.round(importe * 100) / 100
+    if (nc.empresaId !== f.empresaId) throw new Error('La nota de crédito es de otra empresa')
+    if (nc.proveedorId !== f.proveedorId) throw new Error('La nota de crédito es de otro proveedor')
+    if (!['PARA_PAGAR', 'PAGADA_PARCIAL'].includes(nc.estado)) throw new Error('La nota de crédito tiene que estar aprobada')
+    if (!['PARA_PAGAR', 'PAGADA_PARCIAL'].includes(f.estado)) throw new Error('La factura no está para pagar')
+    if (!(imp > 0)) throw new Error('El importe a aplicar debe ser mayor a cero')
+    if (imp > saldo) throw new Error(`La nota de crédito tiene saldo ${saldo} y se quiere aplicar ${imp}`)
+    if (imp > pendiente(f)) throw new Error(`La factura tiene pendiente ${pendiente(f)} y se quiere aplicar ${imp}`)
+    this.e.facturas = this.e.facturas.map((x): Factura => {
+      if (x.id === facturaId) {
+        const pagado = Math.round((x.pagado + imp) * 100) / 100
+        return { ...x, pagado, pagadoPct: Math.min(100, Math.floor((pagado / x.total) * 10000) / 100), estado: pagado >= x.total ? 'PAGADA' : 'PAGADA_PARCIAL' }
+      }
+      if (x.id === ncId) {
+        const resto = Math.round((saldo - imp) * 100) / 100
+        return { ...x, saldoNc: resto, estado: resto <= 0 ? 'PAGADA' : x.estado }
+      }
+      return x
+    })
+    this.log(u, { accion: 'NC_APLICADA', entidad: 'FACTURA', entidadId: facturaId, detalle: `NC ${nc.puntoVenta}-${nc.numero} aplicada por $ ${imp}` })
+    this.commit()
+  }
+
+  /** Mismas reglas que anular_pago en SQL. La demo no guarda cuánto se aplicó a cada factura: lo devuelve en el mismo orden. */
+  async anularPago(id: string, motivo: string, u: Usuario) {
+    const p = this.e.pagos.find((x) => x.id === id)
+    if (!p) throw new Error('Pago inexistente')
+    if (!motivo.trim()) throw new Error('Falta el motivo de la anulación')
+    if (!['CARGADO', 'REVISADO', 'PENDIENTE_RALPHARMA'].includes(p.estado)) throw new Error(`Un pago ${p.estado} no se anula acá: si ya está en Xubio, anulalo primero en Xubio`)
+    let restante = p.importe
+    this.e.facturas = this.e.facturas.map((f): Factura => {
+      if (!p.facturaIds.includes(f.id) || restante <= 0) return f
+      const quita = Math.min(f.pagado, restante)
+      restante -= quita
+      const pagado = Math.round((f.pagado - quita) * 100) / 100
+      return { ...f, pagado, pagadoPct: Math.min(100, Math.floor((pagado / f.total) * 10000) / 100), estado: pagado <= 0 ? 'PARA_PAGAR' : 'PAGADA_PARCIAL' }
+    })
+    this.e.pagos = this.e.pagos.map((x): Pago => (x.id === id ? { ...x, estado: 'ANULADO', anuladoPor: u.nombre, anuladoEn: new Date().toISOString(), motivoAnulacion: motivo.trim() } : x))
+    this.log(u, { accion: 'PAGO_ANULADO', entidad: 'PAGO', entidadId: id, detalle: motivo.trim() })
     this.commit()
   }
 

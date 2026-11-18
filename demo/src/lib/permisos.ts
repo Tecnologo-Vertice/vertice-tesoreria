@@ -3,12 +3,13 @@
 
 import type { Rol } from '../types'
 
-export type Accion = 'APROBAR' | 'PAGAR' | 'CONTABILIZAR'
+export type Accion = 'APROBAR' | 'PAGAR' | 'CONTABILIZAR' | 'ANULAR_PAGO'
 
 const PERMISOS: Record<Accion, Rol[]> = {
   APROBAR: ['APROBADOR', 'ADMINISTRACION', 'ADMIN'],
   PAGAR: ['TESORERIA', 'ADMINISTRACION', 'ADMIN'],
   CONTABILIZAR: ['ADMINISTRACION', 'ADMIN'],
+  ANULAR_PAGO: ['TESORERIA', 'ADMINISTRACION', 'ADMIN'],
 }
 
 export function puede(rol: Rol, accion: Accion): boolean {

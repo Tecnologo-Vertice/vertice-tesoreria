@@ -4,7 +4,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Auditoria, ComprobanteEjemplo, CuentaOrigen, Documento, Empresa, EstadoEspejo, Factura, LecturaComprobante, Pago, Proveedor, Usuario } from '../types'
-import type { Bucket, Datos, DatosAprobacion, DatosContabilizacion, DatosEdicion, Fuente, ResultadoEdicion, NuevoPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
+import type { Bucket, Datos, DatosAprobacion, DatosContabilizacion, DatosEdicion, DatosYaPagada, Fuente, ResultadoYaPagada, ResultadoEdicion, NuevoPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
 import { archivoABase64, llamarFuncion } from '../lib/supabase'
 
 type Row = Record<string, unknown>
@@ -58,6 +58,8 @@ function mapFactura(r: Row): Factura {
     cotizacion: r.cotizacion == null ? undefined : n(r.cotizacion),
     codigoProducto: s(r.codigo_producto),
     creadoEn: s(r.creado_en),
+    saldoNc: r.saldo_nc == null ? undefined : n(r.saldo_nc),
+    yaPagadaSegunAdmin: s(r.ya_pagada_segun_admin),
   }
 }
 
@@ -98,6 +100,9 @@ function mapPago(r: Row, facturaIds: string[]): Pago {
     estadoExtraccion: s(r.estado_extraccion),
     avisoImporte: s(r.aviso_importe),
     detalleXubio: s(r.xubio_detalle) ?? s(r.detalle_contabilizacion),
+    anuladoPor: s(r.anulado_por),
+    anuladoEn: s(r.anulado_en),
+    motivoAnulacion: s(r.motivo_anulacion),
   }
 }
 
@@ -224,6 +229,30 @@ export class FuenteSupabase implements Fuente {
 
   async rechazarFactura(id: string, motivo: string) {
     await this.rpc('rechazar_factura', { p_id: id, p_motivo: motivo })
+  }
+
+  async aprobarYaPagada(id: string, d: DatosAprobacion, p: DatosYaPagada): Promise<ResultadoYaPagada> {
+    return this.rpc<ResultadoYaPagada>('aprobar_factura_ya_pagada', {
+      p_id: id,
+      p_cuenta: d.cuentaContable,
+      p_metodo: d.metodoPago,
+      p_pago: {
+        ya_en_xubio: p.yaEnXubio,
+        cuenta_origen: p.cuentaOrigen || null,
+        fecha: p.fecha || null,
+        numero_cheque: p.numeroCheque || null,
+        fecha_acreditacion: p.fechaAcreditacion || null,
+        observaciones: p.observaciones || null,
+      },
+    })
+  }
+
+  async aplicarNotaCredito(ncId: string, facturaId: string, importe: number) {
+    await this.rpc('aplicar_nota_credito', { p_nc: ncId, p_factura: facturaId, p_importe: importe })
+  }
+
+  async anularPago(id: string, motivo: string) {
+    await this.rpc('anular_pago', { p_id: id, p_motivo: motivo })
   }
 
   async editarFactura(id: string, d: DatosEdicion): Promise<ResultadoEdicion> {

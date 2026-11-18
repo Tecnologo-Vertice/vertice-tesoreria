@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { useStore } from '../store'
-import { Badge, Btn, Card, Desplegable, Empty, Field, Kpi, SelectorCuenta, TablaDatos, Tabs } from '../components/ui'
+import { Badge, Btn, Card, Desplegable, Empty, Field, inputCls, Kpi, SelectorCuenta, TablaDatos, Tabs } from '../components/ui'
 import { cuentasOrigenDe, cuentasPara, enLista, sugerirCuentaOrigen } from '../lib/cuentas'
 import { useFiltro } from '../components/Filtros'
 import { fecha, fechaHora, fmtCuit, money, moneyShort, nroComprobante } from '../lib/format'
@@ -73,7 +73,10 @@ export function Contabilizacion() {
 }
 
 function TarjetaPago({ p, empresaNombre, erp, nueva }: { p: Pago; empresaNombre: string; erp: string; nueva?: boolean }) {
-  const { facturas, proveedor, catalogos, usuario, contabilizarPago, marcarRalpharma, abrirArchivo } = useStore()
+  const { facturas, proveedor, catalogos, usuario, contabilizarPago, marcarRalpharma, abrirArchivo, anularPago } = useStore()
+  const puedeAnular = puede(usuario.rol, 'ANULAR_PAGO') && p.gestion !== 'HOJA' && ['CARGADO', 'REVISADO', 'PENDIENTE_RALPHARMA'].includes(p.estado)
+  const [anulando, setAnulando] = useState(false)
+  const [motivoAnular, setMotivoAnular] = useState('')
   const puedeContabilizar = puede(usuario.rol, 'CONTABILIZAR')
   const planEmpresa = cuentasPara(catalogos, p.empresaId)
   const origenes = cuentasOrigenDe(catalogos.cuentasOrigen, p.empresaId)
@@ -218,6 +221,26 @@ function TarjetaPago({ p, empresaNombre, erp, nueva }: { p: Pago; empresaNombre:
                 Confirmo que lo cargué en Ralpharma
               </Btn>
             </>
+          )}
+          {puedeAnular && !anulando && (
+            <button onClick={() => setAnulando(true)} className="text-[0.75rem] text-red-300 hover:underline">
+              Anular este pago
+            </button>
+          )}
+          {puedeAnular && anulando && (
+            <div className="rounded-lg border border-red-500/40 p-3 space-y-2">
+              <Field label="Motivo de la anulación" hint="Lo aplicado vuelve a sus facturas. Queda en la auditoría con tu nombre.">
+                <input id={`anular-${p.id}`} autoFocus value={motivoAnular} onChange={(ev) => setMotivoAnular(ev.target.value)} placeholder="Ej.: comprobante equivocado, pago duplicado…" className={inputCls} />
+              </Field>
+              <div className="flex justify-end gap-2">
+                <Btn variant="fantasma" onClick={() => setAnulando(false)}>
+                  Cancelar
+                </Btn>
+                <Btn variant="peligro" disabled={!motivoAnular.trim()} onClick={() => void anularPago(p.id, motivoAnular.trim())}>
+                  Confirmar anulación
+                </Btn>
+              </div>
+            </div>
           )}
           {(hecho || p.estado === 'REVISADO') && p.detalleXubio && <p className="text-[0.8125rem] text-seco leading-snug">{p.detalleXubio}</p>}
           {hecho && (

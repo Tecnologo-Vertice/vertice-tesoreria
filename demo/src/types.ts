@@ -96,6 +96,10 @@ export interface Factura {
   codigoProducto?: string
   /** Cuándo entró al sistema: marca de "Nueva" y orden "más nuevo primero". */
   creadoEn?: string
+  /** Notas de crédito: lo que queda por aplicar a facturas del mismo proveedor y empresa. */
+  saldoNc?: number
+  /** Aprobada como ya pagada sin banco: Tesorería solo tiene que adjuntar el comprobante. */
+  yaPagadaSegunAdmin?: string
 }
 
 export interface Percepcion {
@@ -123,7 +127,7 @@ export interface Documento {
 
 export type FormaCargaXubio = 'ORDEN_PAGO' | 'SALIDA_FONDOS' | 'ASIENTO_MANUAL'
 
-export type EstadoPago = 'CARGADO' | 'REVISADO' | 'CONTABILIZADO' | 'CONCILIADO' | 'PENDIENTE_RALPHARMA'
+export type EstadoPago = 'CARGADO' | 'REVISADO' | 'CONTABILIZADO' | 'CONCILIADO' | 'PENDIENTE_RALPHARMA' | 'ANULADO'
 
 export type OrigenSugerencia = 'REGLA' | 'IA' | 'MANUAL'
 
@@ -168,6 +172,10 @@ export interface Pago {
   avisoImporte?: string
   /** Qué pasó en Xubio (texto de producción o del envío en seco). */
   detalleXubio?: string
+  /** Anulado: quién, cuándo y por qué. */
+  anuladoPor?: string
+  anuladoEn?: string
+  motivoAnulacion?: string
 }
 
 export interface CuentaOrigen {
