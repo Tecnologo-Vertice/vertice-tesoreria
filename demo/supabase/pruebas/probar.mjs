@@ -481,5 +481,56 @@ await falla('Aprobador no anula pagos', `select anular_pago($1, 'x')`, [pAn1], /
 await db.exec(`reset role`)
 check('auditoría: NC, ya pagada y anulación quedan registradas', (await val(`select count(distinct accion)::int n from auditoria where accion in ('NC_APLICADA', 'APROBADA_YA_PAGADA', 'PAGO_ANULADO')`)).n === 3)
 
+// ================================================================ Mails, cheques y flujo (0012)
+await db.exec(`reset role`)
+const provMail = (await val(`select proveedor_id id from facturas where id = $1`, [fAn])).id
+await db.exec(`set role authenticated`)
+await como('tesoreria@verticebi.com')
+await falla('mail inválido no se guarda', `select guardar_email_proveedor($1, 'sin-arroba')`, [provMail], /inválido/)
+await db.query(`select guardar_email_proveedor($1, ' Pagos@Proveedor.com.ar ')`, [provMail])
+check('mail del proveedor guardado en minúscula', (await val(`select email from proveedores where id = $1`, [provMail])).email === 'pagos@proveedor.com.ar')
+await como('direccion@verticebi.com')
+await falla('Dirección no guarda mails', `select guardar_email_proveedor($1, 'a@b.com')`, [provMail], /rol/)
+await como('tesoreria@verticebi.com')
+check('marcar mail preparado devuelve cuántas', (await val(`select marcar_mail_preparado($1) n`, [[fYa2]])).n === 1)
+r = await val(`select f.mail_enviado, p.mail_proveedor_en from facturas f join pagos_facturas pf on pf.factura_id = f.id join pagos p on p.id = pf.pago_id where f.id = $1`, [fYa2])
+check('la factura queda "Preparado en Gmail" y el pago con fecha de mail', /^Preparado en Gmail \d{2}\/\d{2}\/\d{4} \d{2}:\d{2}$/.test(r.mail_enviado) && r.mail_proveedor_en !== null, r.mail_enviado)
+await como('teso.india@verticebi.com')
+await falla('Tesorería de India no marca mails de YSD', `select marcar_mail_preparado($1)`, [[fYa2]], /acceso a la empresa ysd/)
+check('authenticated no ve los cheques pendientes ni el flujo (solo el servidor)',
+  !(await val(`select has_function_privilege('authenticated', 'cheques_para_cashflow(timestamptz)', 'execute') p`)).p &&
+  !(await val(`select has_function_privilege('authenticated', 'flujo_datos()', 'execute') p`)).p)
+
+// --- Cheques
+await db.exec(`reset role`)
+const fCh = (await val(`select ingresar_factura($1) id`, [factura({ empresa_id: 'india', numero: 8001, total: 5000, neto: 5000, iva: 0 })])).id
+await db.exec(`set role authenticated`)
+await como('aprobador@verticebi.com')
+await db.query(`select aprobar_factura($1, 'SEGUROS', 'ECHEQ', 30)`, [fCh])
+await como('tesoreria@verticebi.com')
+const pCh = (await val(`select registrar_pago($1) id`, [pago({ empresa_id: 'india', importe: 5000, medio: 'ECHEQ', numero_cheque: '0012345', fecha_acreditacion: '2026-12-15', factura_ids: [fCh] })])).id
+const pSinFecha = (await val(`select registrar_pago($1) id`, [pago({ empresa_id: 'india', importe: 10, descripcion: 'transferencia' })])).id
+await db.exec(`reset role`)
+let ch = (await db.query(`select * from cheques_para_cashflow('2000-01-01')`)).rows
+check('cheque con fecha de cobro aparece para el Cash Flow', ch.some((x) => x.pago_id === pCh && x.numero === '0012345' && x.deposito.toISOString().slice(0, 10) === '2026-12-15' && Number(x.importe) === 5000))
+check('un pago sin cheque no aparece', !ch.some((x) => x.pago_id === pSinFecha))
+check('cargado antes de la fecha de activación no aparece', !(await db.query(`select * from cheques_para_cashflow(now() + interval '1 day')`)).rows.some((x) => x.pago_id === pCh))
+await db.query(`update pagos set gestion = 'HOJA' where id = $1`, [pCh])
+check('pago de la hoja no aparece (lo pasa el Apps Script de producción)', !(await db.query(`select * from cheques_para_cashflow('2000-01-01')`)).rows.some((x) => x.pago_id === pCh))
+await db.query(`update pagos set gestion = 'SISTEMA' where id = $1`, [pCh])
+check('marcar resultado', (await val(`select marcar_cheques_cashflow($1) n`, [JSON.stringify([{ pago_id: pCh, estado: 'AGREGADO 18/11/2026 10:00' }])])).n === 1)
+check('ya marcado no vuelve a aparecer', !(await db.query(`select * from cheques_para_cashflow('2000-01-01')`)).rows.some((x) => x.pago_id === pCh))
+check('la marca no se pisa', (await val(`select marcar_cheques_cashflow($1) n`, [JSON.stringify([{ pago_id: pCh, estado: 'ERROR: otra' }])])).n === 0)
+
+// --- Flujo
+const fl = (await val(`select flujo_datos() d`)).d
+const filaFac = fl.facturas[0]
+check('flujo: facturas con los encabezados de la hoja', !!filaFac && 'ESTADO_PAGO' in filaFac && 'VENCIMIENTODELPAGO' in filaFac && 'RECEPTOR' in filaFac)
+check('flujo: solo facturas para pagar', fl.facturas.every((x) => x.ESTADO_PAGO === 'PARA_PAGAR' && x.ESTADO_APROBACION === 'APROBADA'))
+check('flujo: cheque a N días como lo lee FlujoCaja.gs', fl.facturas.every((x) => !/^CHEQUE|^ECHEQ/.test(x.METODO_PAGO) || /^CHEQUE \d+ DIAS$|^ECHEQ$|^CHEQUE$/.test(x.METODO_PAGO)))
+const pagoFl = fl.pagos.find((x) => x.ID_PAGO === pCh)
+check('flujo: pagos con número de cheque y fecha de cobro', pagoFl && pagoFl.NUMERO_CHEQUE === '0012345' && pagoFl.FECHA_VTO_CHEQUE === '2026-12-15' && pagoFl.TIPO_CHEQUE === 'ECHEQ' && pagoFl.FACTURA_ASOCIADA === '8001')
+check('flujo: anulados marcados ANULADO', fl.pagos.some((x) => x.ID_PAGO === pAn1 && x.ESTADO_CONTABLE === 'ANULADO'))
+
 console.log(`\n${ok} OK · ${mal} MAL`)
 process.exit(mal ? 1 : 0)

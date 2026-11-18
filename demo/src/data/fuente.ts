@@ -104,6 +104,13 @@ export interface Fuente {
   aplicarNotaCredito(ncId: string, facturaId: string, importe: number, u: Usuario): Promise<void>
   /** Anula un pago que todavía no está en Xubio ni en Ralpharma y devuelve lo aplicado a sus facturas. */
   anularPago(id: string, motivo: string, u: Usuario): Promise<void>
+  /** Mails a proveedores: guarda el mail escrito a mano y deja registrado que se preparó en Gmail. */
+  guardarEmailProveedor(proveedorId: string, email: string, u: Usuario): Promise<void>
+  marcarMailPreparado(facturaIds: string[], u: Usuario): Promise<void>
+  /** Link de cada comprobante para el texto del mail (Drive, o enlace firmado por 30 días). Vacío en demo. */
+  linksComprobantes(pagos: Pago[]): Promise<Record<string, string | null>>
+  /** Trae de Xubio el plan de cuentas y las cuentas de origen. Devuelve una línea por empresa. */
+  catalogosXubio(): Promise<string[]>
   corregirFactura(id: string, u: Usuario): Promise<void>
   editarFactura(id: string, datos: DatosEdicion, u: Usuario): Promise<ResultadoEdicion>
   registrarPago(datos: NuevoPago, u: Usuario): Promise<Pago>

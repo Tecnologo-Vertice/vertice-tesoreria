@@ -151,7 +151,7 @@ export class FuenteDemo implements Fuente {
     this.e.facturas = this.e.facturas.map((x): Factura => {
       if (x.id === facturaId) {
         const pagado = Math.round((x.pagado + imp) * 100) / 100
-        return { ...x, pagado, pagadoPct: Math.min(100, Math.floor((pagado / x.total) * 10000) / 100), estado: pagado >= x.total ? 'PAGADA' : 'PAGADA_PARCIAL' }
+        return { ...x, ncAplicadas: [...(x.ncAplicadas ?? []), { ncId, importe: imp }], pagado, pagadoPct: Math.min(100, Math.floor((pagado / x.total) * 10000) / 100), estado: pagado >= x.total ? 'PAGADA' : 'PAGADA_PARCIAL' }
       }
       if (x.id === ncId) {
         const resto = Math.round((saldo - imp) * 100) / 100
@@ -161,6 +161,34 @@ export class FuenteDemo implements Fuente {
     })
     this.log(u, { accion: 'NC_APLICADA', entidad: 'FACTURA', entidadId: facturaId, detalle: `NC ${nc.puntoVenta}-${nc.numero} aplicada por $ ${imp}` })
     this.commit()
+  }
+
+  async guardarEmailProveedor(proveedorId: string, email: string, u: Usuario) {
+    const v = email.trim().toLowerCase()
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)) throw new Error(`Mail inválido: ${email}`)
+    const p = PROVEEDORES.find((x) => x.id === proveedorId)
+    if (!p) throw new Error('Proveedor inexistente')
+    p.email = v
+    this.log(u, { accion: 'MAIL_PROVEEDOR_GUARDADO', entidad: 'SISTEMA', entidadId: proveedorId, detalle: v })
+    this.commit()
+  }
+
+  async marcarMailPreparado(facturaIds: string[], u: Usuario) {
+    const d = new Date()
+    const dd = (n: number) => String(n).padStart(2, '0')
+    const texto = `Preparado en Gmail ${dd(d.getDate())}/${dd(d.getMonth() + 1)}/${d.getFullYear()} ${dd(d.getHours())}:${dd(d.getMinutes())}`
+    this.e.facturas = this.e.facturas.map((f): Factura => (facturaIds.includes(f.id) ? { ...f, mailEnviado: texto } : f))
+    this.e.pagos = this.e.pagos.map((p): Pago => (p.facturaIds.some((id) => facturaIds.includes(id)) && p.estado !== 'ANULADO' ? { ...p, mailProveedorEnviado: true } : p))
+    this.log(u, { accion: 'MAIL_PREPARADO', entidad: 'SISTEMA', entidadId: '', detalle: `${facturaIds.length} factura(s) · ${texto}` })
+    this.commit()
+  }
+
+  async linksComprobantes(pagos: Pago[]) {
+    return Object.fromEntries(pagos.map((p) => [p.id, null]))
+  }
+
+  async catalogosXubio() {
+    return ['En la demo no hay conexión con Xubio: el plan de cuentas es el de ejemplo.']
   }
 
   /** Mismas reglas que anular_pago en SQL. La demo no guarda cuánto se aplicó a cada factura: lo devuelve en el mismo orden. */

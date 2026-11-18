@@ -57,6 +57,12 @@ export async function exigirEmpresa(u: UsuarioFn, empresaId: string | null | und
   if (data !== true) throw new ErrorHttp(403, `No tenés acceso a la empresa ${empresaId}`)
 }
 
+/** Los puentes del Apps Script (cartero, cheques, flujo) se identifican con INGESTA_TOKEN en x-ingesta-token. */
+export function exigirTokenCartero(req: Request) {
+  const esperado = env('INGESTA_TOKEN')
+  if ((req.headers.get('x-ingesta-token') ?? '') !== esperado) throw new ErrorHttp(401, 'Token del Apps Script inválido')
+}
+
 export function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json; charset=utf-8' } })
 }

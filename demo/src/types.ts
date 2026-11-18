@@ -100,6 +100,10 @@ export interface Factura {
   saldoNc?: number
   /** Aprobada como ya pagada sin banco: Tesorería solo tiene que adjuntar el comprobante. */
   yaPagadaSegunAdmin?: string
+  /** "Preparado en Gmail dd/mm/aaaa hh:mm" (mail al proveedor armado y abierto por Tesorería). */
+  mailEnviado?: string
+  /** Notas de crédito aplicadas a esta factura. */
+  ncAplicadas?: { ncId: string; importe: number }[]
 }
 
 export interface Percepcion {

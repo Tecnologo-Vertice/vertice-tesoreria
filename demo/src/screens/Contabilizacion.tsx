@@ -14,7 +14,8 @@ const FORMAS: { id: FormaCargaXubio; label: string; desc: string }[] = [
 ]
 
 export function Contabilizacion() {
-  const { pagos, empresa, proveedor } = useStore()
+  const { pagos, empresa, proveedor, usuario, catalogosXubio } = useStore()
+  const [trayendo, setTrayendo] = useState(false)
   const [tab, setTab] = useState<'PENDIENTES' | 'HECHOS'>('PENDIENTES')
   const pendientes = pagos.filter((p) => p.estado === 'CARGADO' || p.estado === 'REVISADO').sort((a, b) => b.cargadoEn.localeCompare(a.cargadoEn))
   const ralpharma = pagos.filter((p) => p.estado === 'PENDIENTE_RALPHARMA')
@@ -37,11 +38,27 @@ export function Contabilizacion() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="titulo-pagina">Contabilización</h2>
-        <p className="text-sm text-seco">
-          La bandeja de Guido. Cada pago llega con el comentario de Vivi, la cuenta sugerida y la forma de carga en Xubio. Un clic lo registra. Nada pasa a "contabilizado" sin un id de Xubio o un responsable en Ralpharma.
-        </p>
+      <div className="flex flex-col md:flex-row md:items-end justify-between gap-3">
+        <div>
+          <h2 className="titulo-pagina">Contabilización</h2>
+          <p className="text-sm text-seco">
+            La bandeja de Guido. Cada pago llega con el comentario de Vivi, la cuenta sugerida y la forma de carga en Xubio. Un clic lo registra. Nada pasa a "contabilizado" sin un id de Xubio o un responsable en Ralpharma.
+          </p>
+        </div>
+        {puede(usuario.rol, 'CONTABILIZAR') && (
+          <Btn
+            variant="secundario"
+            disabled={trayendo}
+            title="Lee de Xubio el plan de cuentas y las cuentas de origen (bancos, cajas, e-cheqs) de cada empresa. Solo lectura."
+            onClick={async () => {
+              setTrayendo(true)
+              await catalogosXubio()
+              setTrayendo(false)
+            }}
+          >
+            {trayendo ? 'Leyendo Xubio…' : 'Actualizar cuentas desde Xubio'}
+          </Btn>
+        )}
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

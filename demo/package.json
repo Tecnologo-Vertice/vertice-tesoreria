@@ -11,7 +11,9 @@
     "typecheck": "tsc -b && tsc -p tsconfig.functions.json",
     "test:sql": "node supabase/pruebas/probar.mjs supabase/migrations",
     "test:ia": "node netlify/pruebas/factura.prueba.mts",
-    "test": "npm run test:ia && npm run test:xubio && npm run test:espejo && npm run test:sql",
+    "test": "npm run test:ia && npm run test:xubio && npm run test:espejo && npm run test:mails && npm run test:gas && npm run test:sql",
+    "test:mails": "node netlify/pruebas/mails.prueba.mts",
+    "test:gas": "node netlify/pruebas/gas.prueba.mts",
     "test:xubio": "node netlify/pruebas/xubio.prueba.mts",
     "sql:unir": "node supabase/unir.mjs",
     "test:espejo": "node netlify/pruebas/espejo.prueba.mts"

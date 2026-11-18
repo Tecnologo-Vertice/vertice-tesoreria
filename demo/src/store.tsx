@@ -21,6 +21,10 @@ interface Store {
   aprobarYaPagada: (id: string, datos: DatosAprobacion, pago: DatosYaPagada) => Promise<boolean>
   aplicarNotaCredito: (ncId: string, facturaId: string, importe: number) => Promise<boolean>
   anularPago: (id: string, motivo: string) => Promise<boolean>
+  guardarEmailProveedor: (proveedorId: string, email: string) => Promise<boolean>
+  marcarMailPreparado: (facturaIds: string[]) => Promise<void>
+  linksComprobantes: (pagos: Pago[]) => Promise<Record<string, string | null>>
+  catalogosXubio: () => Promise<void>
   corregirFactura: (id: string) => Promise<void>
   editarFactura: (id: string, datos: DatosEdicion) => Promise<boolean>
   registrarPago: (p: NuevoPago) => Promise<Pago | null>
@@ -148,6 +152,22 @@ export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fu
       },
       aplicarNotaCredito: async (nc, f, imp) =>
         (await accion(() => fuente.aplicarNotaCredito(nc, f, imp, usuario).then(() => true), 'Nota de crédito aplicada; queda registrado quién y por cuánto')) === true,
+      guardarEmailProveedor: async (id, email) =>
+        (await accion(() => fuente.guardarEmailProveedor(id, email, usuario).then(() => true), 'Mail del proveedor guardado para la próxima')) === true,
+      // Se registra sin recargar ni avisar: la pantalla ya abrió Gmail y sigue con el próximo mail.
+      marcarMailPreparado: async (ids) => {
+        try {
+          await fuente.marcarMailPreparado(ids, usuario)
+          await recargar()
+        } catch (e) {
+          toast(e instanceof Error ? e.message : String(e), 'error')
+        }
+      },
+      linksComprobantes: (ps) => fuente.linksComprobantes(ps),
+      catalogosXubio: async () => {
+        const log = await accion(() => fuente.catalogosXubio())
+        if (log) toast(log.join(' · '), 'info')
+      },
       anularPago: async (id, m) =>
         (await accion(() => fuente.anularPago(id, m, usuario).then(() => true), 'Pago anulado: lo aplicado vuelve a sus facturas')) === true,
       rechazarFactura: async (id, m) => {

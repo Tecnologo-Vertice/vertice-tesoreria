@@ -6,6 +6,7 @@ import { useFiltro } from '../components/Filtros'
 import { addDays, diasHasta, fecha, fmtCuit, iso, money, nroComprobante, parseIso, pendiente } from '../lib/format'
 import { formaDeCarga, sugerirCuenta, type Sugerencia } from '../lib/ia'
 import { puede } from '../lib/permisos'
+import { armarMails, linkGmail, type MailProveedor } from '../lib/mails'
 import type { ComprobanteEjemplo, EstadoXubio, Factura, LecturaComprobante, MetodoPago } from '../types'
 
 const ESTADO_XUBIO: Record<EstadoXubio, { label: string; tone: 'verde' | 'rojo' | 'naranja' | 'neutro' }> = {
@@ -34,6 +35,8 @@ export function Pagos() {
   const [sel, setSel] = useState<string[]>([])
   const [modal, setModal] = useState<null | { facturaIds: string[] }>(null)
   const [ncModal, setNcModal] = useState<string | null>(null)
+  const [selPagadas, setSelPagadas] = useState<string[]>([])
+  const [mailsModal, setMailsModal] = useState<string[] | null>(null)
 
   const paraPagar = useMemo(
     () => facturas.filter((f) => f.estado === 'PARA_PAGAR' || f.estado === 'PAGADA_PARCIAL').sort((a, b) => diasHasta(a.vencimiento) - diasHasta(b.vencimiento)),
@@ -161,19 +164,33 @@ export function Pagos() {
       {tab === 'PAGADAS' && (
         <div className="space-y-2">
           {pagadas.length > 0 && filtro.barra}
+          {puedePagar && pagadas.length > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs text-seco">Marcá las facturas pagadas para armar los mails a los proveedores. El sistema no los envía: se abren en tu Gmail.</p>
+              <Btn disabled={selPagadas.length === 0} onClick={() => setMailsModal(selPagadas)}>
+                Preparar mails{selPagadas.length ? ` (${selPagadas.length})` : ''}
+              </Btn>
+            </div>
+          )}
           {pagadas.length === 0 && <Empty texto="Todavía no hay facturas pagadas." />}
           {pagadas.length > 0 && filtro.visibles.length === 0 && <Empty texto="Nada coincide con la búsqueda o los filtros." />}
           {filtro.visibles.map((f) => {
             const p = proveedor(f.proveedorId)
             const pg = pagos.find((x) => x.facturaIds.includes(f.id) && x.estado !== 'ANULADO')
+            const marcadaMail = selPagadas.includes(f.id)
             return (
-              <div key={f.id} className="flex items-center gap-4 px-4 py-3 rounded-xl border border-borde bg-pino">
+              <div
+                key={f.id}
+                onClick={() => puedePagar && setSelPagadas((s) => (s.includes(f.id) ? s.filter((x) => x !== f.id) : [...s, f.id]))}
+                className={`flex items-center gap-4 px-4 py-3 rounded-xl border ${puedePagar ? 'cursor-pointer' : ''} ${marcadaMail ? 'border-dorado bg-dorado/10' : 'border-borde bg-pino'}`}
+              >
+                {puedePagar && <input type="checkbox" readOnly checked={marcadaMail} className="accent-dorado w-4 h-4" aria-label="Elegir para el mail" />}
                 <div className="flex-1 min-w-0">
                   <div className="flex flex-wrap items-center gap-2 mb-0.5">
                     <Badge tone="dorado">{empresa(f.empresaId).corto}</Badge>
                     <Badge tone="verde">Pagada</Badge>
                     {pg?.estado === 'CONTABILIZADO' ? <Badge tone="verde">Contabilizada {pg.xubioId}</Badge> : <Badge tone="naranja">Para contabilizar</Badge>}
-                    {pg?.mailProveedorEnviado && <Badge tone="azul">Mail al proveedor enviado</Badge>}
+                    {f.mailEnviado ? <Badge tone="azul" title={f.mailEnviado}>Mail preparado</Badge> : pg?.mailProveedorEnviado && <Badge tone="azul">Mail al proveedor</Badge>}
                   </div>
                   <p className="font-semibold truncate">{p?.nombre ?? f.proveedorId}</p>
                   <p className="text-xs text-seco">
@@ -188,6 +205,15 @@ export function Pagos() {
       )}
 
       {ncModal && <ModalAplicarNc ncId={ncModal} onClose={() => setNcModal(null)} />}
+      {mailsModal && (
+        <ModalMails
+          facturaIds={mailsModal}
+          onClose={() => {
+            setMailsModal(null)
+            setSelPagadas([])
+          }}
+        />
+      )}
 
       {modal && (
         <ModalCargarPago
@@ -203,6 +229,104 @@ export function Pagos() {
 }
 
 const esNotaCredito = (f: Factura) => f.tipo.startsWith('Nota de Cr')
+
+/** Mails a proveedores (MailsProveedores.gs): uno por proveedor, se abren en el Gmail de Tesorería. */
+function ModalMails({ facturaIds, onClose }: { facturaIds: string[]; onClose: () => void }) {
+  const { facturas, pagos, catalogos, linksComprobantes, guardarEmailProveedor, marcarMailPreparado } = useStore()
+  const [mails, setMails] = useState<MailProveedor[] | null>(null)
+  const [para, setPara] = useState<Record<string, string>>({})
+  const [abiertos, setAbiertos] = useState<string[]>([])
+  useEffect(() => {
+    let vivo = true
+    const elegidas = facturas.filter((f) => facturaIds.includes(f.id))
+    const directos = pagos.filter((p) => p.estado !== 'ANULADO' && p.facturaIds.some((id) => facturaIds.includes(id)))
+    const cheques = new Set(directos.map((p) => p.numeroCheque).filter(Boolean))
+    const involucrados = pagos.filter((p) => p.estado !== 'ANULADO' && (directos.includes(p) || (p.numeroCheque && cheques.has(p.numeroCheque))))
+    void linksComprobantes(involucrados).then((links) => {
+      if (!vivo) return
+      const ncAplicadas = Object.fromEntries(facturas.filter((f) => f.ncAplicadas?.length).map((f) => [f.id, f.ncAplicadas!]))
+      const m = armarMails({ facturas: elegidas, todas: facturas, pagos, proveedores: catalogos.proveedores, empresas: catalogos.empresas, ncAplicadas, links })
+      setMails(m)
+      setPara(Object.fromEntries(m.map((x) => [x.clave, x.to])))
+    })
+    return () => {
+      vivo = false
+    }
+    // Se arma una vez al abrir: si se recargan los datos (al guardar un mail), no se pierde lo escrito.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  return (
+    <Modal titulo="Mails a proveedores" onClose={onClose} ancho="max-w-3xl">
+      {!mails ? (
+        <p className="text-sm text-seco">Armando los mails…</p>
+      ) : (
+        <div className="space-y-5">
+          <p className="text-sm text-seco">
+            {mails.length} mail{mails.length === 1 ? '' : 's'}. Revisá cada uno y tocá "Abrir en Gmail": se abre el borrador en la cuenta del remitente y queda registrado como preparado. El envío lo hacés vos desde Gmail.
+          </p>
+          {mails.map((m) => {
+            const to = para[m.clave] ?? ''
+            const cambio = to.trim() !== m.to
+            const valido = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to.trim())
+            const hecho = abiertos.includes(m.clave)
+            return (
+              <div key={m.clave} className={`rounded-xl border p-4 space-y-3 ${hecho ? 'border-dorado/60' : 'border-borde'}`}>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="font-semibold">{m.proveedor || 'Proveedor sin nombre'}</p>
+                  <Badge tone="dorado">{m.empresa}</Badge>
+                  {m.sinComprobante && <Badge tone="naranja">Sin comprobante adjunto</Badge>}
+                  {hecho && <Badge tone="verde">Abierto en Gmail</Badge>}
+                </div>
+                <div className="grid sm:grid-cols-2 gap-3">
+                  <Field label="Para" marcado={valido ? undefined : 'falta'} hint={m.to ? undefined : 'No hay mail de este proveedor: escribilo y queda guardado'}>
+                    <div className="flex gap-2">
+                      <input id={`para-${m.clave}`} value={to} onChange={(ev) => setPara((p) => ({ ...p, [m.clave]: ev.target.value }))} className={inputCls} placeholder="mail@proveedor.com" />
+                      {cambio && valido && (
+                        <Btn variant="secundario" onClick={() => void guardarEmailProveedor(m.proveedorId, to.trim())}>
+                          Guardar
+                        </Btn>
+                      )}
+                    </div>
+                  </Field>
+                  <Field label="De">
+                    <p className="text-sm py-2">{m.from}</p>
+                  </Field>
+                </div>
+                <Field label="Asunto">
+                  <p className="text-sm">{m.subject}</p>
+                </Field>
+                <pre className="text-[0.8125rem] whitespace-pre-wrap rounded-lg bg-suave/50 p-3 max-h-64 overflow-auto font-sans">{m.body}</pre>
+                <div className="flex justify-end">
+                  {valido ? (
+                    <a
+                      href={linkGmail(m, to.trim())}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={() => {
+                        setAbiertos((a) => (a.includes(m.clave) ? a : [...a, m.clave]))
+                        void marcarMailPreparado(m.facturaIds)
+                      }}
+                      className="inline-flex items-center h-10 px-4 rounded-xl bg-dorado text-pino font-bold text-sm hover:opacity-90"
+                    >
+                      Abrir en Gmail
+                    </a>
+                  ) : (
+                    <p className="text-xs text-red-300">Falta el mail del proveedor</p>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+          <div className="flex justify-end">
+            <Btn variant="fantasma" onClick={onClose}>
+              Cerrar
+            </Btn>
+          </div>
+        </div>
+      )}
+    </Modal>
+  )
+}
 
 /** Aplicar una nota de crédito (aplicarNotaCreditoAFactura del Apps Script): mismo proveedor y empresa. */
 function ModalAplicarNc({ ncId, onClose }: { ncId: string; onClose: () => void }) {

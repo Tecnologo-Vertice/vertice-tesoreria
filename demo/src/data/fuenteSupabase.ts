@@ -60,6 +60,7 @@ function mapFactura(r: Row): Factura {
     creadoEn: s(r.creado_en),
     saldoNc: r.saldo_nc == null ? undefined : n(r.saldo_nc),
     yaPagadaSegunAdmin: s(r.ya_pagada_segun_admin),
+    mailEnviado: s(r.mail_enviado),
   }
 }
 
@@ -132,7 +133,7 @@ export class FuenteSupabase implements Fuente {
   }
 
   async cargar(): Promise<Datos> {
-    const [empresas, proveedores, cuentasOrigen, plan, facturas, pagosRaw, vinculos, auditoria, documentos, espejo, productos] = await Promise.all([
+    const [empresas, proveedores, cuentasOrigen, plan, facturas, pagosRaw, vinculos, auditoria, documentos, espejo, productos, ncs] = await Promise.all([
       this.lista<Empresa>('empresas', (r) => ({ id: String(r.id), nombre: String(r.nombre), corto: String(r.nombre_corto), cuit: String(r.cuit), erp: String(r.erp) as Empresa['erp'] })),
       this.lista<Proveedor>('proveedores', (r) => ({
         id: String(r.id),
@@ -206,7 +207,13 @@ export class FuenteSupabase implements Fuente {
         [['hoja', 'asc']],
       ).catch(() => [] as EstadoEspejo[]),
       this.lista<{ nombre: string; codigo: string }>('productos_xubio', (r) => ({ nombre: String(r.nombre), codigo: String(r.codigo) }), [['nombre', 'asc']]).catch(() => [] as { nombre: string; codigo: string }[]),
+      // NC aplicadas a cada factura (0011). Sin la migración, vacío.
+      this.lista<{ factura: string; nc: string; importe: number }>('notas_credito_aplicadas', (r) => ({ factura: String(r.factura_id), nc: String(r.nc_id), importe: n(r.importe) })).catch(() => [] as { factura: string; nc: string; importe: number }[]),
     ])
+    for (const f of facturas) {
+      const a = ncs.filter((x) => x.factura === f.id)
+      if (a.length) f.ncAplicadas = a.map((x) => ({ ncId: x.nc, importe: x.importe }))
+    }
     const comunes = plan.filter((c) => !c.empresa && c.activa).map((c) => c.nombre)
     const planPorEmpresa: Record<string, string[]> = {}
     for (const c of plan) if (c.empresa && c.activa) (planPorEmpresa[c.empresa] ??= []).push(c.nombre)
@@ -253,6 +260,33 @@ export class FuenteSupabase implements Fuente {
 
   async anularPago(id: string, motivo: string) {
     await this.rpc('anular_pago', { p_id: id, p_motivo: motivo })
+  }
+
+  async guardarEmailProveedor(proveedorId: string, email: string) {
+    await this.rpc('guardar_email_proveedor', { p_proveedor: proveedorId, p_email: email })
+  }
+
+  async marcarMailPreparado(facturaIds: string[]) {
+    await this.rpc('marcar_mail_preparado', { p_facturas: facturaIds })
+  }
+
+  /** Como en producción, el comprobante va como link: el de Drive (pagos de la hoja) o un enlace firmado por 30 días. */
+  async linksComprobantes(pagos: Pago[]): Promise<Record<string, string | null>> {
+    const out: Record<string, string | null> = {}
+    await Promise.all(
+      pagos.map(async (p) => {
+        if (p.comprobanteUrl) out[p.id] = p.comprobanteUrl
+        else if (p.comprobante) {
+          const { data } = await this.db.storage.from('comprobantes').createSignedUrl(p.comprobante, 30 * 24 * 3600)
+          out[p.id] = data?.signedUrl ?? null
+        } else out[p.id] = null
+      }),
+    )
+    return out
+  }
+
+  async catalogosXubio(): Promise<string[]> {
+    return (await llamarFuncion<{ log: string[] }>('xubio/catalogos', {})).log
   }
 
   async editarFactura(id: string, d: DatosEdicion): Promise<ResultadoEdicion> {
