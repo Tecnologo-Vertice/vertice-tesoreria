@@ -5,7 +5,7 @@
 // Body: { origen?: 'GMAIL' | 'DRIVE', gmailMessageId, nombre, mimeType, data (base64), remitente?, asunto? }
 
 import type { Config } from '@netlify/functions'
-import { env, json, leerJson, manejar, supabaseAdmin, ErrorHttp } from './lib/comun'
+import { env, json, leerJson, manejar, organizacionDelPuente, supabaseAdmin, ErrorHttp } from './lib/comun'
 import { guardarArchivo, registrarDocumento, validarArchivo } from './lib/entrada'
 
 interface Body {
@@ -26,16 +26,19 @@ export default manejar(async (req) => {
   const origen = b.origen === 'DRIVE' ? 'DRIVE' : 'GMAIL'
   if (origen === 'GMAIL' && !b.gmailMessageId) throw new ErrorHttp(400, 'Falta gmailMessageId')
   const db = supabaseAdmin()
+  // De qué organización es el buzón: mientras haya una sola, esa (ver organizacionDelPuente).
+  const organizacion = await organizacionDelPuente()
 
   // Si este adjunto ya llegó, no se vuelve a guardar el archivo.
   if (b.gmailMessageId) {
-    const { data: previo } = await db.from('documentos').select('id, estado').eq('gmail_message_id', b.gmailMessageId).eq('nombre_archivo', b.nombre!).maybeSingle()
+    const { data: previo } = await db.from('documentos').select('id, estado').eq('organizacion_id', organizacion).eq('gmail_message_id', b.gmailMessageId).eq('nombre_archivo', b.nombre!).maybeSingle()
     if (previo) return json({ ok: true, id: previo.id, nuevo: false, estado: previo.estado })
   }
 
   const path = await guardarArchivo(db, b.nombre!, b.mimeType!, b.data!)
   const r = await registrarDocumento(db, {
     origen,
+    organizacion_id: organizacion,
     gmail_message_id: b.gmailMessageId ?? '',
     nombre_archivo: b.nombre,
     mime_type: b.mimeType,

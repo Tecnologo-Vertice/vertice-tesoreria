@@ -57,6 +57,24 @@ function cumple(fila: Fila, filtros: [string, string][]): boolean {
   })
 }
 
+/**
+ * La organización de las pruebas que no hablan de organizaciones. En la base real toda empresa y todo
+ * usuario tienen organización obligatoria (0017): si la prueba no la puso en una fila, es esta, y si no
+ * armó la tabla de organizaciones, hay una sola (esta) y está activa.
+ */
+export const ORG_PRUEBA = 'org-prueba'
+
+/** La fila como la devolvería la base: con su organización y, en usuarios, el estado de esa organización. */
+function completar(m: Mundo, tabla: string, f: Fila): Fila {
+  if (tabla !== 'usuarios' && tabla !== 'empresas') return f
+  const fila: Fila = { organizacion_id: ORG_PRUEBA, ...f }
+  if (tabla === 'usuarios') {
+    const org = (m.tablas.organizaciones ?? []).find((o) => o.id === fila.organizacion_id)
+    fila.organizaciones = org ? { estado: org.estado } : null
+  }
+  return fila
+}
+
 async function supabase(m: Mundo, p: Pedido, req: { headers: Headers }): Promise<Response> {
   const u = new URL(p.url)
   if (u.pathname === '/auth/v1/user') {
@@ -80,9 +98,10 @@ async function supabase(m: Mundo, p: Pedido, req: { headers: Headers }): Promise
       for (const f of Array.isArray(p.cuerpo) ? (p.cuerpo as Fila[]) : [p.cuerpo as Fila]) filas.push({ ...f })
       return responder(null, 201)
     }
-    const elegidas = filas.filter((f) => cumple(f, filtros))
-    if (p.metodo === 'PATCH') for (const f of elegidas) Object.assign(f, p.cuerpo as Fila)
+    const originales = filas.filter((f) => cumple(completar(m, tabla, f), filtros))
+    if (p.metodo === 'PATCH') for (const f of originales) Object.assign(f, p.cuerpo as Fila)
     if (p.metodo !== 'GET' && p.metodo !== 'PATCH') return responder({ message: `El simulador no atiende ${p.metodo}` }, 405)
+    const elegidas = originales.map((f) => completar(m, tabla, f))
     if ((req.headers.get('accept') ?? '').includes('vnd.pgrst.object')) {
       return elegidas.length === 1 ? responder(elegidas[0]) : responder({ code: 'PGRST116', message: 'No hay una única fila' }, 406)
     }
@@ -111,6 +130,7 @@ export function simular(parcial: Partial<Mundo> = {}): Mundo {
     pedidos: [],
     ...parcial,
   }
+  m.tablas.organizaciones ??= [{ id: ORG_PRUEBA, slug: 'prueba', nombre: 'Organización de prueba', estado: 'ACTIVA' }]
   globalThis.fetch = (async (entrada: string | URL | Request, opciones?: RequestInit) => {
     const req = new Request(entrada, opciones)
     const texto = req.method === 'GET' || req.method === 'HEAD' ? '' : await req.clone().text()

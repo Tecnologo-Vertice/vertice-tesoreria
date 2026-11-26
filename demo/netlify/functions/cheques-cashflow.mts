@@ -4,10 +4,12 @@
 // CASHFLOW_CHEQUES_DESDE (aaaa-mm-dd): desde qué carga de pago se pasan; lo anterior ya está a mano.
 
 import type { Config } from '@netlify/functions'
-import { env, exigirTokenCartero, json, leerJson, manejar, supabaseAdmin, ErrorHttp } from './lib/comun'
+import { env, exigirTokenCartero, json, leerJson, manejar, organizacionDelPuente, supabaseAdmin, ErrorHttp } from './lib/comun'
 
 export default manejar(async (req) => {
   exigirTokenCartero(req)
+  // Las consultas de cheques devuelven los de toda la base: solo se atienden mientras haya una sola organización.
+  await organizacionDelPuente()
   const db = supabaseAdmin()
   if (new URL(req.url).pathname.endsWith('/resultado')) {
     const b = await leerJson<{ resultados?: { pago_id: string; estado: string }[] }>(req)

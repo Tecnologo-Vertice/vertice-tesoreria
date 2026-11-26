@@ -7,7 +7,7 @@
 // Las pestañas grandes llegan en lotes; el primero de cada corrida trae el header x-espejo-lote: 1.
 
 import type { Config } from '@netlify/functions'
-import { env, json, leerJson, manejar, supabaseAdmin, ErrorHttp } from './lib/comun'
+import { env, json, leerJson, manejar, organizacionDelPuente, supabaseAdmin, ErrorHttp } from './lib/comun'
 import { catalogosDesdeHoja, facturaDesdeFila, pagoDesdeFila, type CatalogosHoja, type FilaHoja, type HojaFacturas } from './lib/espejo'
 
 interface Body {
@@ -27,6 +27,8 @@ interface Conteo {
 export default manejar(async (req) => {
   const esperado = env('INGESTA_TOKEN')
   if ((req.headers.get('x-ingesta-token') ?? '') !== esperado) throw new ErrorHttp(401, 'Token de ingesta inválido')
+  // De qué organización es la hoja: mientras haya una sola, esa (ver organizacionDelPuente).
+  const organizacion = await organizacionDelPuente()
   const b = await leerJson<Body>(req)
   const db = supabaseAdmin()
 
@@ -34,7 +36,7 @@ export default manejar(async (req) => {
     const c = catalogosDesdeHoja(b.catalogos ?? {})
     const { data, error } = await db.rpc('espejar_catalogos', { p: c })
     if (error) throw new ErrorHttp(422, error.message)
-    await anotar(db, 'Catalogos', { filas: Object.values(data as Record<string, number>).reduce((a, n) => a + n, 0), nuevas: 0, actualizadas: 0, sin_cambios: 0, omitidas: c.omitidas.map((m) => ({ motivo: m })) })
+    await anotar(db, organizacion, 'Catalogos', { filas: Object.values(data as Record<string, number>).reduce((a, n) => a + n, 0), nuevas: 0, actualizadas: 0, sin_cambios: 0, omitidas: c.omitidas.map((m) => ({ motivo: m })) })
     return json({ ok: true, ...(data as object), omitidas: c.omitidas })
   }
 
@@ -64,16 +66,17 @@ export default manejar(async (req) => {
   if (error) throw new ErrorHttp(422, error.message)
   const r = data as Conteo
   const conteo: Conteo = { ...r, omitidas: [...omitidasLocal, ...r.omitidas] }
-  await anotar(db, b.hoja ?? b.tipo, { filas: filas.length, ...conteo }, req.headers.get('x-espejo-lote') === '1')
+  await anotar(db, organizacion, b.hoja ?? b.tipo, { filas: filas.length, ...conteo }, req.headers.get('x-espejo-lote') === '1')
   return json({ ok: true, recibidas: filas.length, ...conteo })
 })
 
 /** Acumula el resultado del lote en espejo_estado. El primer lote de cada corrida (x-espejo-lote: 1) reinicia los contadores. */
-async function anotar(db: ReturnType<typeof supabaseAdmin>, hoja: string, c: Conteo & { filas: number }, primero = true) {
-  const { data: previo } = primero ? { data: null } : await db.from('espejo_estado').select('*').eq('hoja', hoja).maybeSingle()
+async function anotar(db: ReturnType<typeof supabaseAdmin>, organizacion: string, hoja: string, c: Conteo & { filas: number }, primero = true) {
+  const { data: previo } = primero ? { data: null } : await db.from('espejo_estado').select('*').eq('organizacion_id', organizacion).eq('hoja', hoja).maybeSingle()
   const suma = (k: 'filas' | 'nuevas' | 'actualizadas' | 'sin_cambios') => (previo ? Number(previo[k]) || 0 : 0) + c[k]
   const detalle = [...((previo?.detalle as unknown[]) ?? []), ...c.omitidas].slice(0, 200)
   await db.from('espejo_estado').upsert({
+    organizacion_id: organizacion,
     hoja,
     ultima_en: new Date().toISOString(),
     filas: suma('filas'),

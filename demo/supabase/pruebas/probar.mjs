@@ -855,6 +855,15 @@ check('copia de pagos con dos organizaciones: el que trae empresa entra', ep.nue
 check('…y el que no trae empresa se omite con el motivo (no se adivina de quién es)', ep.omitidas.length === 1 && /más de una organización/.test(ep.omitidas[0].motivo), JSON.stringify(ep.omitidas))
 e1 = await espFact([filaF({ _fila: 62, NUMERO: '00007-00000380' })])
 check('copia de facturas con dos organizaciones: sigue andando (la empresa dice de quién es)', e1.nuevas === 1 && e1.omitidas.length === 0, JSON.stringify(e1))
+// Un pago de la hoja de Vértice cuyo destinatario se llama igual que un proveedor que solo existe en la otra organización.
+ep = await espPag([filaP({ _fila: 63, ID_PAGO: 'PAGO-1792698010002-0', FACTURA_ASOCIADA: '', TIPO_PAGO: 'SIN_FACTURA', EMPRESA: 'BERATUNG S.A.', PROVEEDOR_DESTINO: 'Laboratorio (ficha de Otra)' })])
+r = await val(`select proveedor_id, empresa_id from pagos where hoja_id = 'PAGO-1792698010002-0'`)
+check('copia de pagos: el proveedor por nombre se busca solo en la organización de la empresa', ep.nuevas === 1 && r?.empresa_id === 'beratung' && r?.proveedor_id === null, JSON.stringify({ ep, r }))
+// El ID_PAGO de la hoja es único en toda la base: si lo tiene un pago de la otra organización, no se pisa.
+await db.exec(`insert into pagos (empresa_id, fecha, importe, medio, cargado_por, hoja_id, gestion, descripcion) values ('otra-uno', '2026-11-01', 55, 'TRANSFERENCIA', 'x', 'PAGO-1792698010003-0', 'HOJA', 'pago de Otra')`)
+ep = await espPag([filaP({ _fila: 64, ID_PAGO: 'PAGO-1792698010003-0', FACTURA_ASOCIADA: '', TIPO_PAGO: 'SIN_FACTURA', EMPRESA: 'BERATUNG S.A.', IMPORTE: 999 })])
+r = await val(`select empresa_id, importe, descripcion from pagos where hoja_id = 'PAGO-1792698010003-0'`)
+check('copia de pagos: un pago de otra organización con el mismo ID no se pisa', ep.omitidas.length === 1 && /otra organización/.test(ep.omitidas[0].motivo) && r.empresa_id === 'otra-uno' && Number(r.importe) === 55, JSON.stringify({ ep, r }))
 r = (await val(`select espejar_catalogos($1) r`, [JSON.stringify({ cuentas: cat.cuentas, origen: cat.origen, porEmpresa: cat.porEmpresa })])).r
 check('catálogos por empresa con dos organizaciones: siguen andando', r.cuentas === 1 && r.origen === 1 && r.porEmpresa === 1, JSON.stringify(r))
 await falla('catálogos sin empresa (mails de proveedores) con dos organizaciones: se rechazan', `select espejar_catalogos($1)`, [JSON.stringify({ emails: cat.emails })], /más de una organización/)
@@ -863,6 +872,181 @@ await db.query(`insert into cuentas_contables (organizacion_id, nombre) values (
 check('cada organización tiene sus cuentas comunes: el mismo nombre no choca', (await val(`select count(*)::int n from cuentas_contables where empresa_id is null and nombre = 'SEGUROS'`)).n === 2)
 await falla('…y dentro de una organización no se repite', `insert into cuentas_contables (organizacion_id, nombre) values ($1, 'SEGUROS')`, [orgB], /cuentas_contables_organizacion_empresa_nombre_key/)
 await falla('una cuenta no puede decir una organización y ser de una empresa de otra', `insert into cuentas_contables (organizacion_id, empresa_id, nombre) values ($1, 'india', 'X')`, [orgB], /otra organización/)
+
+// ================================================================ Dos organizaciones que no se ven ni se tocan (0018) · PRUEBA FIJA
+// Vértice y "Otra" tienen cada una sus empresas, usuarios, proveedores, facturas, pagos, documentos y
+// auditoría. Ninguna persona de una ve ni puede tocar nada de la otra. Si una tanda futura rompe la
+// separación, esta sección falla.
+await db.exec(`reset role`)
+await como('')
+const fB2 = (await val(`select ingresar_factura($1) id`, [factura({ empresa_id: 'otra-uno', proveedor: 'Laboratorio (ficha de Otra)', numero: 1002, total: 1000, neto: 1000, iva: 0 })])).id
+const fBdos = (await val(`select ingresar_factura($1) id`, [factura({ empresa_id: 'otra-dos', cuit_proveedor: '30-70000001-9', proveedor: 'Proveedor de Otra Dos', numero: 3001, total: 500, neto: 500, iva: 0 })])).id
+await db.query(`insert into cuentas_origen (empresa_id, nombre) values ('otra-uno', 'Banco de Otra CC')`)
+await db.query(`insert into productos_xubio (organizacion_id, nombre, codigo) values ($1, 'Producto de Otra', 'PROD_OTRA')`, [orgB])
+await db.query(`insert into espejo_estado (organizacion_id, hoja, filas) values ($1, 'Facturas', 3), ($2, 'Facturas', 7) on conflict do nothing`, [orgV, orgB])
+await db.query(`insert into reglas_cuenta (organizacion_id, patron, cuenta_contable) values ($1, 'alquiler', 'ALQUILER DE OFICINA'), ($2, 'alquiler', 'CUENTA SOLO DE OTRA')`, [orgV, orgB])
+await db.exec(`insert into reglas_cuenta (empresa_id, patron, cuenta_contable) values ('india', 'seguro', 'SEGUROS'), ('otra-uno', 'seguro', 'SEGUROS')`)
+await db.exec(`insert into xubio_log (empresa_id, entidad, en_seco, usuario) values ('beratung', 'PAGO', true, 'Guido'), ('otra-uno', 'PAGO', true, 'Admin de Otra'), (null, 'PAGO', true, 'sin empresa')`)
+// La gente de Otra trabaja en lo suyo: aprueba, paga, guarda un mail. Tiene que poder.
+await db.exec(`set role authenticated`)
+await como('admin@otra.com')
+await db.query(`select aprobar_factura($1, 'CUENTA SOLO DE OTRA', 'TRANSFERENCIA')`, [fB1])
+await db.query(`select aprobar_factura($1, 'CUENTA SOLO DE OTRA', 'TRANSFERENCIA')`, [fBdos])
+await como('teso@otra.com')
+const pB = (await val(`select registrar_pago($1) id`, [pago({ empresa_id: 'otra-uno', importe: 100, cuenta_origen: 'Banco de Otra CC', factura_ids: [fB1], proveedor_id: provB.id })])).id
+await db.query(`select guardar_email_proveedor($1, 'cobranzas@otra-prov.com')`, [provB.id])
+await db.exec(`reset role`)
+check('la otra organización opera lo suyo: aprueba, paga y guarda el mail de su proveedor', (await val(`select estado from facturas where id = $1`, [fB1])).estado === 'PAGADA_PARCIAL'
+  && (await val(`select email from proveedores where id = $1`, [provB.id])).email === 'cobranzas@otra-prov.com' && !!pB)
+check('…y la auditoría de eso queda a nombre de la otra organización', (await val(`select count(*)::int n from auditoria where organizacion_id = $1 and empresa_id = 'otra-uno'`, [orgB])).n >= 3
+  && (await val(`select count(*)::int n from auditoria where organizacion_id = $1 and accion = 'MAIL_PROVEEDOR_GUARDADO'`, [orgB])).n === 1)
+
+// Cuántas filas de cada tabla son de una organización. Lo cuenta el servidor, sin reglas de acceso.
+const porEmpresa = (tabla) => `select count(*)::int n from ${tabla} x join empresas e on e.id = x.empresa_id where e.organizacion_id = $1`
+const porOrganizacion = (tabla) => `select count(*)::int n from ${tabla} where organizacion_id = $1`
+const DE_LA_ORGANIZACION = {
+  organizaciones: `select count(*)::int n from organizaciones where id = $1`,
+  empresas: porOrganizacion('empresas'), usuarios: porOrganizacion('usuarios'), usuarios_empresas: porEmpresa('usuarios_empresas'),
+  proveedores: porOrganizacion('proveedores'), proveedores_empresa: porEmpresa('proveedores_empresa'),
+  facturas: porEmpresa('facturas'), pagos: porEmpresa('pagos'),
+  pagos_facturas: `select count(*)::int n from pagos_facturas x join pagos p on p.id = x.pago_id join empresas e on e.id = p.empresa_id where e.organizacion_id = $1`,
+  documentos: porOrganizacion('documentos'), auditoria: porOrganizacion('auditoria'),
+  cuentas_contables: porOrganizacion('cuentas_contables'), cuentas_origen: porEmpresa('cuentas_origen'), reglas_cuenta: porOrganizacion('reglas_cuenta'),
+  productos_xubio: porOrganizacion('productos_xubio'), espejo_estado: porOrganizacion('espejo_estado'), xubio_log: porEmpresa('xubio_log'),
+}
+const cuenta = { V: {}, B: {} }
+for (const [tabla, sql] of Object.entries(DE_LA_ORGANIZACION)) {
+  cuenta.V[tabla] = (await val(sql, [orgV])).n
+  cuenta.B[tabla] = (await val(sql, [orgB])).n
+}
+check('las dos organizaciones tienen datos en todas las tablas (si no, lo que sigue no prueba nada)',
+  Object.values(cuenta.V).every((n) => n > 0) && Object.values(cuenta.B).every((n) => n > 0), JSON.stringify(cuenta))
+// Quien ve todo lo de su organización tiene que ver exactamente eso: ni una fila menos, ni una de la otra.
+for (const [quien, email, lado] of [['Otra', 'admin@otra.com', 'B'], ['Vértice', 'tecnologia@verticebi.com', 'V']]) {
+  await db.exec(`set role authenticated`)
+  await como(email)
+  for (const tabla of Object.keys(DE_LA_ORGANIZACION)) {
+    const visto = (await val(`select count(*)::int n from ${tabla}`)).n
+    check(`${quien} ve en ${tabla} lo suyo y nada de la otra organización`, visto === cuenta[lado][tabla], `ve ${visto}, son ${cuenta[lado][tabla]}`)
+  }
+  await db.exec(`reset role`)
+}
+await db.exec(`set role authenticated`)
+await como('admin@otra.com')
+check('Otra: sus dos empresas y ninguna más', (await db.query(`select id from empresas order by id`)).rows.map((x) => x.id).join() === 'otra-dos,otra-uno')
+check('Otra: el flujo solo trae sus empresas', (await val(`select count(*)::int n, count(*) filter (where empresa not in ('Otra Uno S.A.', 'Otra Dos S.R.L.'))::int ajenas from export_cashflow`)).ajenas === 0
+  && (await val(`select count(*)::int n from export_cashflow`)).n > 0)
+check('Otra: no ve al proveedor de Vértice aunque tenga el mismo CUIT', (await db.query(`select id from proveedores where cuit = '30712345678'`)).rows.map((x) => x.id).join() === provB.id)
+check('Otra: no ve las cuentas comunes de Vértice, sí las suyas', (await val(`select count(*) filter (where nombre = 'COSTO DE INSUMOS')::int v, count(*) filter (where nombre = 'CUENTA SOLO DE OTRA')::int b from cuentas_contables`)).v === 0
+  && (await val(`select count(*)::int b from cuentas_contables where nombre = 'CUENTA SOLO DE OTRA'`)).b === 1)
+check('Otra: de la tabla de organizaciones ve solo la suya', (await db.query(`select slug from organizaciones`)).rows.map((x) => x.slug).join() === 'otra')
+check('Otra: puede_ver_empresa de una empresa de Vértice da falso', (await val(`select puede_ver_empresa('beratung') a, puede_ver_empresa('otra-uno') b`)).a === false
+  && (await val(`select puede_ver_empresa('otra-uno') b`)).b === true)
+// Tocar: cada acción de negocio sobre algo de Vértice.
+await falla('Otra no aprueba una factura de Vértice', `select aprobar_factura($1, 'SEGUROS', 'TRANSFERENCIA')`, [fBer], /acceso a la empresa beratung/)
+await falla('Otra no rechaza una factura de Vértice', `select rechazar_factura($1, 'no')`, [fBer], /acceso a la empresa beratung/)
+await falla('Otra no edita una factura de Vértice', `select editar_factura($1, $2)`, [fBer, JSON.stringify(datosEd({ numero: 9102 }))], /acceso a la empresa/)
+await falla('Otra no pasa una factura suya a una empresa de Vértice', `select editar_factura($1, $2)`, [fB2, JSON.stringify(datosEd({ numero: 9103 }))], /acceso a la empresa beratung/)
+await falla('Otra no aprueba como ya pagada una factura de Vértice', `select aprobar_factura_ya_pagada($1, 'SEGUROS', 'TRANSFERENCIA', '{}')`, [fYa4], /acceso a la empresa ysd/)
+await falla('Otra no aplica notas de crédito de Vértice', `select aplicar_nota_credito($1, $2, 1)`, [fNc, fFac], /acceso a la empresa ysd/)
+await falla('Otra no marca mails de facturas de Vértice', `select marcar_mail_preparado($1)`, [[fYa2]], /acceso a la empresa ysd/)
+await falla('Otra no reintenta un documento de Vértice', `select reintentar_documento($1)`, [d5.id], /acceso a este documento/)
+await falla('Otra no descarta un documento de Vértice', `select descartar_documento($1, 'x')`, [dOrgV.id], /acceso a este documento/)
+await falla('Otra no libera pagos de Vértice', `select liberar_pago_xubio($1, '', null, null)`, [pCont], /acceso a la empresa ysd/)
+await falla('Otra no guarda el mail de un proveedor de Vértice', `select guardar_email_proveedor($1, 'x@otra.com')`, [provV.id], /Proveedor inexistente/)
+await como('teso@otra.com')
+await falla('Otra no carga pagos en una empresa de Vértice', `select registrar_pago($1)`, [pago({ importe: 10 })], /acceso a la empresa beratung/)
+await falla('Otra no paga una factura de Vértice desde una empresa suya', `select registrar_pago($1)`, [pago({ empresa_id: 'otra-uno', importe: 10, factura_ids: [fYa4] })], /otra empresa|no está para pagar/)
+await falla('Otra no carga un pago al proveedor de Vértice', `select registrar_pago($1)`, [pago({ empresa_id: 'otra-uno', importe: 10, proveedor_id: provV.id })], /proveedor es de otra organización/)
+await falla('Otra no anula pagos de Vértice', `select anular_pago($1, 'x')`, [pCont], /acceso a la empresa ysd/)
+await db.exec(`reset role`)
+check('…y nada de Vértice cambió', (await val(`select estado from facturas where id = $1`, [fBer])).estado === 'PENDIENTE_APROBACION' && (await val(`select empresa_id from facturas where id = $1`, [fB2])).empresa_id === 'otra-uno'
+  && (await val(`select email from proveedores where id = $1`, [provV.id])).email !== 'x@otra.com' && (await val(`select estado from pagos where id = $1`, [pCont])).estado === 'CONTABILIZADO'
+  && (await val(`select estado from documentos where id = $1`, [dOrgV.id])).estado === 'PENDIENTE')
+
+// Al revés: la gente de Vértice (incluido quien "ve todas las empresas") no toca nada de Otra.
+await db.exec(`set role authenticated`)
+await como('aprobador@verticebi.com')
+check('Vértice, viendo "todas", sigue viendo sus 8 empresas y no las de Otra', (await val(`select count(*)::int n, count(*) filter (where id like 'otra-%')::int otras from empresas`)).n === nEmpresas
+  && (await val(`select count(*)::int otras from empresas where id like 'otra-%'`)).otras === 0)
+await falla('Vértice no aprueba una factura de Otra', `select aprobar_factura($1, 'SEGUROS', 'TRANSFERENCIA')`, [fB2], /acceso a la empresa otra-uno/)
+await falla('Vértice no edita una factura de Otra', `select editar_factura($1, $2)`, [fB2, JSON.stringify(datosEd({ numero: 9104 }))], /acceso a la empresa otra-uno/)
+await como('tesoreria@verticebi.com')
+await falla('Vértice no carga pagos en una empresa de Otra', `select registrar_pago($1)`, [pago({ empresa_id: 'otra-uno', importe: 10 })], /acceso a la empresa otra-uno/)
+await falla('Vértice no anula pagos de Otra', `select anular_pago($1, 'x')`, [pB], /acceso a la empresa otra-uno/)
+await falla('Vértice no guarda el mail de un proveedor de Otra', `select guardar_email_proveedor($1, 'x@verticebi.com')`, [provB.id], /Proveedor inexistente/)
+await falla('Vértice no marca mails de facturas de Otra', `select marcar_mail_preparado($1)`, [[fB1]], /acceso a la empresa otra-uno/)
+await como('administracion@verticebi.com')
+await falla('Vértice no descarta un documento de Otra', `select descartar_documento($1, 'x')`, [dOrgB.id], /acceso a este documento/)
+await falla('Vértice no libera pagos de Otra', `select liberar_pago_xubio($1, '', null, null)`, [pB], /acceso a la empresa otra-uno/)
+await db.exec(`reset role`)
+check('…y nada de Otra cambió', (await val(`select estado from facturas where id = $1`, [fB2])).estado === 'PENDIENTE_APROBACION' && (await val(`select email from proveedores where id = $1`, [provB.id])).email === 'cobranzas@otra-prov.com'
+  && (await val(`select estado from pagos where id = $1`, [pB])).estado === 'CARGADO' && (await val(`select estado from documentos where id = $1`, [dOrgB.id])).estado === 'PENDIENTE')
+
+// Lo que pregunta el servidor (funciones de Netlify) antes de actuar en nombre de una persona.
+r = await val(`select usuario_ve_empresa('admin@otra.com', 'beratung') a, usuario_ve_empresa('tecnologia@verticebi.com', 'otra-uno') b,
+  usuario_ve_empresa('admin@otra.com', 'otra-uno') c, usuario_ve_empresa('tecnologia@verticebi.com', 'beratung') d`)
+check('servidor: "ve todas" no cruza de organización, en ninguno de los dos sentidos', r.a === false && r.b === false && r.c === true && r.d === true, JSON.stringify(r))
+check('servidor: las empresas de quien ve todas en Otra son las dos de Otra', (await val(`select empresas_visibles_de('admin@otra.com') e`)).e.join() === 'otra-dos,otra-uno')
+check('servidor: las de quien ve todas en Vértice siguen siendo las 8', (await val(`select empresas_visibles_de('aprobador@verticebi.com') e`)).e.length === nEmpresas)
+check('servidor: quien tiene una sola empresa en Otra', (await val(`select empresas_visibles_de('aprob.uno@otra.com') e`)).e.join() === 'otra-uno')
+
+// Dentro de Otra sigue valiendo el permiso por empresa.
+await db.exec(`set role authenticated`)
+await como('aprob.uno@otra.com')
+r = await val(`select (select string_agg(id, ',') from empresas) e, (select count(*) from facturas where empresa_id <> 'otra-uno')::int f, (select count(*) from facturas)::int n, (select count(*) from usuarios)::int u`)
+check('en Otra, quien tiene una sola empresa ve solo esa (y solo su usuario)', r.e === 'otra-uno' && r.f === 0 && r.n > 0 && r.u === 1, JSON.stringify(r))
+await falla('…y no aprueba facturas de la otra empresa de su organización', `select aprobar_factura($1, 'x', 'TRANSFERENCIA')`, [fBdos], /acceso a la empresa otra-dos|no está pendiente/)
+await db.exec(`reset role`)
+
+// Una organización suspendida no deja entrar a su gente; la otra sigue igual.
+await db.query(`update organizaciones set estado = 'SUSPENDIDA' where id = $1`, [orgB])
+check('organización suspendida: el servidor ya no le reconoce ninguna empresa', (await val(`select usuario_ve_empresa('admin@otra.com', 'otra-uno') v`)).v === false
+  && (await val(`select empresas_visibles_de('admin@otra.com') e`)).e.length === 0)
+await db.exec(`set role authenticated`)
+await como('admin@otra.com')
+r = await val(`select (select count(*) from empresas)::int e, (select count(*) from facturas)::int f, (select count(*) from proveedores)::int p, (select count(*) from usuarios)::int u, (select count(*) from documentos)::int d, (select count(*) from auditoria)::int a`)
+check('organización suspendida: su gente no ve nada', r.e + r.f + r.p + r.u + r.d + r.a === 0, JSON.stringify(r))
+await falla('organización suspendida: su gente no opera', `select aprobar_factura($1, 'x', 'TRANSFERENCIA')`, [fB2], /no habilitada/)
+await como('aprobador@verticebi.com')
+check('…y Vértice sigue viendo lo suyo', (await val(`select count(*)::int n from empresas`)).n === nEmpresas)
+await db.exec(`reset role`)
+await db.query(`update organizaciones set estado = 'ACTIVA' where id = $1`, [orgB])
+
+// Documentos: la cola por organización, y un adjunto nunca termina en una empresa de otra organización.
+tomados = (await db.query(`select * from tomar_documentos(10, $1)`, [orgB])).rows
+check('cola de una organización: toma solo sus documentos', tomados.length === 2 && tomados.every((x) => x.organizacion_id === orgB) && tomados.some((x) => x.id === dOrgB.id), tomados.map((x) => x.nombre_archivo).join())
+check('…y los de Vértice siguen esperando', (await val(`select estado from documentos where id = $1`, [dOrgV.id])).estado === 'PENDIENTE')
+check('cola sin decir la organización (null): no toma nada', (await db.query(`select * from tomar_documentos(10, null)`)).rows.length === 0)
+check('las personas no pueden tomar documentos de la cola', !(await val(`select has_function_privilege('authenticated', 'tomar_documentos(integer,uuid)', 'execute') p`)).p)
+await falla('un adjunto de Otra no se guarda como factura de una empresa de Vértice', `select guardar_factura_leida($1, $2)`, [dOrgB.id, leida({ empresa_id: 'india', numero: 9301 })], /otra organización que el archivo/)
+check('…ni queda apuntando a nada de Vértice', (await val(`select factura_id from documentos where id = $1`, [dOrgB.id])).factura_id === null && (await val(`select count(*)::int n from facturas where numero = 9301`)).n === 0)
+const fDocB = (await val(`select guardar_factura_leida($1, $2) id`, [dOrgB.id, leida({ empresa_id: 'otra-uno', numero: 9302 })])).id
+r = await val(`select f.empresa_id, p.organizacion_id from facturas f join proveedores p on p.id = f.proveedor_id where f.id = $1`, [fDocB])
+check('el adjunto de Otra se guarda en su empresa, con un proveedor de Otra', r.empresa_id === 'otra-uno' && r.organizacion_id === orgB, JSON.stringify(r))
+
+// Quien no ve todas las empresas ve los archivos que se subieron para las suyas, aunque no terminaron en factura.
+const dParaInd = await val(`select * from registrar_documento($1)`, [{ ...doc('', 'para-india.pdf'), origen: 'MANUAL', organizacion_id: orgV, empresas_permitidas: ['india'] }])
+const dParaDos = await val(`select * from registrar_documento($1)`, [{ ...doc('', 'para-india-y-beratung.pdf'), origen: 'MANUAL', organizacion_id: orgV, empresas_permitidas: ['india', 'beratung'] }])
+const nSoloIndia = (await val(`select count(*)::int n from documentos where factura_id is null and empresas_permitidas = '{india}'`)).n
+await db.exec(`set role authenticated`)
+await como('aprob.india@verticebi.com')
+r = await val(`select count(*)::int n, count(*) filter (where empresas_permitidas is null)::int sin_lista, count(*) filter (where not empresas_permitidas <@ '{india}')::int ajenos from documentos where factura_id is null`)
+check('usuario de India: ve los archivos sin factura subidos solo para India', r.n === nSoloIndia && nSoloIndia > 0 && r.sin_lista === 0 && r.ajenos === 0, JSON.stringify(r))
+await falla('…no puede descartar uno subido también para Beratung', `select descartar_documento($1, 'x')`, [dParaDos.id], /acceso a este documento/)
+await falla('…ni uno de Gmail (sin lista)', `select descartar_documento($1, 'x')`, [dOrgV.id], /acceso a este documento/)
+await db.query(`select descartar_documento($1, 'No era una factura')`, [dParaInd.id])
+await db.exec(`reset role`)
+check('…y sí puede descartar el que se subió para India', (await val(`select estado from documentos where id = $1`, [dParaInd.id])).estado === 'DESCARTADO')
+
+// Registro de Xubio: siempre por empresa.
+await db.exec(`set role authenticated`)
+await como('administracion@verticebi.com')
+r = await val(`select count(*)::int n, count(*) filter (where empresa_id is null)::int sin_empresa, count(*) filter (where empresa_id like 'otra-%')::int otra from xubio_log`)
+check('registro de Xubio: Administración de Vértice ve el de sus empresas, no el de Otra ni el que no tiene empresa', r.n === cuenta.V.xubio_log && r.sin_empresa === 0 && r.otra === 0, JSON.stringify(r))
+await como('tesoreria@verticebi.com')
+check('registro de Xubio: Tesorería sigue sin verlo', (await val(`select count(*)::int n from xubio_log`)).n === 0)
+await db.exec(`reset role`)
 
 // ================================================================ Migrar una base que ya tiene datos (0017 en adelante)
 // La base real tiene datos: las migraciones nuevas se aplican sobre una base cargada con las anteriores.

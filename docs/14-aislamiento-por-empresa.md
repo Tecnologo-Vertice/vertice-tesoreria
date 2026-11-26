@@ -12,10 +12,27 @@ Cada persona ve y opera solo las empresas que tiene asignadas. Hasta la migraci�
 | Escritura | Las acciones de negocio son SECURITY DEFINER (saltan el RLS). Un trigger en `facturas`, `pagos`, `proveedores_empresa` y `documentos` controla la empresa en toda acción que no venga del servidor. Desde la migración 0013 el control falla cerrado: `es_servidor()` reconoce solo el rol `service_role` (funciones de Netlify) y la conexión directa de `postgres` o `supabase_admin` (editor SQL, migraciones); cualquier otro rol se controla como una persona. |
 | Funciones de Netlify | Usan la clave de servicio, así que controlan la empresa a mano. `contabilizar` y `xubio-factura`: `exigirEmpresa()` → `usuario_ve_empresa()`. Desde 0013: `subir-factura` acepta `empresaId` (controlado) y guarda en el documento las empresas para las que se puede cargar (`documentos.empresas_permitidas`); la base no guarda la factura si es de otra. `xubio-catalogos` entra solo al Xubio de las empresas que ve quien lo pide. `leer-ahora`, pedido por quien no ve todas, lee solo lo subido para sus empresas. `ia-leer-comprobante` pide un rol que cargue pagos. |
 
-## Qué queda visible para todos los habilitados
+## Qué queda visible para todos los habilitados de una organización
 
-- **Proveedores** (padrón de CUIT y nombre), **cuentas contables y reglas comunes** (`empresa_id` null), **productos de Xubio** y **estado del espejo**. Tesorería necesita el padrón para cargar pagos sin factura.
-- **Documentos todavía sin leer:** no tienen empresa, así que solo los ve quien tiene `todas_empresas`.
+- **Proveedores** (padrón de CUIT y nombre), **cuentas contables y reglas comunes** (`empresa_id` null), **productos de Xubio** y **estado del espejo**. Tesorería necesita el padrón para cargar pagos sin factura. Desde la 0018, solo los de su organización (ver abajo).
+- **Documentos todavía sin leer:** los de Gmail y Drive no tienen empresa, así que solo los ve quien tiene `todas_empresas`. Desde la 0018, los que subió una persona los ve también quien ve todas las empresas para las que se subieron.
+
+## Organizaciones (migraciones 0017 y 0018) · 26/11/2026
+
+Por encima de las empresas está la organización: el cliente. Vértice es la primera y, por ahora, la única. Para el equipo no cambia nada.
+
+| Pieza | Qué hace |
+|---|---|
+| `organizaciones` | Una fila por cliente: `slug`, `nombre`, `estado` (`ACTIVA`, `SUSPENDIDA`, `BAJA`) y `es_proveedor` (verdadero solo para Vértice). Si no está `ACTIVA`, su gente no entra. |
+| `organizacion_id` | Obligatorio en `empresas`, `usuarios`, `proveedores`, `documentos`, `auditoria`, `cuentas_contables`, `reglas_cuenta`, `productos_xubio` y `espejo_estado`. Facturas, pagos, cuentas de origen, movimientos y memoria de proveedores la heredan de su empresa. No se puede cambiar. |
+| Claves por organización | El mismo CUIT puede ser proveedor de dos organizaciones (son dos fichas). Lo mismo el adjunto de un mail, el nombre de una cuenta común, un producto y el estado de la copia. |
+| "Ve todas las empresas" | Pasa a ser "todas las de su organización". `usuario_ve_empresa()` exige que la empresa sea de la organización de la persona, así que cambian solas todas las reglas y controles que ya miraban la empresa. |
+| Registro nuevo sin organización | Se deduce: de la empresa, de la persona que hace la acción o, si hay una sola organización, esa. Si hay más de una y no se puede deducir, se rechaza. |
+| Cruces | Una persona solo puede tener asignadas empresas de su organización. El proveedor de una factura o un pago es de la organización de la empresa. Un adjunto de una organización no puede terminar en una factura de otra. |
+| Funciones de Netlify | `usuarioDesde` devuelve la organización y rechaza a quien es de una organización que no está activa. `leer-ahora` lee solo la cola de la organización de quien lo pide. |
+| Puentes del Apps Script | Tienen un solo secreto, sin dueño. Mientras haya una sola organización trabajan para esa. Con dos o más responden 409 y no copian ni entregan nada, hasta que cada organización tenga su secreto. |
+
+La prueba fija está en `npm run test:sql`, sección "Dos organizaciones que no se ven ni se tocan": una segunda organización de mentira con sus empresas, usuarios, proveedores, facturas, pagos, documentos y auditoría. Compara, tabla por tabla, lo que ve cada una con lo que es suyo, y prueba cada acción de negocio contra los datos de la otra. `npm run test:organizaciones` hace lo mismo con las funciones de Netlify.
 
 ## Configurar
 

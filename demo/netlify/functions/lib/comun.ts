@@ -8,8 +8,10 @@ export interface UsuarioFn {
   email: string
   nombre: string
   rol: Rol
-  /** Ve todas las empresas (usuarios.todas_empresas). Si es false, solo las de usuarios_empresas. */
+  /** Ve todas las empresas DE SU ORGANIZACIÓN (usuarios.todas_empresas). Si es false, solo las de usuarios_empresas. */
   todasEmpresas: boolean
+  /** La organización (el cliente) a la que pertenece la persona. Todo lo que hace queda dentro de ella. */
+  organizacionId: string
 }
 
 export class ErrorHttp extends Error {
@@ -42,9 +44,12 @@ export async function usuarioDesde(req: Request): Promise<UsuarioFn> {
   const { data, error } = await db.auth.getUser(token)
   const email = data.user?.email?.toLowerCase()
   if (error || !email) throw new ErrorHttp(401, 'Sesión inválida')
-  const { data: u } = await db.from('usuarios').select('email, nombre, rol, activo, todas_empresas').eq('email', email).maybeSingle()
+  const { data: u } = await db.from('usuarios').select('email, nombre, rol, activo, todas_empresas, organizacion_id, organizaciones(estado)').eq('email', email).maybeSingle()
   if (!u || !u.activo) throw new ErrorHttp(403, `La cuenta ${email} no está habilitada`)
-  return { email: u.email, nombre: u.nombre, rol: u.rol as Rol, todasEmpresas: u.todas_empresas === true }
+  // La organización de la persona tiene que existir y estar activa (igual que usuario_actual() en la base).
+  const org = (Array.isArray(u.organizaciones) ? u.organizaciones[0] : u.organizaciones) as { estado?: string } | null | undefined
+  if (!u.organizacion_id || org?.estado !== 'ACTIVA') throw new ErrorHttp(403, `La organización de la cuenta ${email} no está activa`)
+  return { email: u.email, nombre: u.nombre, rol: u.rol as Rol, todasEmpresas: u.todas_empresas === true, organizacionId: String(u.organizacion_id) }
 }
 
 export function exigirRol(u: UsuarioFn, ...roles: Rol[]) {
@@ -66,6 +71,20 @@ export async function empresasVisibles(u: UsuarioFn): Promise<string[]> {
   const ids = Array.isArray(data) ? (data as string[]) : []
   if (!ids.length) throw new ErrorHttp(403, 'No tenés ninguna empresa asignada')
   return ids
+}
+
+/**
+ * Para qué organización trabajan los puentes del Apps Script (cartero, copia de la hoja, cheques, flujo).
+ * Hoy tienen un solo secreto (INGESTA_TOKEN) que no dice de quién es. Mientras haya una sola organización,
+ * es esa. Con dos o más se rechaza el pedido: es preferible que el puente se detenga a que cargue o entregue
+ * datos de un cliente a otro. Cuando cada organización tenga su secreto, la organización sale de ahí.
+ */
+export async function organizacionDelPuente(): Promise<string> {
+  const { data, error } = await supabaseAdmin().from('organizaciones').select('id').limit(2)
+  if (error) throw new ErrorHttp(500, error.message)
+  if (!data || data.length !== 1)
+    throw new ErrorHttp(409, 'Hay más de una organización y este puente todavía no sabe para cuál trabaja (falta el secreto por organización). No se copió ni se entregó nada.')
+  return String(data[0].id)
 }
 
 /** Los puentes del Apps Script (cartero, cheques, flujo) se identifican con INGESTA_TOKEN en x-ingesta-token. */

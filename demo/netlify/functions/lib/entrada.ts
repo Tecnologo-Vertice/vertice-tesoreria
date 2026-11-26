@@ -107,16 +107,21 @@ export async function procesarDocumento(db: SupabaseClient, doc: Documento): Pro
 }
 
 /**
- * Lee documentos de la cola de a uno mientras quede tiempo. Con `soloEmpresas`, toma únicamente los
- * que una persona subió para esas empresas (nunca los de Gmail o Drive, que pueden ser de cualquiera).
+ * Lee documentos de la cola de a uno mientras quede tiempo. `filtro` limita qué se toma:
+ *  - una lista de empresas: únicamente lo que una persona subió para esas empresas (nunca lo de Gmail
+ *    o Drive, que puede ser de cualquiera);
+ *  - una organización: únicamente los documentos de esa organización;
+ *  - nada: toda la cola (el lector programado).
  */
-export async function leerCola(db: SupabaseClient, presupuestoMs: number, soloEmpresas?: string[]): Promise<ResultadoDocumento[]> {
+export async function leerCola(db: SupabaseClient, presupuestoMs: number, filtro?: string[] | { organizacion: string }): Promise<ResultadoDocumento[]> {
   const inicio = Date.now()
   const resultados: ResultadoDocumento[] = []
   while (Date.now() - inicio < presupuestoMs) {
-    const { data, error } = soloEmpresas
-      ? await db.rpc('tomar_documentos_de_empresas', { p_max: 1, p_empresas: soloEmpresas })
-      : await db.rpc('tomar_documentos', { p_max: 1 })
+    const { data, error } = Array.isArray(filtro)
+      ? await db.rpc('tomar_documentos_de_empresas', { p_max: 1, p_empresas: filtro })
+      : filtro
+        ? await db.rpc('tomar_documentos', { p_max: 1, p_organizacion: filtro.organizacion })
+        : await db.rpc('tomar_documentos', { p_max: 1 })
     if (error) throw new ErrorHttp(500, error.message)
     const doc = (data as Documento[])[0]
     if (!doc) break

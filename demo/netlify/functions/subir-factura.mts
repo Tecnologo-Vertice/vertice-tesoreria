@@ -20,6 +20,7 @@ export default manejar(async (req) => {
   const path = await guardarArchivo(db, b.nombre!, b.mimeType!, b.data!)
   const { id } = await registrarDocumento(db, {
     origen: 'MANUAL',
+    organizacion_id: u.organizacionId,
     nombre_archivo: b.nombre,
     mime_type: b.mimeType,
     storage_path: path,
