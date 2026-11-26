@@ -26,6 +26,8 @@ export async function cargar(db, plan, { correcciones = true, organizacion = nul
   const contar = (t, k) => { r(t)[k]++ }
 
   await q('begin')
+  // T-209: la conciliación (vínculos movimiento ↔ documento, lotes) se hace una vez al final, no por cada fila.
+  await q(`select set_config('tesoreria.conciliar_al_final', '1', true)`)
   try {
     const orgs = await q(`select o.id, o.slug from organizaciones o where exists (select 1 from empresas e where e.organizacion_id = o.id) order by o.slug`)
     if (!orgs.length) throw new Error('No hay organización para las empresas')
@@ -247,11 +249,11 @@ export async function cargar(db, plan, { correcciones = true, organizacion = nul
       const T = 'movimientos_bancarios', cid = cuenta(m.empresa, m.cuenta)
       if (!cid) { omitir(T, m.huella, 'sin cuenta en la base'); continue }
       const x = await q(`insert into movimientos_bancarios (empresa_id, cuenta_origen_id, fecha, descripcion, importe, saldo, referencia, numero_cheque, huella,
-                           categoria, cuenta_contable, estado, revisado_por)
-                         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                           categoria, cuenta_contable, estado, revisado_por, contraparte_cuenta_id)
+                         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                          on conflict (cuenta_origen_id, huella) do nothing returning id`,
         [m.empresa, cid, m.fecha, m.descripcion, pesos(m.importe), m.saldo === null ? null : pesos(m.saldo), m.referencia, m.numero_cheque, m.huella,
-         m.categoria, m.cuenta_contable, m.estado, m.revisado_por])
+         m.categoria, m.cuenta_contable, m.estado, m.revisado_por, m.contraparte ? cuenta(m.empresa, m.contraparte) ?? null : null])
       contar(T, x.length ? 'altas' : 'iguales')
     }
     // Lo que todavía no se contabilizó toma la regla de la base (destino en Xubio y componente), si coincide la categoría.
@@ -294,6 +296,10 @@ export async function cargar(db, plan, { correcciones = true, organizacion = nul
       contar('procesos_log', x.length ? 'altas' : 'iguales')
     }
 
+    if ((await uno(`select to_regprocedure('conciliar_movimientos(text)') is not null as hay`)).hay) {
+      await q(`select set_config('tesoreria.conciliar_al_final', '', true)`)
+      for (const e of empresas) await q(`select conciliar_movimientos($1)`, [e])
+    }
     await q('commit')
   } catch (e) {
     await q('rollback')

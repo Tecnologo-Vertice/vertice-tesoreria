@@ -9,6 +9,7 @@ import { transformar } from '../migrar-desde-planillas/transformar.mjs'
 import { opciones } from '../migrar-desde-planillas/migrar.mjs'
 import { planillasFicticias } from '../migrar-desde-planillas/fixtures.mjs'
 import { pesosAR } from '../migrar-desde-planillas/leer.mjs'
+import { clasificarSinDebito, mercadoPago } from './reporte_v2.mjs'
 
 let ok = 0, mal = 0
 const check = (nombre, cond, extra = '') => { if (cond) ok++; else mal++; console.log(`${cond ? 'OK ' : 'MAL'} ${nombre}${extra !== '' ? ' · ' + extra : ''}`) }
@@ -57,6 +58,17 @@ check('control de la migración sin correcciones: cierra', controlMigracion(sin.
 check('control de la migración con correcciones: cierra', controlMigracion(con.control).cierra, controlMigracion(con.control).malas.join(' | '))
 check('sin correcciones no hay reglas de cheques por categoría', !sin.plan.flujo_reglas.some((x) => x.si_origen === 'CHEQUE'))
 check('ningún cheque DEBITADO sin correcciones', !sin.plan.cheques.some((x) => x.estado === 'DEBITADO'))
+
+// T-209 · Pagos sin débito por clase: la suma de las clases es el total de antes, y cada pago cae en una sola clase.
+const sdA = { sinDebito: [{ hoja_id: 'a', importe: '100.00' }, { hoja_id: 'b', importe: '250.50' }, { hoja_id: 'c', importe: '9.99' }, { hoja_id: 'd', importe: '1.00' }] }
+const sdD = { estadoPagos: new Map([['a', 'LOTE'], ['b', 'SIN'], ['c', 'SIN'], ['d', 'SIN']]),
+  sinDebito: [{ hoja_id: 'b', importe: '250.50', motivo: 'CUENTA_O_FECHA' }, { hoja_id: 'c', importe: '9.99', motivo: 'POSIBLE_DUPLICADO' }, { hoja_id: 'x', importe: '5.00', motivo: 'SIN_EXPLICACION' }] }
+const cl = clasificarSinDebito(sdA, sdD)
+check('pagos sin débito por clase: suma de clases = total de antes (36149 centavos)', cl.cierra && cl.total === 36149n, `${cl.suma}`)
+check('… lote 1, cuenta/fecha 1, duplicado 1, fuera de la vista 1; y un pago sin débito nuevo', cl.clases.get('LOTE').n === 1 && cl.clases.get('CUENTA_O_FECHA').n === 1
+  && cl.clases.get('POSIBLE_DUPLICADO').n === 1 && cl.clases.get('FUERA_DE_VISTA').n === 1 && cl.nuevos.length === 1)
+const mpx = mercadoPago([{ unidad: 'india', fecha: '2026-11-03', origen: 'MANUAL', saldo_cargado: '100.00', saldo_inicial: '100.00', movido: '-30.25', movido_dia: '-30.25', movimientos_dia: 2 }])
+check('Mercado Pago: calculado = inicial + movido (69,75); diferencia = cargado − calculado (30,25)', mpx[0].calculado === 6975n && mpx[0].diferencia === 3025n)
 
 console.log(`\n${ok} OK · ${mal} MAL`)
 if (mal) process.exit(1)

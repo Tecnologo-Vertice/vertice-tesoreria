@@ -111,3 +111,16 @@ Las columnas `flujo_filas.cuenta_norm`/`apertura_norm` y `flujo_reglas.si_cuenta
 | 21 | El script de migración elegía "la primera" organización | `--organizacion <slug>`, obligatorio si hay más de una |
 
 Pruebas: `supabase/pruebas/probar_0031.mjs` (90 casos, dentro de `npm run test:tesoreria`), más casos nuevos en `netlify/pruebas/extractos.prueba.mts` (cuenta del archivo), `netlify/pruebas/bancos-xubio.prueba.mts` (mail por destinatario) y `scripts/migrar-desde-planillas/probar.mjs` (organización). El simulacro del paralelo de noviembre da lo mismo que antes de 0031 (44 de 72 días): la corrección no cambia resultados, cambia cómo se calculan.
+
+## 0032 (T-209, 26/11): conciliación en lote y pagos sin débito con motivo
+
+| Regla | Dónde |
+|---|---|
+| Un débito del banco puede pagar varios pagos (1 débito ↔ N pagos, tabla `movimientos_pagos`) y un pago puede salir en varios débitos del mismo día (N débitos ↔ 1 pago). Suma exacta al centavo, de 2 a 12 pagos, misma empresa y cuenta, ventana de 0030. Primero los pagos del mismo día que el débito; después toda la ventana | `conciliar_lotes`, llamada por `conciliar_movimientos` |
+| Si hay más de una combinación distinta o más de 14 candidatos, no se vincula: queda para una persona | tabla `conciliacion_revisar` |
+| Un pago con un débito propio por su importe exacto (aunque mal fechado) no entra en un lote; un débito con pago propio no se usa para armar otro pago (evita lotes por coincidencia) | `conciliar_lotes` |
+| Desempate fijo entre importes iguales: fecha, luego id (antes dependía del orden físico de la tabla) | `conciliar_movimientos`, `subconjunto_unico` |
+| `pagos_sin_debito.motivo`: POSIBLE_DUPLICADO, CUENTA_O_FECHA (hay un débito igual sin vincular en otra cuenta o fuera de la ventana, hasta 45 días; `debito_parecido_id`) o SIN_EXPLICACION | vista `pagos_sin_debito` |
+| El Flujo toma los lotes: el débito no entra y cada pago cuenta el día del débito, en la unidad de esa cuenta | `flujo_lineas_entre` |
+
+Script de migración (T-209): la línea "Saldo anterior / inicial / final" de un informe no se carga como movimiento (se veía como rendimiento negativo del FCI); los rescates y suscripciones de FCI que VBI+ dejó SIN_CLASIFICAR se detectan por el cambio del saldo del fondo y entran como FCI con el fondo de contraparte; la conciliación se hace una vez al final de la carga. Pruebas: `supabase/pruebas/probar_0032.mjs` (en `npm run test:tesoreria`) y `scripts/paralelo/probar.mjs`. Simulacro: `node scripts/paralelo/paralelo.mjs --instantaneas DIR --pagos DIR` (antes = hasta 0031, después = con 0032).

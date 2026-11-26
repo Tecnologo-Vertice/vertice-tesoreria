@@ -707,6 +707,12 @@ export function transformar(planillas, op) {
       const deb = centavos(celda(f, 6)) ?? 0n, cred = centavos(celda(f, 7)) ?? 0n, imp = cred - deb
       ctl.planilla(T, emp, imp)
       const ref = `Extractos_Movimientos fila ${i + 2} · ${texto(f, 0)}`
+      // T-209: la línea "Saldo anterior / inicial / final" de un informe (p. ej. la tenencia de un FCI) no es un
+      // movimiento: cargada como tal, la conciliación del fondo la toma como un rendimiento negativo del mismo importe.
+      if (op.correcciones !== false && op.rescatesFci !== false && /^SALDO (ANTERIOR|INICIAL|FINAL|AL\b)/.test(norm(texto(f, 4)))) {
+        ctl.aviso(T, `${ref}: "${texto(f, 4)}" es una línea de saldo del informe, no un movimiento → no se carga`)
+        return ctl.cubierta(T, emp, imp, 'línea de saldo del informe (saldo anterior/inicial/final): no es un movimiento')
+      }
       if (duplicados.has(i)) {
         ctl.aviso(T, `${ref}: ${texto(f, 3)} ${d} ${texto(f, 4)} ya vino en otro archivo del mismo día (archivo superpuesto "${texto(f, 16)}") → no se carga`)
         return ctl.cubierta(T, emp, imp, 'archivo superpuesto: el mismo movimiento ya vino en otro archivo del mismo día y cuenta')
@@ -751,6 +757,47 @@ export function transformar(planillas, op) {
       ctl.cargar(T, emp, imp)
       ctl.aviso(T, `${ref}: no estaba en Extractos_Movimientos → entra A_REVISAR`)
     })
+  }
+
+  // ============================================================ T-209 · rescates y suscripciones de FCI sin clasificar
+  // Un crédito SIN_CLASIFICAR en una cuenta del mismo banco que es (casi) igual a lo que bajó el saldo de un FCI o
+  // remunerada (y que no explican ni los movimientos del fondo ni los FCI de su madre) es un rescate; un débito igual
+  // a lo que subió, una suscripción. Se cargan con categoría FCI y el fondo como contraparte: el rendimiento del FCI
+  // deja de incluirlos. Tolerancia: el rendimiento del día (0,2 % del importe, mínimo $1). Si hay más de un
+  // candidato, solo vale el que lo dice en la descripción; si no, queda sin clasificar (con aviso).
+  if (op.correcciones !== false && op.rescatesFci !== false) {
+    const T = 'movimientos_bancarios'
+    const saldosDe = new Map() // empresa|cuenta → [{fecha, saldo}] ordenado
+    for (const x of plan.saldos_bancarios) { const k = `${x.empresa}|${x.cuenta}`; saldosDe.set(k, [...(saldosDe.get(k) ?? []), x]) }
+    for (const l of saldosDe.values()) l.sort((a, b) => (a.fecha < b.fecha ? -1 : 1))
+    const abs = (x) => (x < 0n ? -x : x)
+    let n = 0, suma = 0n
+    const RE_FCI = /RESCATE|SUSCRIP|FONDO|FCI/
+    const fondosTodos = cuentas.filter((c) => ['FCI', 'REMUNERADA'].includes(c.clase))
+    for (const f of fondosTodos) {
+      const l = saldosDe.get(`${f.empresa}|${f.nombre}`) ?? []
+      for (let i = 1; i < l.length; i++) {
+        const fecha = l[i].fecha, d0 = l[i].saldo - l[i - 1].saldo
+        // Lo que el fondo no explica: ni sus propios movimientos ni los movimientos FCI de su cuenta madre.
+        const propios = plan.movimientos_bancarios.filter((o) => o.empresa === f.empresa && o.cuenta === f.nombre && o.fecha > l[i - 1].fecha && o.fecha <= fecha)
+        const deMadre = plan.movimientos_bancarios.filter((o) => o.empresa === f.empresa && o.cuenta === f.madre && o.fecha > l[i - 1].fecha && o.fecha <= fecha && o.categoria === 'FCI')
+        const d = d0 - propios.reduce((a, o) => a + o.importe, 0n) + deMadre.reduce((a, o) => a + o.importe, 0n)
+        if (abs(d) < 100000n) continue
+        // Candidatos: movimientos SIN_CLASIFICAR del mismo banco y empresa, en el período, por (casi) lo mismo al revés.
+        const cand = plan.movimientos_bancarios.filter((m) => m.categoria === 'SIN_CLASIFICAR' && m.empresa === f.empresa && m.fecha > l[i - 1].fecha && m.fecha <= fecha
+          && cuentas.some((c) => c.empresa === m.empresa && c.nombre === m.cuenta && c.banco === f.banco && ['CC', 'CA', 'BILLETERA'].includes(c.clase))
+          && abs(d + m.importe) <= (abs(m.importe) / 500n > 100n ? abs(m.importe) / 500n : 100n))
+        // Si hay más de uno, el que dice FCI/rescate/suscripción en la descripción; si sigue habiendo más de uno, nada.
+        const elegidos = cand.length > 1 ? cand.filter((m) => RE_FCI.test(norm(m.descripcion))) : cand
+        if (elegidos.length !== 1) { if (cand.length > 1) ctl.aviso(T, `${f.nombre} ${fecha}: ${cand.length} movimientos podrían ser el rescate o la suscripción del fondo · sin clasificar`); continue }
+        const m = elegidos[0]
+        m.categoria = 'FCI'; m.reclasificado = m.importe > 0n ? 'RESCATE_FCI' : 'SUSCRIPCION_FCI'
+        if (m.cuenta !== f.madre) m.contraparte = f.nombre // la base completa sola solo la de la madre
+        n++; suma += m.importe
+        ctl.aviso(T, `${m.cuenta} ${m.fecha} ${m.descripcion}: ${m.importe > 0n ? 'rescate' : 'suscripción'} de ${f.nombre} (el fondo cambió ${d0 / 100n}, sin explicar ${d / 100n}) → categoría FCI`)
+      }
+    }
+    if (n) ctl.aviso(T, `${n} movimientos SIN_CLASIFICAR reclasificados como FCI (rescate o suscripción del fondo de la cuenta) · neto ${suma / 100n}`)
   }
 
   // ============================================================ cobros
