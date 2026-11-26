@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { Auditoria, ComprobanteEjemplo, Documento, Empresa, EstadoEspejo, Factura, LecturaComprobante, Pago, Proveedor, Usuario } from './types'
-import type { Bucket, Catalogos, DatosAprobacion, DatosContabilizacion, DatosEdicion, DatosYaPagada, Fuente, NuevoPago } from './data/fuente'
+import type { Bucket, Catalogos, DatosAprobacion, DatosContabilizacion, DatosEdicion, DatosLiberacion, DatosYaPagada, Fuente, NuevoPago } from './data/fuente'
 import { addDays, parseIso, pendiente } from './lib/format'
 
 type Toast = { id: number; texto: string; tipo: 'ok' | 'error' | 'info' }
@@ -21,6 +21,7 @@ interface Store {
   aprobarYaPagada: (id: string, datos: DatosAprobacion, pago: DatosYaPagada) => Promise<boolean>
   aplicarNotaCredito: (ncId: string, facturaId: string, importe: number) => Promise<boolean>
   anularPago: (id: string, motivo: string) => Promise<boolean>
+  liberarPagoXubio: (id: string, xubioId: string, datos: DatosLiberacion) => Promise<void>
   guardarEmailProveedor: (proveedorId: string, email: string) => Promise<boolean>
   marcarMailPreparado: (facturaIds: string[]) => Promise<void>
   linksComprobantes: (pagos: Pago[]) => Promise<Record<string, string | null>>
@@ -170,6 +171,12 @@ export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fu
       },
       anularPago: async (id, m) =>
         (await accion(() => fuente.anularPago(id, m, usuario).then(() => true), 'Pago anulado: lo aplicado vuelve a sus facturas')) === true,
+      liberarPagoXubio: async (id, nro, d) => {
+        await accion(
+          () => fuente.liberarPagoXubio(id, nro, d, usuario),
+          (r) => (r === 'CONTABILIZADO' ? 'Queda contabilizado con el número de Xubio que cargaste, sin enviar nada' : 'Liberado: se puede volver a enviar a Xubio o anular'),
+        )
+      },
       rechazarFactura: async (id, m) => {
         await accion(() => fuente.rechazarFactura(id, m, usuario), 'Factura rechazada; queda registrado quién y por qué')
       },

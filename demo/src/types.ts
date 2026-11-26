@@ -176,6 +176,8 @@ export interface Pago {
   avisoImporte?: string
   /** Qué pasó en Xubio (texto de producción o del envío en seco). */
   detalleXubio?: string
+  /** Cuándo se reservó para enviarlo a Xubio. Con fecha y sin contabilizar = envío sin confirmar (trabado). */
+  envioXubioEn?: string
   /** Anulado: quién, cuándo y por qué. */
   anuladoPor?: string
   anuladoEn?: string

@@ -3,7 +3,7 @@
 // guardan con espejar_catalogos (actualiza o agrega, nunca borra: si una empresa falla, queda lo que había).
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { credencialesDe, get, token, type Token } from './xubio'
+import { credencialesDe, get, token, TOPE_XUBIO_LARGO_MS, type Token } from './xubio'
 import { cuentasDesdeXubio, origenDesdePagos, type CuentaXubio, type PagoXubio } from './xubio-catalogos-armado'
 
 const iso = (d: Date) => d.toISOString().slice(0, 10)
@@ -33,7 +33,7 @@ export async function cargarCatalogosXubio(db: SupabaseClient, soloEmpresas?: st
       log.push(`${e.nombre}: ${c.length} cuentas`)
     } catch (err) { log.push(`${e.nombre}: no se pudo leer el plan (${String(err instanceof Error ? err.message : err).slice(0, 120)}), se conserva el que había`) }
     try {
-      const o = origenDesdePagos(await get<PagoXubio[]>(t, 'pagoBean', `fechaDesde=${iso(desde)}&fechaHasta=${iso(hasta)}`), e.id)
+      const o = origenDesdePagos(await get<PagoXubio[]>(t, 'pagoBean', `fechaDesde=${iso(desde)}&fechaHasta=${iso(hasta)}`, TOPE_XUBIO_LARGO_MS), e.id)
       origen.push(...o)
       log.push(`${e.nombre}: ${o.length} cuentas de origen usadas en 180 días`)
     } catch (err) { log.push(`${e.nombre}: no se pudieron leer los pagos (${String(err instanceof Error ? err.message : err).slice(0, 120)})`) }

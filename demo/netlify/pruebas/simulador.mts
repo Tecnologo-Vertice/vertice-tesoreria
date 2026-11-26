@@ -17,7 +17,7 @@ export interface Pedido {
   /** Cabecera Authorization tal como llegó (para saber con qué credencial se llamó). */
   auth: string
 }
-type Externo = (p: Pedido, corte: AbortSignal | undefined) => Promise<Response> | Response
+export type Externo = (p: Pedido, corte: AbortSignal | undefined) => Promise<Response> | Response
 
 export interface Mundo {
   /** token de sesión → mail de la persona */
@@ -33,10 +33,18 @@ export interface Mundo {
 const responder = (cuerpo: unknown, status = 200) =>
   new Response(status === 204 ? null : JSON.stringify(cuerpo), { status, headers: { 'Content-Type': 'application/json' } })
 
-/** Un servicio que no contesta nunca: la promesa solo termina cuando quien llamó corta el pedido. */
+/**
+ * Un servicio que no contesta nunca: la promesa solo termina cuando quien llamó corta el pedido.
+ * Si quien llamó no puso tope, la prueba se corta a los 5 s con un error (antes de A3 quedaba colgada).
+ */
 export const noResponde: Externo = (_p, corte) =>
   new Promise<Response>((_ok, mal) => {
-    corte?.addEventListener('abort', () => mal(corte.reason ?? new DOMException('Cortado', 'AbortError')))
+    // Como una conexión abierta de verdad, mantiene vivo el proceso mientras espera.
+    const espera = setTimeout(() => mal(new Error('La prueba esperó 5 s: la llamada no tiene tope de tiempo')), 5_000)
+    corte?.addEventListener('abort', () => {
+      clearTimeout(espera)
+      mal(corte.reason ?? new DOMException('Cortado', 'AbortError'))
+    })
   })
 
 function cumple(fila: Fila, filtros: [string, string][]): boolean {

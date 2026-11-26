@@ -2,7 +2,7 @@
 // Toda la lógica de negocio de acá tiene su equivalente en supabase/migrations/0003_funciones.sql.
 
 import type { Auditoria, ComprobanteEjemplo, Documento, Factura, LecturaComprobante, Pago, Usuario } from '../types'
-import type { Datos, DatosAprobacion, DatosContabilizacion, DatosEdicion, DatosYaPagada, Fuente, ResultadoYaPagada, ResultadoEdicion, NuevoPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
+import type { Datos, DatosAprobacion, DatosContabilizacion, DatosEdicion, DatosLiberacion, DatosYaPagada, Fuente, ResultadoLiberacion, ResultadoYaPagada, ResultadoEdicion, NuevoPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
 import {
   auditoriaInicial,
   comprobantesEjemplo,
@@ -208,6 +208,24 @@ export class FuenteDemo implements Fuente {
     this.e.pagos = this.e.pagos.map((x): Pago => (x.id === id ? { ...x, estado: 'ANULADO', anuladoPor: u.nombre, anuladoEn: new Date().toISOString(), motivoAnulacion: motivo.trim() } : x))
     this.log(u, { accion: 'PAGO_ANULADO', entidad: 'PAGO', entidadId: id, detalle: motivo.trim() })
     this.commit()
+  }
+
+  /** Mismas reglas que liberar_pago_xubio en SQL. En la demo ningún envío queda trabado: está para completar la interfaz. */
+  async liberarPagoXubio(id: string, xubioId: string, d: DatosLiberacion, u: Usuario): Promise<ResultadoLiberacion> {
+    const p = this.e.pagos.find((x) => x.id === id)
+    if (!p) throw new Error('Pago inexistente')
+    if (!p.envioXubioEn || !['CARGADO', 'REVISADO'].includes(p.estado)) throw new Error('El pago no tiene un envío a Xubio trabado')
+    const nro = xubioId.trim()
+    const cuenta = d.cuentaContable || p.cuentaContable
+    if (nro && !cuenta) throw new Error('Falta la cuenta contable (regla de oro)')
+    this.e.pagos = this.e.pagos.map((x): Pago =>
+      x.id !== id ? x
+        : nro ? { ...x, estado: 'CONTABILIZADO', xubioId: nro, cuentaContable: cuenta, formaCargaXubio: d.formaCargaXubio ?? x.formaCargaXubio, contabilizadoPor: u.nombre, contabilizadoEn: new Date().toISOString() }
+        : { ...x, envioXubioEn: undefined },
+    )
+    this.log(u, { accion: 'XUBIO_PAGO_LIBERADO', entidad: 'PAGO', entidadId: id, detalle: nro ? `Envío sin confirmar: ya estaba en Xubio como ${nro}` : 'Envío sin confirmar: no estaba en Xubio. Liberado' })
+    this.commit()
+    return nro ? 'CONTABILIZADO' : 'LIBERADO'
   }
 
   async rechazarFactura(id: string, motivo: string, u: Usuario) {

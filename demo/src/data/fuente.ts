@@ -91,6 +91,9 @@ export interface DatosYaPagada {
 export type ResultadoYaPagada = 'CONTABILIZADO' | 'PARA_CONTABILIZAR' | 'PARA_PAGAR'
 
 export type DatosContabilizacion = { cuentaContable: string; formaCargaXubio: Pago['formaCargaXubio']; cuentaOrigen?: string }
+/** Con qué cuenta y forma queda un pago trabado cuando se confirma que ya estaba en Xubio. */
+export type DatosLiberacion = { cuentaContable?: string; formaCargaXubio?: Pago['formaCargaXubio'] }
+export type ResultadoLiberacion = 'CONTABILIZADO' | 'LIBERADO'
 export type NuevoPago = Omit<Pago, 'id' | 'estado' | 'cargadoPor' | 'cargadoEn'>
 export type ResultadoXubio = { ok: true; id: string; enSeco: boolean; detalle?: string } | { ok: false; error: string }
 
@@ -104,6 +107,11 @@ export interface Fuente {
   aplicarNotaCredito(ncId: string, facturaId: string, importe: number, u: Usuario): Promise<void>
   /** Anula un pago que todavía no está en Xubio ni en Ralpharma y devuelve lo aplicado a sus facturas. */
   anularPago(id: string, motivo: string, u: Usuario): Promise<void>
+  /**
+   * Resuelve un pago cuyo envío a Xubio quedó sin confirmar. Con el número de Xubio: ya estaba cargado y
+   * queda contabilizado sin enviar nada. Sin número: no estaba, se libera para volver a enviar o anular.
+   */
+  liberarPagoXubio(id: string, xubioId: string, datos: DatosLiberacion, u: Usuario): Promise<ResultadoLiberacion>
   /** Mails a proveedores: guarda el mail escrito a mano y deja registrado que se preparó en Gmail. */
   guardarEmailProveedor(proveedorId: string, email: string, u: Usuario): Promise<void>
   marcarMailPreparado(facturaIds: string[], u: Usuario): Promise<void>

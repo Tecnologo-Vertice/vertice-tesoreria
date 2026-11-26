@@ -91,6 +91,10 @@ Pendiente de automatizar: una función `cargar-plan-cuentas` que lea `cuenta?act
 4. Si algo salió mal con una orden de pago: no se puede borrar por API; se anula en Xubio a mano. Los asientos manuales sí se pueden borrar.
 5. Volver a `false` hasta decidir habilitar empresa por empresa.
 
+**Si un envío queda sin confirmar** (Xubio no respondió, respondió con error del servidor, o la función se cortó): el pago queda reservado para que nadie lo envíe dos veces, y en su tarjeta de Contabilización aparece "Envío a Xubio sin confirmar". Guido lo busca en Xubio y elige: "Ya está en Xubio" con el número (queda contabilizado sin enviar nada) o "No está en Xubio: liberar" (se puede volver a enviar o anular). Es la función `liberar_pago_xubio` (migración 0015); queda en la auditoría.
+
+**Topes de tiempo** (opcionales, en Netlify): `XUBIO_TIMEOUT_MS` (por defecto 8000: cada llamada a Xubio se corta a los 8 segundos; la lectura de pagos de los catálogos, a los 20) y `GEMINI_TIMEOUT_MS` (por defecto 25000: cada lectura de la IA).
+
 ## Lo que todavía no está en el código de producción
 
 | Qué | Estado | Dónde queda |

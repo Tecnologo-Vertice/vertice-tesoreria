@@ -32,22 +32,54 @@ export interface Token {
   token_type: string
 }
 
+/**
+ * Tope de tiempo de cada llamada a Xubio. Sin tope, un Xubio que no contesta deja la función colgada
+ * hasta que Netlify la corta, sin registrar nada. Se cambia con XUBIO_TIMEOUT_MS.
+ */
+export const topeXubioMs = () => Number(env('XUBIO_TIMEOUT_MS', false)) || 8_000
+/** Lecturas largas (pagos de 180 días para los catálogos). */
+export const TOPE_XUBIO_LARGO_MS = 20_000
+
+/**
+ * Hace el pedido y lee la respuesta completa dentro del tope. Si Xubio no contesta a tiempo o no se
+ * puede conectar, tira ErrorHttp 504 o 502. OJO en un POST o PUT: ese error NO dice que Xubio no haya
+ * creado el comprobante; quien llama tiene que tratarlo como "no se sabe".
+ */
+async function pedir(que: string, url: string, init: RequestInit, ms = topeXubioMs()): Promise<{ status: number; ok: boolean; texto: string }> {
+  try {
+    const r = await fetch(url, { ...init, signal: AbortSignal.timeout(ms) })
+    return { status: r.status, ok: r.ok, texto: await r.text() }
+  } catch (e) {
+    const nombre = e instanceof Error ? e.name : ''
+    if (nombre === 'TimeoutError' || nombre === 'AbortError') throw new ErrorHttp(504, `Xubio no respondió en ${Math.max(1, Math.round(ms / 1000))} s (${que})`)
+    throw new ErrorHttp(502, `No se pudo conectar con Xubio (${que}): ${e instanceof Error ? e.message : e}`)
+  }
+}
+
+function comoJson<T>(que: string, texto: string): T {
+  try {
+    return JSON.parse(texto) as T
+  } catch {
+    throw new ErrorHttp(502, `Xubio devolvió una respuesta que no se entiende (${que})`)
+  }
+}
+
 export async function token(c: Credenciales): Promise<Token> {
-  const r = await fetch(API + 'TokenEndpoint', {
+  const r = await pedir('token', API + 'TokenEndpoint', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json', Authorization: 'Basic ' + Buffer.from(`${c.clientId}:${c.secret}`).toString('base64') },
     body: 'grant_type=client_credentials',
   })
   if (!r.ok) throw new ErrorHttp(502, `Xubio no entregó token (${r.status})`)
-  const j = (await r.json()) as Token
+  const j = comoJson<Token>('token', r.texto)
   if (!j.access_token) throw new ErrorHttp(502, 'Xubio devolvió un token vacío')
   return j
 }
 
-export async function get<T>(t: Token, path: string, query = ''): Promise<T> {
-  const r = await fetch(API + path + (query ? `?${query}` : ''), { headers: { Authorization: `${t.token_type} ${t.access_token}`, Accept: 'application/json' } })
+export async function get<T>(t: Token, path: string, query = '', ms?: number): Promise<T> {
+  const r = await pedir(`GET ${path}`, API + path + (query ? `?${query}` : ''), { headers: { Authorization: `${t.token_type} ${t.access_token}`, Accept: 'application/json' } }, ms)
   if (!r.ok) throw new ErrorHttp(502, `Xubio GET ${path} → ${r.status}`)
-  return (await r.json()) as T
+  return comoJson<T>(`GET ${path}`, r.texto)
 }
 
 const lista = (x: unknown) => (Array.isArray(x) ? (x as Record<string, unknown>[]) : [])
@@ -65,13 +97,14 @@ export async function post(t: Token, path: string, payload: unknown): Promise<{ 
   return enviar('POST', t, path, payload)
 }
 
+/** Si tira error (sin respuesta a tiempo o sin conexión), no se sabe si Xubio creó el comprobante. */
 async function enviar(metodo: 'POST' | 'PUT', t: Token, path: string, payload: unknown): Promise<{ status: number; body: unknown }> {
-  const r = await fetch(API + path, {
+  const r = await pedir(`${metodo} ${path}`, API + path, {
     method: metodo,
     headers: { Authorization: `${t.token_type} ${t.access_token}`, Accept: 'application/json', 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })
-  const texto = await r.text()
+  const texto = r.texto
   let body: unknown = texto
   try {
     body = JSON.parse(texto)
@@ -116,11 +149,17 @@ export function buscarCuenta(lista: RefXubio[], texto: string): RefXubio | null 
   return lista.find((c) => norm(c.nombre) === n) ?? lista.find((c) => !!c.codigo && norm(`${c.codigo} ${c.nombre}`) === n) ?? null
 }
 
+/**
+ * Proveedor de Xubio: por CUIT; si no, por nombre exacto. El CUIT solo se compara si tiene 11 dígitos:
+ * con un CUIT vacío, la comparación coincidía con el primer proveedor de Xubio que no tuviera CUIT
+ * (el error del Apps Script del 17/11). Lo mismo con un nombre vacío. Igual que elegirProveedor.
+ */
 export async function proveedorPorCuit(t: Token, cuit: string, nombre: string): Promise<RefXubio | null> {
   const lista = await get<{ ID?: number; id?: number; nombre?: string; codigo?: string; CUIT?: string; cuit?: string; identificacionTributaria?: { numero?: string } }[]>(t, 'ProveedorBean')
-  const limpio = cuit.replace(/\D/g, '')
-  const porCuit = (Array.isArray(lista) ? lista : []).find((p) => (p.CUIT ?? p.cuit ?? p.identificacionTributaria?.numero ?? '').replace(/\D/g, '') === limpio)
-  const porNombre = porCuit ?? (Array.isArray(lista) ? lista : []).find((p) => norm(p.nombre ?? '') === norm(nombre))
+  const limpio = String(cuit ?? '').replace(/\D/g, '')
+  const buscado = norm(String(nombre ?? ''))
+  const porCuit = limpio.length === 11 ? (Array.isArray(lista) ? lista : []).find((p) => (p.CUIT ?? p.cuit ?? p.identificacionTributaria?.numero ?? '').replace(/\D/g, '') === limpio) : undefined
+  const porNombre = porCuit ?? (buscado ? (Array.isArray(lista) ? lista : []).find((p) => norm(p.nombre ?? '') === buscado) : undefined)
   if (!porNombre) return null
   return { ID: Number(porNombre.ID ?? porNombre.id), id: Number(porNombre.ID ?? porNombre.id), nombre: String(porNombre.nombre ?? nombre), codigo: String(porNombre.codigo ?? '') }
 }

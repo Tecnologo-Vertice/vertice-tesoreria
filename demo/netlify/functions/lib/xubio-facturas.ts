@@ -73,7 +73,15 @@ export async function subirFacturaAXubio(db: SupabaseClient, facturaId: string, 
 
   const { data: reservada } = await db.rpc('reservar_factura_xubio', { p_id: f.id })
   if (!reservada) throw new ErrorHttp(409, 'La factura ya se está subiendo a Xubio o quedó un envío sin confirmar')
-  const r = await xubio.post(t, 'comprobanteCompraBean', payload)
+  let r: { status: number; body: unknown }
+  try {
+    r = await xubio.post(t, 'comprobanteCompraBean', payload)
+  } catch (e) {
+    // Sin respuesta: no se sabe si Xubio la creó. Queda reservada (no se reintenta sola) y se libera a mano.
+    const motivo = e instanceof Error ? e.message : String(e)
+    await db.from('xubio_log').insert({ empresa_id: f.empresas.id, entidad: 'FACTURA', entidad_id: f.id, en_seco: false, request: { path: 'comprobanteCompraBean', payload }, response: { error: motivo }, usuario })
+    return fallo(`${motivo}: verificar en Xubio si la creó antes de reintentar`, false)
+  }
   await db.from('xubio_log').insert({ empresa_id: f.empresas.id, entidad: 'FACTURA', entidad_id: f.id, en_seco: false, request: { path: 'comprobanteCompraBean', payload }, response: r.body, http_status: r.status, usuario })
   const cuerpo = typeof r.body === 'string' ? r.body : JSON.stringify(r.body)
   if (r.status >= 400 && r.status < 500) return fallo(`Xubio rechazó la factura (${r.status}): ${cuerpo.slice(0, 250)}`)

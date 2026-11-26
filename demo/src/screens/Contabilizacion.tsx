@@ -90,8 +90,11 @@ export function Contabilizacion() {
 }
 
 function TarjetaPago({ p, empresaNombre, erp, nueva }: { p: Pago; empresaNombre: string; erp: string; nueva?: boolean }) {
-  const { facturas, proveedor, catalogos, usuario, contabilizarPago, marcarRalpharma, abrirArchivo, anularPago } = useStore()
-  const puedeAnular = puede(usuario.rol, 'ANULAR_PAGO') && p.gestion !== 'HOJA' && ['CARGADO', 'REVISADO', 'PENDIENTE_RALPHARMA'].includes(p.estado)
+  const { facturas, proveedor, catalogos, usuario, contabilizarPago, marcarRalpharma, abrirArchivo, anularPago, liberarPagoXubio } = useStore()
+  // Envío a Xubio sin confirmar: se reservó para enviar y nunca quedó contabilizado. No se sabe si Xubio lo creó.
+  const trabado = !!p.envioXubioEn && (p.estado === 'CARGADO' || p.estado === 'REVISADO')
+  const [nroXubio, setNroXubio] = useState('')
+  const puedeAnular = puede(usuario.rol, 'ANULAR_PAGO') && p.gestion !== 'HOJA' && !trabado && ['CARGADO', 'REVISADO', 'PENDIENTE_RALPHARMA'].includes(p.estado)
   const [anulando, setAnulando] = useState(false)
   const [motivoAnular, setMotivoAnular] = useState('')
   const puedeContabilizar = puede(usuario.rol, 'CONTABILIZAR')
@@ -196,6 +199,33 @@ function TarjetaPago({ p, empresaNombre, erp, nueva }: { p: Pago; empresaNombre:
         <div className="rounded-xl border border-borde bg-suave/40 p-5 space-y-4 self-start w-full">
           <p className="text-[0.625rem] uppercase tracking-[0.16em] font-bold text-seco">{hecho ? 'Cómo quedó' : erp === 'XUBIO' ? 'Contabilizar en Xubio' : 'Carga en Ralpharma'}</p>
           {!hecho && !puedeContabilizar && <p className="text-sm text-seco">Lo contabiliza Administración.</p>}
+          {trabado && (
+            <div className="rounded-lg border border-amber-900 bg-amber-950/40 p-3 space-y-3">
+              <p className="text-[0.8125rem] text-amber-200 leading-snug">
+                <b>Envío a Xubio sin confirmar</b> ({fechaHora(p.envioXubioEn!)}). No se sabe si Xubio creó el comprobante, así que no se puede volver a enviar ni anular
+                hasta resolverlo. {puedeContabilizar ? `Buscalo en Xubio de ${empresaNombre} y elegí qué pasó.` : 'Lo resuelve Administración.'}
+              </p>
+              {puedeContabilizar && (
+                <>
+                  <Field label="Número del comprobante en Xubio" hint="Solo si lo encontraste en Xubio. Queda contabilizado con la cuenta contable y la forma elegidas abajo, sin enviar nada.">
+                    <input id={`xubio-${p.id}`} value={nroXubio} onChange={(ev) => setNroXubio(ev.target.value)} placeholder="Ej.: OP-1234" className={inputCls} />
+                  </Field>
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <Btn variant="secundario" disabled={!!nroXubio.trim()} onClick={() => void liberarPagoXubio(p.id, '', {})} title={nroXubio.trim() ? 'Borrá el número para liberar' : undefined}>
+                      No está en Xubio: liberar
+                    </Btn>
+                    <Btn
+                      disabled={!nroXubio.trim() || !cuentaValida}
+                      title={!nroXubio.trim() ? 'Falta el número de Xubio' : !cuentaValida ? 'Falta la cuenta contable' : undefined}
+                      onClick={() => void liberarPagoXubio(p.id, nroXubio, { cuentaContable: cuentaValida ?? cuenta, formaCargaXubio: forma })}
+                    >
+                      Ya está en Xubio
+                    </Btn>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
           {!hecho && puedeContabilizar && erp === 'XUBIO' && (
             <>
               <Field
@@ -225,7 +255,7 @@ function TarjetaPago({ p, empresaNombre, erp, nueva }: { p: Pago; empresaNombre:
               </Field>
               <div className="flex items-center justify-end gap-3 pt-1">
                 {falta && <p className="text-[0.75rem] text-red-300">{falta}</p>}
-                <Btn disabled={!!falta || enviando} onClick={contabilizar} title={falta}>
+                <Btn disabled={!!falta || enviando || trabado} onClick={contabilizar} title={trabado ? 'Primero resolvé el envío sin confirmar' : falta}>
                   {enviando ? 'Registrando en Xubio…' : 'Contabilizar en Xubio'}
                 </Btn>
               </div>

@@ -56,10 +56,14 @@ const SCHEMA = {
 
 const MEDIOS = new Set(['TRANSFERENCIA', 'CHEQUE', 'ECHEQ', 'DEBITO', 'TARJETA', 'CAJA'])
 
+/** Tope de tiempo de cada llamada a la IA. Se cambia con GEMINI_TIMEOUT_MS. */
+export const topeGeminiMs = () => Number(env('GEMINI_TIMEOUT_MS', false)) || 25_000
+
 /**
  * Una llamada a Gemini con salida JSON forzada. Si el modelo principal está saturado (503) o sin
  * cuota (429), prueba una vez con el de respaldo, como hace Code.gs. ErrorHttp 422 = el archivo no
- * se puede leer (no tiene sentido reintentar); 429/502 = problema transitorio de la IA.
+ * se puede leer (no tiene sentido reintentar); 429/502/504 = problema transitorio de la IA.
+ * Si la IA no contesta dentro del tope, corta con 504 y no prueba el modelo de respaldo.
  */
 export async function llamarGemini(args: { prompt: string; schema: unknown; mimeType: string; data: string }): Promise<Record<string, unknown>> {
   const key = env('GEMINI_API_KEY')
@@ -68,21 +72,35 @@ export async function llamarGemini(args: { prompt: string; schema: unknown; mime
     contents: [{ role: 'user', parts: [{ text: args.prompt }, { inlineData: { mimeType: args.mimeType, data: args.data } }] }],
     generationConfig: { temperature: 0, responseMimeType: 'application/json', responseSchema: args.schema },
   })
-  let r: Response | null = null
+  const ms = topeGeminiMs()
+  let r: { status: number; ok: boolean; cuerpo: string } | null = null
   for (const modelo of modelos) {
-    // La clave va en un header y no en la URL, para que no quede en logs de red.
-    r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-      body,
-    })
+    try {
+      // La clave va en un header y no en la URL, para que no quede en logs de red.
+      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+        body,
+        signal: AbortSignal.timeout(ms),
+      })
+      r = { status: resp.status, ok: resp.ok, cuerpo: await resp.text() }
+    } catch (e) {
+      const nombre = e instanceof Error ? e.name : ''
+      if (nombre === 'TimeoutError' || nombre === 'AbortError') throw new ErrorHttp(504, `La IA no respondió en ${Math.max(1, Math.round(ms / 1000))} s; probá de nuevo en un minuto`)
+      throw new ErrorHttp(502, `No se pudo conectar con la IA: ${e instanceof Error ? e.message : e}`)
+    }
     if (r.status !== 429 && r.status !== 503) break
   }
   if (!r) throw new ErrorHttp(502, 'Sin respuesta de la IA')
   if (r.status === 400) throw new ErrorHttp(422, 'La IA rechazó el archivo (PDF dañado, protegido o vacío)')
   if (r.status === 429) throw new ErrorHttp(429, 'Cuota de IA agotada; probá en un minuto')
   if (!r.ok) throw new ErrorHttp(502, `Error de IA (${r.status})`)
-  const j = (await r.json()) as { candidates?: { content?: { parts?: { text?: string }[] } }[] }
+  let j: { candidates?: { content?: { parts?: { text?: string }[] } }[] }
+  try {
+    j = JSON.parse(r.cuerpo)
+  } catch {
+    throw new ErrorHttp(502, 'La IA devolvió una respuesta que no es JSON')
+  }
   const texto = j.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
   try {
     return JSON.parse(texto) as Record<string, unknown>

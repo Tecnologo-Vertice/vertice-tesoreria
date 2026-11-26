@@ -2,6 +2,8 @@
 // Guido contabiliza un pago. Arma el comprobante para Xubio, lo registra en xubio_log y:
 //   - XUBIO_ENVIO_REAL=false (default): prueba en seco. El pago queda REVISADO con la cuenta y la forma.
 //   - XUBIO_ENVIO_REAL=true: lo envía, guarda el id de Xubio y el pago queda CONTABILIZADO.
+// Si el envío real se corta sin respuesta, el pago queda reservado (no se sabe si Xubio lo creó) y
+// Administración lo resuelve desde la tarjeta: liberar_pago_xubio (migración 0015).
 // Una prueba en seco no cambia quién gestiona el pago: si vino de la hoja, la hoja lo sigue actualizando.
 // Por eso la cuenta de origen elegida en la tarjeta no se guarda antes de validar ni en una prueba sobre
 // un pago de la hoja (ese cambio lo pasaría a "del sistema" sin haber contabilizado nada).
@@ -165,9 +167,23 @@ export default manejar(async (req) => {
     .is('envio_xubio_en', null)
     .select('id')
   if (!reservado?.length)
-    throw new ErrorHttp(409, 'Este pago ya se está enviando a Xubio o quedó un envío sin confirmar. Revisá en Xubio y en xubio_log antes de reintentar.')
+    throw new ErrorHttp(409, 'Este pago ya se está enviando a Xubio o quedó un envío sin confirmar. Revisá en Xubio si el comprobante existe y resolvelo desde la tarjeta del pago ("Envío a Xubio sin confirmar").')
 
-  const r = metodo === 'PUT' ? await xubio.put(t, path, payload) : await xubio.post(t, path, payload)
+  // No se sabe si Xubio creó el comprobante: la reserva queda puesta para que nadie reintente a ciegas, y en el
+  // pago queda con qué cuenta y forma se envió, para que Administración lo resuelva desde la tarjeta.
+  const sinConfirmar = async (motivo: string): Promise<ErrorHttp> => {
+    await db.from('pagos').update({ cuenta_contable: b.cuentaContable, forma_carga_xubio: b.formaCargaXubio, ...origenNuevo, detalle_contabilizacion: `Envío a Xubio sin confirmar: ${motivo}` }).eq('id', pago.id)
+    return new ErrorHttp(502, `${motivo} El pago queda trabado: buscá el comprobante en Xubio (${pago.empresas.nombre}) y resolvelo desde la tarjeta del pago.`)
+  }
+
+  let r: { status: number; body: unknown }
+  try {
+    r = metodo === 'PUT' ? await xubio.put(t, path, payload) : await xubio.post(t, path, payload)
+  } catch (e) {
+    const motivo = e instanceof Error ? e.message : String(e)
+    await db.from('xubio_log').insert({ empresa_id: pago.empresas.id, entidad: 'PAGO', entidad_id: pago.id, en_seco: false, request: { path, payload }, response: { error: motivo }, usuario: u.nombre })
+    throw await sinConfirmar(`${motivo}: no se sabe si Xubio creó el comprobante.`)
+  }
   await db.from('xubio_log').insert({ empresa_id: pago.empresas.id, entidad: 'PAGO', entidad_id: pago.id, en_seco: false, request: { path, payload }, response: r.body, http_status: r.status, usuario: u.nombre })
   if (r.status >= 400 && r.status < 500) {
     // Rechazo claro de Xubio: no se creó nada, se libera la reserva para corregir y reintentar.
@@ -175,9 +191,9 @@ export default manejar(async (req) => {
     throw new ErrorHttp(502, `Xubio rechazó el comprobante (${r.status}): ${typeof r.body === 'string' ? r.body.slice(0, 200) : JSON.stringify(r.body).slice(0, 200)}`)
   }
   // 5xx o 2xx sin id: no se sabe si Xubio lo creó. La reserva queda puesta para que nadie reintente a ciegas.
-  if (r.status < 200 || r.status >= 300) throw new ErrorHttp(502, `Xubio respondió ${r.status}: no se sabe si creó el comprobante. Verificalo en Xubio antes de reintentar.`)
+  if (r.status < 200 || r.status >= 300) throw await sinConfirmar(`Xubio respondió ${r.status}: no se sabe si creó el comprobante.`)
   const id = enFactura ? `FC-${facturas[0].xubioId}` : xubio.idDeRespuesta(r.body)
-  if (!id) throw new ErrorHttp(502, 'Xubio aceptó el envío pero no devolvió un id. Buscalo en Xubio y cargalo a mano; no reintentes.')
+  if (!id) throw await sinConfirmar('Xubio aceptó el envío pero no devolvió un id.')
   const { error: e3 } = await db.rpc('marcar_pago_contabilizado', { p_id: pago.id, p_cuenta: b.cuentaContable, p_forma: b.formaCargaXubio, p_xubio_id: id, p_usuario: u.nombre, p_rol: u.rol })
   if (e3) throw new ErrorHttp(500, `Xubio aceptó (${id}) pero no se pudo marcar el pago: ${e3.message}`)
   if (origenNuevo.cuenta_origen) await db.from('pagos').update(origenNuevo).eq('id', pago.id)

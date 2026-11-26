@@ -4,7 +4,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Auditoria, ComprobanteEjemplo, CuentaOrigen, Documento, Empresa, EstadoEspejo, Factura, LecturaComprobante, Pago, Proveedor, Usuario } from '../types'
-import type { Bucket, Datos, DatosAprobacion, DatosContabilizacion, DatosEdicion, DatosYaPagada, Fuente, ResultadoYaPagada, ResultadoEdicion, NuevoPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
+import type { Bucket, Datos, DatosAprobacion, DatosContabilizacion, DatosEdicion, DatosLiberacion, DatosYaPagada, Fuente, ResultadoLiberacion, ResultadoYaPagada, ResultadoEdicion, NuevoPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
 import { archivoABase64, llamarFuncion } from '../lib/supabase'
 
 type Row = Record<string, unknown>
@@ -101,6 +101,7 @@ function mapPago(r: Row, facturaIds: string[]): Pago {
     estadoExtraccion: s(r.estado_extraccion),
     avisoImporte: s(r.aviso_importe),
     detalleXubio: s(r.xubio_detalle) ?? s(r.detalle_contabilizacion),
+    envioXubioEn: s(r.envio_xubio_en),
     anuladoPor: s(r.anulado_por),
     anuladoEn: s(r.anulado_en),
     motivoAnulacion: s(r.motivo_anulacion),
@@ -260,6 +261,10 @@ export class FuenteSupabase implements Fuente {
 
   async anularPago(id: string, motivo: string) {
     await this.rpc('anular_pago', { p_id: id, p_motivo: motivo })
+  }
+
+  async liberarPagoXubio(id: string, xubioId: string, d: DatosLiberacion): Promise<ResultadoLiberacion> {
+    return this.rpc<ResultadoLiberacion>('liberar_pago_xubio', { p_id: id, p_xubio_id: xubioId.trim(), p_cuenta: d.cuentaContable || null, p_forma: d.formaCargaXubio ?? null })
   }
 
   async guardarEmailProveedor(proveedorId: string, email: string) {
