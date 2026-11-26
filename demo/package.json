@@ -22,7 +22,7 @@
     "test:xubio": "node netlify/pruebas/xubio.prueba.mts",
     "sql:unir": "node supabase/unir.mjs",
     "test:espejo": "node netlify/pruebas/espejo.prueba.mts",
-    "test:tesoreria": "node supabase/pruebas/probar_tesoreria.mjs supabase/migrations && node supabase/pruebas/probar_espera_fc.mjs supabase/migrations && node supabase/pruebas/probar_0029.mjs supabase/migrations && node supabase/pruebas/probar_0030.mjs supabase/migrations && node supabase/pruebas/probar_0031.mjs supabase/migrations && node supabase/pruebas/probar_0032.mjs supabase/migrations",
+    "test:tesoreria": "node supabase/pruebas/probar_tesoreria.mjs supabase/migrations && node supabase/pruebas/probar_espera_fc.mjs supabase/migrations && node supabase/pruebas/probar_0029.mjs supabase/migrations && node supabase/pruebas/probar_0030.mjs supabase/migrations && node supabase/pruebas/probar_0031.mjs supabase/migrations && node supabase/pruebas/probar_0032.mjs supabase/migrations && node supabase/pruebas/probar_0033.mjs supabase/migrations",
     "test:migracion": "node scripts/migrar-desde-planillas/probar.mjs",
     "test:extractos": "node --import ./netlify/pruebas/resolver.mjs netlify/pruebas/extractos.prueba.mts",
     "test:bancos": "node --import ./netlify/pruebas/resolver.mjs netlify/pruebas/bancos-xubio.prueba.mts",

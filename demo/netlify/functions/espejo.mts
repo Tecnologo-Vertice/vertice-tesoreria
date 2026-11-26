@@ -69,6 +69,14 @@ export default manejar(async (req) => {
   if (error) throw new ErrorHttp(422, error.message)
   const r = data as Conteo
   const conteo: Conteo = { ...r, omitidas: [...omitidasLocal, ...r.omitidas] }
+  // Pagos nuevos o cambiados: vincularlos con sus débitos del banco una vez por empresa, al final del lote (0033).
+  // Si falla, la copia ya quedó guardada: solo se avisa.
+  if (b.tipo === 'pagos' && r.nuevas + r.actualizadas > 0) {
+    for (const empresa of new Set(traducidas.map((t) => String((t as { empresa_id?: unknown }).empresa_id ?? '')).filter(Boolean))) {
+      const { error: e2 } = await db.rpc('conciliar_movimientos', { p_empresa: empresa })
+      if (e2 && e2.code !== 'PGRST202') console.error('Espejo: no se pudo conciliar', empresa, e2.message)
+    }
+  }
   await anotar(db, organizacion, b.hoja ?? b.tipo, { filas: filas.length, ...conteo }, req.headers.get('x-espejo-lote') === '1')
   return json({ ok: true, recibidas: filas.length, ...conteo })
 })
