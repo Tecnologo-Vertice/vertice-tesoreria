@@ -268,6 +268,7 @@ Pendiente de Brian: verificar en el editor de producción que estén `Conciliaci
 
 **Reglas**
 - La hoja manda sobre cada factura o pago mientras nadie lo toque en el sistema nuevo. Apenas se aprueba, paga o contabiliza acá, pasa a `gestion = SISTEMA` y la copia ya no lo pisa (solo actualiza dónde está la fila y el link del PDF).
+- Desde la migración 0014: aplicar una nota de crédito (cambio de saldo) también cuenta como decisión del sistema; una **prueba en seco** de contabilización no (el pago queda revisado, pero la hoja lo sigue actualizando, y la cuenta de origen elegida no se guarda); y preparar el mail al proveedor tampoco cambia el dueño, pero la copia no borra esa marca.
 - Lo pagado de cada factura sale de `PORCENTAJE_PAGADO` de la hoja. Los pagos copiados se vinculan a sus facturas para mostrarlos, sin volver a sumarlos.
 - Filas que se omiten, con motivo: receptor que no es del grupo, CUIT incompleto, número ilegible, pago anulado, pago sin empresa ni factura.
 - Un pago copiado puede tener importe 0 (la IA todavía no leyó el comprobante); uno cargado en el sistema nuevo, nunca.

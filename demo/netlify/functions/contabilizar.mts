@@ -2,6 +2,9 @@
 // Guido contabiliza un pago. Arma el comprobante para Xubio, lo registra en xubio_log y:
 //   - XUBIO_ENVIO_REAL=false (default): prueba en seco. El pago queda REVISADO con la cuenta y la forma.
 //   - XUBIO_ENVIO_REAL=true: lo envía, guarda el id de Xubio y el pago queda CONTABILIZADO.
+// Una prueba en seco no cambia quién gestiona el pago: si vino de la hoja, la hoja lo sigue actualizando.
+// Por eso la cuenta de origen elegida en la tarjeta no se guarda antes de validar ni en una prueba sobre
+// un pago de la hoja (ese cambio lo pasaría a "del sistema" sin haber contabilizado nada).
 
 import type { Config } from '@netlify/functions'
 import { env, exigirEmpresa, exigirRol, json, leerJson, manejar, supabaseAdmin, usuarioDesde, ErrorHttp } from './lib/comun'
@@ -36,14 +39,13 @@ export default manejar(async (req) => {
   if (pago.empresas.erp !== 'XUBIO') throw new ErrorHttp(422, 'Esta empresa no usa Xubio: confirmá la carga en Ralpharma')
   if (!(Number(pago.importe) > 0)) throw new ErrorHttp(422, 'Falta el importe del pago: la IA no lo leyó del comprobante')
 
-  // Cuenta de origen: la elegida en la tarjeta manda; queda guardada en el pago.
+  // Cuenta de origen: la elegida en la tarjeta manda. Acá solo se usa para armar y validar el comprobante;
+  // se guarda en el pago recién cuando se contabiliza (o al terminar una prueba sobre un pago del sistema).
   const origenTexto = (b.cuentaOrigen ?? '').trim() || pago.cuenta_origen || ''
   if (!origenTexto) throw new ErrorHttp(422, 'Falta la cuenta de origen (de qué banco o caja salió el pago)')
-  if (origenTexto !== pago.cuenta_origen) {
-    const { error: eo } = await db.from('pagos').update({ cuenta_origen: origenTexto }).eq('id', pago.id)
-    if (eo) throw new ErrorHttp(500, eo.message)
-    pago.cuenta_origen = origenTexto
-  }
+  const origenNuevo = origenTexto !== pago.cuenta_origen ? { cuenta_origen: origenTexto } : {}
+  const origenSiEsDelSistema = pago.gestion === 'HOJA' ? {} : origenNuevo
+  pago.cuenta_origen = origenTexto
   // E-cheq contra la cuenta de e-cheqs emitidos (tipo 4): Xubio no acepta crear esa OP por API (producción: CARGAR_A_MANO).
   const { data: co4 } = await db.from('cuentas_origen').select('tipo_cuenta').eq('empresa_id', pago.empresas.id).eq('nombre', origenTexto).maybeSingle()
   const echeqAMano = !!pago.numero_cheque && b.formaCargaXubio === 'ORDEN_PAGO' && (co4?.tipo_cuenta === 4 || xubio.tipoCuentaPara(origenTexto) === 4)
@@ -113,12 +115,12 @@ export default manejar(async (req) => {
       if (envioReal) {
         const { error: e4 } = await db.rpc('marcar_pago_contabilizado', { p_id: pago.id, p_cuenta: b.cuentaContable, p_forma: b.formaCargaXubio, p_xubio_id: `OP-${existente}`, p_usuario: u.nombre, p_rol: u.rol })
         if (e4) throw new ErrorHttp(500, e4.message)
-        await db.from('pagos').update({ detalle_contabilizacion: detalle }).eq('id', pago.id)
+        await db.from('pagos').update({ detalle_contabilizacion: detalle, ...origenNuevo }).eq('id', pago.id)
         return json({ ok: true, id: `OP-${existente}`, enSeco: false, detalle })
       }
       const { error: e5 } = await db.rpc('marcar_pago_revisado', { p_id: pago.id, p_cuenta: b.cuentaContable, p_forma: b.formaCargaXubio, p_detalle: 'En seco: ' + detalle, p_usuario: u.nombre, p_rol: u.rol })
       if (e5) throw new ErrorHttp(500, e5.message)
-      await db.from('pagos').update({ detalle_contabilizacion: 'En seco: ' + detalle }).eq('id', pago.id)
+      await db.from('pagos').update({ detalle_contabilizacion: 'En seco: ' + detalle, ...origenSiEsDelSistema }).eq('id', pago.id)
       return json({ ok: true, id: 'EN-SECO', enSeco: true, detalle })
     }
   }
@@ -149,7 +151,7 @@ export default manejar(async (req) => {
     const detalle = `En seco: ${enFactura ? 'PAGO EN FACTURA' : b.formaCargaXubio} por ${datos.importe} contra ${cuentaOrigen.nombre}${notas.length ? ' (' + notas.join('; ') + ')' : ''}`
     const { error: e2 } = await db.rpc('marcar_pago_revisado', { p_id: pago.id, p_cuenta: b.cuentaContable, p_forma: b.formaCargaXubio, p_detalle: detalle, p_usuario: u.nombre, p_rol: u.rol })
     if (e2) throw new ErrorHttp(500, e2.message)
-    await db.from('pagos').update({ detalle_contabilizacion: detalle }).eq('id', pago.id)
+    await db.from('pagos').update({ detalle_contabilizacion: detalle, ...origenSiEsDelSistema }).eq('id', pago.id)
     return json({ ok: true, id: 'EN-SECO', enSeco: true, detalle })
   }
 
@@ -178,6 +180,7 @@ export default manejar(async (req) => {
   if (!id) throw new ErrorHttp(502, 'Xubio aceptó el envío pero no devolvió un id. Buscalo en Xubio y cargalo a mano; no reintentes.')
   const { error: e3 } = await db.rpc('marcar_pago_contabilizado', { p_id: pago.id, p_cuenta: b.cuentaContable, p_forma: b.formaCargaXubio, p_xubio_id: id, p_usuario: u.nombre, p_rol: u.rol })
   if (e3) throw new ErrorHttp(500, `Xubio aceptó (${id}) pero no se pudo marcar el pago: ${e3.message}`)
+  if (origenNuevo.cuenta_origen) await db.from('pagos').update(origenNuevo).eq('id', pago.id)
   return json({ ok: true, id, enSeco: false, detalle: notas.join('; ') || undefined })
 })
 

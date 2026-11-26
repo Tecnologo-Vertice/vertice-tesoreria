@@ -137,7 +137,7 @@ function TarjetaPago({ p, empresaNombre, erp, nueva }: { p: Pago; empresaNombre:
             <Badge tone="dorado">{empresaNombre}</Badge>
             <Badge>{p.medio}</Badge>
             <Badge tone={facts.length ? 'azul' : 'naranja'}>{facts.length ? `${facts.length} factura(s)` : 'Sin factura'}</Badge>
-            {p.gestion === 'HOJA' && <Badge title="Copiado del dashboard de producción. Si lo contabilizás acá, la copia ya no lo pisa.">De la hoja</Badge>}
+            {p.gestion === 'HOJA' && <Badge title="Copiado del dashboard de producción. Una prueba en seco no lo cambia de dueño; si lo contabilizás acá en real, la copia ya no lo pisa.">De la hoja</Badge>}
             {hecho && <Badge tone="verde">{p.xubioId === 'RALPHARMA' ? 'Cargado en Ralpharma' : `Xubio ${p.xubioId}`}</Badge>}
             {p.estado === 'REVISADO' && <Badge tone="verde">Revisado en seco</Badge>}
             {p.mailProveedorEnviado && <Badge tone="azul">Mail al proveedor</Badge>}

@@ -288,11 +288,30 @@ await falla('un pago cargado en el sistema nunca puede tener importe 0',
 ep = await espPag([filaP({ _fila: 6, ID_PAGO: 'PAGO-1792698005999-0', FACTURA_ASOCIADA: '', TIPO_PAGO: 'SIN_FACTURA', IMPORTE: '', EMPRESA: 'BERATUNG S.A.', ESTADO_EXTRACCION_IA: 'ERROR_1' })])
 check('pago sin leer todavía (importe 0) se copia igual', ep.nuevas === 1 && Number((await val(`select importe from pagos where hoja_id = 'PAGO-1792698005999-0'`)).importe) === 0)
 
-// Guido lo contabiliza (en seco) en el sistema nuevo: desde ahí la hoja no lo pisa.
+// Guido lo prueba en seco en el sistema nuevo: queda revisado, pero lo sigue gestionando la hoja (0014).
+// Hasta 0013 la prueba lo pasaba a SISTEMA y la copia dejaba de actualizarlo sin que se hubiera contabilizado nada.
 await db.query(`select marcar_pago_revisado($1, 'Gastos Generales', 'ORDEN_PAGO', 'En seco', 'Guido', 'ADMINISTRACION')`, [pe1.id])
-check('contabilizado en el sistema nuevo: gestión SISTEMA', (await val(`select gestion from pagos where id = $1`, [pe1.id])).gestion === 'SISTEMA')
+r = await val(`select estado, gestion, cuenta_contable from pagos where id = $1`, [pe1.id])
+check('prueba en seco: el pago queda REVISADO y sigue siendo de la hoja', r.estado === 'REVISADO' && r.gestion === 'HOJA' && r.cuenta_contable === 'Gastos Generales', JSON.stringify(r))
+check('prueba en seco: queda en la auditoría', (await val(`select count(*)::int n from auditoria where entidad_id = $1 and accion = 'REVISADO_EN_SECO'`, [pe1.id])).n === 1)
 ep = await espPag([filaP({ CUENTA_CONTABLE: 'Otra cuenta', OBSERVACIONES_TESORERIA: 'cambio en la hoja' })])
-check('la hoja cambia la cuenta: no pisa lo que decidió el sistema', (await val(`select estado, cuenta_contable from pagos where id = $1`, [pe1.id])).estado === 'REVISADO')
+r = await val(`select estado, cuenta_contable, gestion from pagos where id = $1`, [pe1.id])
+check('después de una prueba en seco la hoja sigue mandando: su cambio se copia', ep.actualizadas === 1 && r.cuenta_contable === 'Otra cuenta' && r.estado === 'CARGADO' && r.gestion === 'HOJA', JSON.stringify(r))
+// Un pago del sistema nuevo probado en seco sigue siendo del sistema.
+const pSis = (await val(`select id from pagos where gestion = 'SISTEMA' and estado = 'CARGADO' and empresa_id = 'beratung' limit 1`)).id
+await db.query(`select marcar_pago_revisado($1, 'COSTO DE INSUMOS', 'ORDEN_PAGO', 'En seco', 'Guido', 'ADMINISTRACION')`, [pSis])
+r = await val(`select estado, gestion from pagos where id = $1`, [pSis])
+check('prueba en seco de un pago del sistema: sigue siendo del sistema', r.estado === 'REVISADO' && r.gestion === 'SISTEMA')
+await falla('no se prueba en seco un pago que no está pendiente', `select marcar_pago_revisado($1, 'x', 'ORDEN_PAGO', 'En seco', 'Guido', 'ADMINISTRACION')`, ['00000000-0000-0000-0000-000000000000'], /no está pendiente/)
+// La contabilización real sí lo pasa al sistema: desde ahí la hoja no lo pisa.
+const pe2 = await val(`select id from pagos where hoja_id = 'PAGO-1792698005999-0'`)
+await db.query(`update pagos set importe = 500 where id = $1`, [pe2.id])
+await db.query(`update pagos set gestion = 'HOJA' where id = $1`, [pe2.id])
+await db.query(`select marcar_pago_contabilizado($1, 'Gastos Generales', 'SALIDA_FONDOS', 'OP-9001', 'Guido', 'ADMINISTRACION')`, [pe2.id])
+check('contabilizado de verdad en el sistema nuevo: gestión SISTEMA', (await val(`select gestion from pagos where id = $1`, [pe2.id])).gestion === 'SISTEMA')
+ep = await espPag([filaP({ _fila: 6, ID_PAGO: 'PAGO-1792698005999-0', FACTURA_ASOCIADA: '', TIPO_PAGO: 'SIN_FACTURA', IMPORTE: 700, EMPRESA: 'BERATUNG S.A.', CUENTA_CONTABLE: 'Otra cuenta' })])
+r = await val(`select estado, cuenta_contable, importe from pagos where id = $1`, [pe2.id])
+check('la hoja cambia un pago contabilizado en el sistema: no lo pisa', r.estado === 'CONTABILIZADO' && r.cuenta_contable === 'Gastos Generales' && Number(r.importe) === 500, JSON.stringify(r))
 ep = await espPag([filaP({ _fila: 8, ID_PAGO: 'PAGO-1792698007000-0', FACTURA_ASOCIADA: '', TIPO_PAGO: 'SIN_FACTURA', EMPRESA: 'Droguería Robles', ESTADO_CONTABLE: 'CONTABILIZADA', ESTADO_XUBIO_PAGO: 'SIN_ERP_XUBIO' })])
 check('pago de Robles contabilizado en producción sin cargar en Ralpharma: bandeja Ralpharma', (await val(`select estado from pagos where hoja_id = 'PAGO-1792698007000-0'`)).estado === 'PENDIENTE_RALPHARMA')
 
@@ -470,7 +489,7 @@ await falla('un pago anulado no se anula dos veces', `select anular_pago($1, 'ot
 check('el flujo no cuenta pagos anulados', (await val(`select count(*)::int n from export_cashflow where estado = 'REAL' and egreso in (400, 600) and empresa = 'YSD Pharma S.A.'`)).n === 0)
 check('el flujo vuelve a proyectar la factura', (await val(`select count(*)::int n from export_cashflow where referencia = $1`, [fAn])).n === 1)
 await db.exec(`reset role`)
-const pCont = (await val(`select id from pagos where estado = 'CONTABILIZADO' limit 1`)).id
+const pCont = (await val(`select id from pagos where estado = 'CONTABILIZADO' and empresa_id = 'ysd' limit 1`)).id
 await db.exec(`set role authenticated`)
 await como('tesoreria@verticebi.com')
 await falla('un pago contabilizado no se anula acá', `select anular_pago($1, 'x')`, [pCont], /Xubio/)
@@ -608,6 +627,52 @@ check('el lector programado sigue tomando todo lo demás', tomados.map((x) => x.
 for (const fn of ['empresas_visibles_de(text)', 'tomar_documentos_de_empresas(integer,text[])'])
   check(`authenticated NO puede ejecutar ${fn.split('(')[0]}`, !(await val(`select has_function_privilege('authenticated', $1, 'execute') p`, [fn])).p
     && (await val(`select has_function_privilege('service_role', $1, 'execute') p`, [fn])).p)
+
+// ================================================================ Convivencia con la hoja: NC y mail (0014)
+await db.exec(`reset role`)
+const filaNC = (x = {}) => filaF({ TIPO: 'Nota de Crédito A', IMPORTE: 300, IVA: 0, TOTAL: 300, ESTADO_XUBIO: '', XUBIO_ID_FACTURA: '', ...x })
+// De la hoja: una factura aprobada, una NC todavía pendiente y otra NC ya aprobada allá.
+e1 = await espFact([filaF({ _fila: 50, NUMERO: '00007-00000370' }),
+  filaNC({ _fila: 51, NUMERO: '00007-00000371', ESTADO_APROBACION: 'PENDIENTE_APROBACION', ESTADO_PAGO: '' }),
+  filaNC({ _fila: 52, NUMERO: '00007-00000372' })])
+const hFac = await val(`select id, gestion, estado from facturas where punto_venta = 7 and numero = 370`)
+const hNc = await val(`select id, gestion, saldo_nc from facturas where punto_venta = 7 and numero = 371`)
+const hNcAprobada = await val(`select id, gestion, estado, saldo_nc from facturas where punto_venta = 7 and numero = 372`)
+check('de la hoja: factura para pagar y dos NC con todo su saldo', e1.nuevas === 3 && hFac.gestion === 'HOJA' && hFac.estado === 'PARA_PAGAR' && Number(hNc.saldo_nc) === 300 && Number(hNcAprobada.saldo_nc) === 300)
+
+// Caso de la tanda: se aprueba la NC en el sistema nuevo, se aplica en parte y la hoja vuelve a copiarse con las filas cambiadas.
+await db.exec(`set role authenticated`)
+await como('aprobador@verticebi.com')
+await db.query(`select aprobar_factura($1, 'Gastos Generales', 'TRANSFERENCIA')`, [hNc.id])
+await como('tesoreria@verticebi.com')
+await db.query(`select aplicar_nota_credito($1, $2, 100)`, [hNc.id, hFac.id])
+await db.exec(`reset role`)
+e1 = await espFact([filaF({ _fila: 50, NUMERO: '00007-00000370', MOTIVO_VALIDACION: 'cambio en la hoja' }),
+  filaNC({ _fila: 51, NUMERO: '00007-00000371', ESTADO_APROBACION: 'PENDIENTE_APROBACION', ESTADO_PAGO: '', MOTIVO_VALIDACION: 'cambio en la hoja' })])
+r = await val(`select n.saldo_nc, n.gestion ng, n.estado ne, f.pagado, f.gestion fg from facturas n, facturas f where n.id = $1 and f.id = $2`, [hNc.id, hFac.id])
+check('NC aplicada en parte: al volver a copiar la hoja cambiada el saldo no vuelve', Number(r.saldo_nc) === 200 && r.ng === 'SISTEMA' && r.ne === 'PARA_PAGAR', JSON.stringify(r))
+check('…y la factura conserva lo aplicado', Number(r.pagado) === 100 && r.fg === 'SISTEMA')
+
+// La regla en sí: bajar el saldo de una NC que gestiona la hoja es una decisión del sistema nuevo.
+// (Sin 0014 la NC seguía siendo de la hoja y la copia siguiente le devolvía los 300.)
+await db.query(`update facturas set saldo_nc = saldo_nc - 100 where id = $1`, [hNcAprobada.id])
+check('bajar el saldo de una NC de la hoja la pasa a gestión SISTEMA', (await val(`select gestion from facturas where id = $1`, [hNcAprobada.id])).gestion === 'SISTEMA')
+e1 = await espFact([filaNC({ _fila: 52, NUMERO: '00007-00000372', MOTIVO_VALIDACION: 'cambio en la hoja' })])
+check('…y la copia de la hoja ya no le devuelve el saldo entero', Number((await val(`select saldo_nc from facturas where id = $1`, [hNcAprobada.id])).saldo_nc) === 200)
+
+// Mail preparado en una factura que sigue gestionando la hoja.
+e1 = await espFact([filaF({ _fila: 53, NUMERO: '00007-00000373', PORCENTAJE_PAGADO: 50 })])
+const hMail = (await val(`select id from facturas where punto_venta = 7 and numero = 373`)).id
+await db.exec(`set role authenticated`)
+await como('tesoreria@verticebi.com')
+await db.query(`select marcar_mail_preparado($1)`, [[hMail]])
+await db.exec(`reset role`)
+check('preparar el mail no cambia quién gestiona la factura', (await val(`select gestion from facturas where id = $1`, [hMail])).gestion === 'HOJA')
+e1 = await espFact([filaF({ _fila: 53, NUMERO: '00007-00000373', PORCENTAJE_PAGADO: 75 })])
+r = await val(`select mail_enviado, pagado, gestion from facturas where id = $1`, [hMail])
+check('la hoja registra otro pago: se copia y la marca de mail preparado no se borra', e1.actualizadas === 1 && Number(r.pagado) === 90750 && /^Preparado en Gmail/.test(r.mail_enviado ?? ''), JSON.stringify(r))
+e1 = await espFact([filaF({ _fila: 53, NUMERO: '00007-00000373', PORCENTAJE_PAGADO: 75, MAIL_ENVIADO_FECHA: 'Enviado 20/11/2026' })])
+check('si la hoja trae su propia marca de mail, se copia la de la hoja', (await val(`select mail_enviado m from facturas where id = $1`, [hMail])).m === 'Enviado 20/11/2026')
 
 console.log(`\n${ok} OK · ${mal} MAL`)
 process.exit(mal ? 1 : 0)
