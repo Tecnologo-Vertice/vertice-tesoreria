@@ -44,12 +44,12 @@ async function antesDe0031() {
   // La CA se crea primero (y ordena primero), pero el comprobante 09990 que existe es de la CC.
   legCa = (await val(`insert into cuentas_origen (empresa_id, nombre, banco, clase, cuit_banco, orden) values ('india', 'BANCO VIEJO CA', 'BANCOVIEJO', 'CA', '30888888881', 10) returning id`)).id
   legCc = (await val(`insert into cuentas_origen (empresa_id, nombre, banco, clase, cuit_banco, orden) values ('india', 'BANCO VIEJO CC', 'BANCOVIEJO', 'CC', '30888888881', 20) returning id`)).id
-  await importar(legCc, 'leg-cc', [{ fecha: '2026-11-10', descripcion: 'COMISION MANTENIMIENTO', importe: -200, saldo: 800 }])
+  await importar(legCc, 'leg-cc', [{ fecha: '2026-11-10', descripcion: 'COMISION MANTENIMIENTO', importe: -200, saldo: 800 }, { fecha: '2026-11-10', descripcion: 'IVA 21%', importe: -42, saldo: 758 }])   // con IVA: 0034 deja sin IVA las comisiones al asiento
   legFactura = (await val(`select generar_comprobante_gastos($1, '2026-11-10') id`, [legCc])).id
-  await importar(legCa, 'leg-ca', [{ fecha: '2026-11-10', descripcion: 'COMISION MANTENIMIENTO', importe: -100, saldo: 900 }])
+  await importar(legCa, 'leg-ca', [{ fecha: '2026-11-10', descripcion: 'COMISION MANTENIMIENTO', importe: -100, saldo: 900 }, { fecha: '2026-11-10', descripcion: 'IVA 21%', importe: -21, saldo: 879 }])
   const pisado = (await val(`select generar_comprobante_gastos($1, '2026-11-10') id`, [legCa])).id
   check('[2] antes de 0031: la segunda cuenta pisa el comprobante de la primera (el error a corregir)',
-    pisado === legFactura && n((await val(`select total from facturas where id = $1`, [legFactura])).total) === 100)
+    pisado === legFactura && n((await val(`select total from facturas where id = $1`, [legFactura])).total) === 121)
 }
 
 for (const f of readdirSync(dir).filter((x) => x.endsWith('.sql')).sort()) {
@@ -106,33 +106,33 @@ const dig = async (id) => (await val(`select digito_comprobante d from cuentas_o
 check('[2] dígito de las cuentas que ya estaban: la que tiene comprobantes 09990 conserva el 0', (await dig(legCc)) === 0 && (await dig(legCa)) === 1, `${await dig(legCc)} ${await dig(legCa)}`)
 check('[2] el movimiento que quedó en el comprobante de otra cuenta se soltó',
   (await val(`select count(*)::int n from movimientos_bancarios where cuenta_origen_id = $1 and factura_id is not null`, [legCa])).n === 0
-  && (await val(`select count(*)::int n from movimientos_bancarios where cuenta_origen_id = $1 and factura_id = $2`, [legCc, legFactura])).n === 1)
+  && (await val(`select count(*)::int n from movimientos_bancarios where cuenta_origen_id = $1 and factura_id = $2`, [legCc, legFactura])).n === 2)
 await como('teso@prueba.com')
 const legNuevo = (await val(`select generar_comprobante_gastos($1, '2026-11-10') id`, [legCa])).id
 const legMismo = (await val(`select generar_comprobante_gastos($1, '2026-11-10') id`, [legCc])).id
 let fs = await filas(`select id, punto_venta, total::text, cuenta_origen_extracto_id from facturas where id in ($1, $2)`, [legNuevo, legMismo])
 check('[2] al regenerar: el comprobante viejo (09990) queda con lo de su cuenta y la otra tiene el suyo (09991)',
   legMismo === legFactura && legNuevo !== legFactura
-  && fs.find((f) => f.id === legFactura)?.punto_venta === 9990 && fs.find((f) => f.id === legFactura)?.total === '200.00'
-  && fs.find((f) => f.id === legNuevo)?.punto_venta === 9991 && fs.find((f) => f.id === legNuevo)?.total === '100.00', JSON.stringify(fs))
+  && fs.find((f) => f.id === legFactura)?.punto_venta === 9990 && fs.find((f) => f.id === legFactura)?.total === '242.00'
+  && fs.find((f) => f.id === legNuevo)?.punto_venta === 9991 && fs.find((f) => f.id === legNuevo)?.total === '121.00', JSON.stringify(fs))
 
 check('[2] cuentas nuevas del mismo banco y empresa: dígitos 0 y 1, solos', (await dig(ca)) === 0 && (await dig(cc2)) === 1)
 await servidor()
 const D_GASTO = dia(-12)
-await importar(ca, 'h1a', [{ fecha: D_GASTO, descripcion: 'COMISION MANTENIMIENTO', importe: -100, saldo: 900 }])
-await importar(cc2, 'h1b', [{ fecha: D_GASTO, descripcion: 'COMISION MANTENIMIENTO', importe: -200, saldo: 800 }])
+await importar(ca, 'h1a', [{ fecha: D_GASTO, descripcion: 'COMISION MANTENIMIENTO', importe: -100, saldo: 900 }, { fecha: D_GASTO, descripcion: 'IVA 21%', importe: -21, saldo: 879 }])   // 0034: con IVA el día queda en el comprobante
+await importar(cc2, 'h1b', [{ fecha: D_GASTO, descripcion: 'COMISION MANTENIMIENTO', importe: -200, saldo: 800 }, { fecha: D_GASTO, descripcion: 'IVA 21%', importe: -42, saldo: 758 }])
 await como('teso@prueba.com')
 const f1 = (await val(`select generar_comprobante_gastos($1, $2) id`, [ca, D_GASTO])).id
 const f2 = (await val(`select generar_comprobante_gastos($1, $2) id`, [cc2, D_GASTO])).id
 fs = await filas(`select id, punto_venta, numero, total::text, cuenta_origen_extracto_id as cta from facturas where id in ($1, $2)`, [f1, f2])
 const F1 = fs.find((f) => f.id === f1), F2 = fs.find((f) => f.id === f2)
-check('[2] dos cuentas del mismo banco el mismo día: dos comprobantes (09990 y 09991), $100 y $200',
-  f1 !== f2 && F1.punto_venta === 9990 && F2.punto_venta === 9991 && F1.total === '100.00' && F2.total === '200.00' && F1.cta === ca && F2.cta === cc2, JSON.stringify(fs))
+check('[2] dos cuentas del mismo banco el mismo día: dos comprobantes (09990 y 09991), $121 y $242 (comisión + IVA)',
+  f1 !== f2 && F1.punto_venta === 9990 && F2.punto_venta === 9991 && F1.total === '121.00' && F2.total === '242.00' && F1.cta === ca && F2.cta === cc2, JSON.stringify(fs))
 check('[2] cada movimiento apunta al comprobante de su cuenta',
   (await val(`select count(*)::int n from movimientos_bancarios m join facturas f on f.id = m.factura_id where f.id in ($1, $2) and f.cuenta_origen_extracto_id <> m.cuenta_origen_id`, [f1, f2])).n === 0
-  && (await val(`select count(*)::int n from movimientos_bancarios where factura_id in ($1, $2)`, [f1, f2])).n === 2)
+  && (await val(`select count(*)::int n from movimientos_bancarios where factura_id in ($1, $2)`, [f1, f2])).n === 4)
 check('[2] regenerar el de una cuenta no toca el de la otra',
-  (await val(`select generar_comprobante_gastos($1, $2) id`, [ca, D_GASTO])).id === f1 && (await val(`select total::text t from facturas where id = $1`, [f2])).t === '200.00')
+  (await val(`select generar_comprobante_gastos($1, $2) id`, [ca, D_GASTO])).id === f1 && (await val(`select total::text t from facturas where id = $1`, [f2])).t === '242.00')
 await servidor()
 const tercera = await cuenta('india', 'BANCO PRUEBA USD', 'CC', { cuit: '30999999991' })
 check('[2] una tercera cuenta del banco toma el 2; sin CUIT de banco no tiene dígito',
@@ -160,7 +160,7 @@ check('[13] lo facturable que llega después de subir el comprobante aparece en 
 // ================================================================ [12] El subidor general no toma comprobantes bancarios
 await db.query(`update facturas set estado = 'PARA_PAGAR', aprobado_en = now() - interval '1 day' where cuenta_origen_extracto_id is not null and estado = 'PENDIENTE_APROBACION'`)
 for (let i = 0; i < 4; i++) {
-  await importar(cc2, 'c' + i, [{ fecha: dia(-20 - i), descripcion: 'COMISION MANTENIMIENTO', importe: -10, saldo: 1000 }])
+  await importar(cc2, 'c' + i, [{ fecha: dia(-20 - i), descripcion: 'COMISION MANTENIMIENTO', importe: -10, saldo: 1000 }, { fecha: dia(-20 - i), descripcion: 'IVA 21%', importe: -2.1, saldo: 997.9 }])
   await db.query(`select generar_comprobante_gastos($1, $2)`, [cc2, dia(-20 - i)])
 }
 await db.query(`update facturas set estado = 'PARA_PAGAR', aprobado_en = now() - interval '1 day' where cuenta_origen_extracto_id is not null and estado = 'PENDIENTE_APROBACION'`)
@@ -258,7 +258,7 @@ check('[1] …y los avisos del control se van',
 // ================================================================ [14] Reclasificar como gasto bancario
 await servidor()
 const D_RE = dia(-9)
-await importar(ca, 'h7', [{ fecha: D_RE, descripcion: 'DEBITO PAQ XYZ', importe: -50, saldo: 3450 }, { fecha: D_RE, descripcion: 'COMISION MANTENIMIENTO', importe: -20, saldo: 3430 }])
+await importar(ca, 'h7', [{ fecha: D_RE, descripcion: 'DEBITO PAQ XYZ', importe: -50, saldo: 3450 }, { fecha: D_RE, descripcion: 'IVA 21%', importe: -20, saldo: 3430 }])
 const mid = (await val(`select id from movimientos_bancarios where descripcion = 'DEBITO PAQ XYZ'`)).id
 await como('teso@prueba.com')
 await db.query(`select reclasificar_movimiento($1, 'GASTO_BANCARIO', 'GASTOS BANCARIOS', 'PAQ XYZ')`, [mid])
@@ -271,8 +271,8 @@ check('[14] el comprobante del día lo incluye ($70)', fRe !== null && (await va
 await db.query(`select reclasificar_movimiento($1, 'IMPUESTO', 'IVA COMPRAS', null, 'IVA')`, [mid])
 mv = await val(`select destino_xubio, componente, factura_id from movimientos_bancarios where id = $1`, [mid])
 const fRe2 = await val(`select neto::text, iva::text, total::text from facturas where id = $1`, [fRe])
-check('[14] con componente: IVA dentro del comprobante, que se rehace solo (neto 20 + IVA 50)',
-  mv.componente === 'IVA' && mv.factura_id === fRe && fRe2.neto === '20.00' && fRe2.iva === '50.00' && fRe2.total === '70.00', JSON.stringify([mv, fRe2]))
+check('[14] con componente: IVA dentro del comprobante, que se rehace solo (IVA 20 + 50 reclasificado)',
+  mv.componente === 'IVA' && mv.factura_id === fRe && fRe2.neto === '0.00' && fRe2.iva === '70.00' && fRe2.total === '70.00', JSON.stringify([mv, fRe2]))
 await db.query(`select reclasificar_movimiento($1, 'INFORMATIVO', null)`, [mid])
 mv = await val(`select destino_xubio, componente, factura_id from movimientos_bancarios where id = $1`, [mid])
 check('[14] si sale del comprobante, se suelta y el comprobante baja a $20',
@@ -383,7 +383,7 @@ await fila(uDax, 'Gastos bancarios', { cuenta: 'GASTOS BANCARIOS', orden: 320 })
 await fila(uDax, 'Proveedores', { cuenta: 'PROVEEDORES', orden: 330 })
 await fila(uDax, 'Proveedores · Insumos del Sur', { cuenta: 'PROVEEDORES', apertura: 'Insumos del Sur', tipo: 'APERTURA', orden: 331 })
 const P0 = dia(-7), P1 = dia(-6), P2 = dia(-5), P3 = dia(-4)
-await db.query(`insert into pagos (empresa_id, proveedor_id, fecha, importe, medio, cuenta_contable, cargado_por, cuenta_origen_id) values ('beratung', $1, $2, 1000, 'TRANSFERENCIA', 'PROVEEDORES', 'teso@prueba.com', $3)`, [provDax, P1, dx])
+await db.query(`insert into pagos (empresa_id, proveedor_id, fecha, importe, medio, cuenta_contable, cargado_por, cuenta_origen_id, estado_xubio_pago) values ('beratung', $1, $2, 1000, 'TRANSFERENCIA', 'PROVEEDORES', 'teso@prueba.com', $3, 'SUBIDO')`, [provDax, P1, dx])
 r = await importar(dx, 'h3', [
   { fecha: P0, descripcion: 'DEPOSITO INICIAL', importe: 5000, saldo: 5000 },
   { fecha: P1, descripcion: 'TRANSF. A PROVEEDOR CBU 0000', importe: -1000, saldo: 4000 },

@@ -96,7 +96,7 @@ check('Ley 25413 → impuesto al asiento', JSON.stringify(await cat('IMP LEY 254
 check('comisión → neto del comprobante', (await cat('COMISION MANTENIMIENTO CUENTA')).componente === 'NETO')
 check('percepción IVA gana a "IVA" por orden', (await cat('PERCEPCION IVA RG 2408')).componente === 'PERCEPCION_IVA')
 check('IVA → IVA del comprobante', (await cat('I.V.A. BASE')).componente === 'IVA')
-check('SIRCREB → dentro del comprobante (19/11)', (await cat('SIRCREB RETENCION')).componente === 'PERCEPCION_IIBB')
+check('SIRCREB → al asiento del día (0034, como el Apps Script del 26/11)', (await cat('SIRCREB RETENCION')).destino_xubio === 'ASIENTO' && (await cat('SIRCREB RETENCION')).componente === null)
 check('sin regla → A_REVISAR', (await cat('MOVIMIENTO RARO SIN REGLA')).estado === 'A_REVISAR')
 
 // ---------------------------------------------------------------- Conciliación
@@ -145,8 +145,8 @@ await falla('un día con movimientos no se marca sin movimientos', `select marca
 // ---------------------------------------------------------------- Comprobante "Extracto Bancario" (caso ICBC/Chubut)
 const fid = (await val(`select generar_comprobante_gastos($1, '2026-11-24') id`, [ca])).id
 let f = await val(`select f.*, p.cuit from facturas f join proveedores p on p.id = f.proveedor_id where f.id = $1`, [fid])
-check('comprobante: neto 100 + IVA 21 + percepciones 7 = 128', n(f.neto) === 100 && n(f.iva) === 21 && n(f.percepciones) === 7 && n(f.total) === 128, `${f.neto} ${f.iva} ${f.percepciones}`)
-check('comprobante: 09990-20261124 del banco (por CUIT), nace pagado', f.punto_venta === 9990 && f.numero === 20261124 && f.cuit === '30999999991' && n(f.pagado) === 128)
+check('comprobante: neto 100 + IVA 21 + percepciones 3 = 124 (el SIRCREB de 4 va al asiento)', n(f.neto) === 100 && n(f.iva) === 21 && n(f.percepciones) === 3 && n(f.total) === 124, `${f.neto} ${f.iva} ${f.percepciones}`)
+check('comprobante: 09990-20261124 del banco (por CUIT), nace pagado', f.punto_venta === 9990 && f.numero === 20261124 && f.cuit === '30999999991' && n(f.pagado) === 124)
 check('regenerar el mismo día no duplica', (await val(`select generar_comprobante_gastos($1, '2026-11-24') = $2 x`, [ca, fid])).x)
 await como('admin@prueba.com')
 await db.query(`select aprobar_factura($1, 'GASTOS BANCARIOS', 'DEBITO')`, [fid])
@@ -163,9 +163,9 @@ await db.query(`update movimientos_bancarios set cuenta_contable = null where cu
 await como('teso@prueba.com')
 await falla('asiento con movimientos sin cuenta: pide clasificarlos', `select generar_asiento_bancario($1, '2026-11-24')`, [ca], /sin cuenta contable/)
 await servidor()
-await db.query(`update movimientos_bancarios set cuenta_contable = 'IMPUESTO DEB/CRED BANCARIO' where cuenta_origen_id = $1 and fecha = '2026-11-24' and destino_xubio = 'ASIENTO'`, [ca])
+await db.query(`update movimientos_bancarios set cuenta_contable = 'IMPUESTO DEB/CRED BANCARIO' where cuenta_origen_id = $1 and fecha = '2026-11-24' and destino_xubio = 'ASIENTO' and descripcion like 'IMP LEY%'`, [ca])
 const a24 = (await val(`select generar_asiento_bancario($1, '2026-11-24') id`, [ca])).id
-check('asiento 24/11: los dos impuestos iguales netos en una línea de 12', n((await val(`select debe from asiento_lineas where asiento_id = $1 and debe > 0`, [a24])).debe) === 12)
+check('asiento 24/11: los dos impuestos iguales netos en una línea de 12', n((await val(`select debe from asiento_lineas where asiento_id = $1 and debe > 0 order by debe desc limit 1`, [a24])).debe) === 12)
 await como('teso@prueba.com')
 const aid = (await val(`select generar_asiento_bancario($1, '2026-11-25') id`, [ca])).id
 const ls = await filas(`select cuenta_contable, debe::float, haber::float from asiento_lineas where asiento_id = $1 order by debe desc`, [aid])
@@ -241,7 +241,10 @@ await falla('Dirección ve pero no ajusta el Flujo', `select ajustar_linea_flujo
 // Unidad de India con tres cuentas que exigen extracto; el FCI se vio arriba. Día 25: CA 844, FCI 7.907,01, MP 282.802,87.
 // Día 26: CA 344 (−500 suscripción), FCI 8.407,50 (+500 + 0,49), MP 282.802,87 (sin mov., confirmado).
 await como('teso@prueba.com')
-await db.query(`select marcar_sin_movimientos($1, '2026-11-26', true)`, [mp])
+// (0034: "sin movimientos" solo vale para días cerrados y el 26/11 es hoy: se carga el saldo repetido como lo haría la función)
+await servidor()
+await db.query(`insert into saldos_bancarios (cuenta_origen_id, fecha, empresa_id, saldo, origen, cargado_por) select id, '2026-11-26', empresa_id, 282802.87, 'SIN_MOVIMIENTOS', 'teso@prueba.com' from cuentas_origen where id = $1`, [mp])
+await como('teso@prueba.com')
 const ctrl = await val(`select * from flujo_control where unidad_id = $1 and fecha = '2026-11-26'`, [unidadIndia])
 check('control 26/11: el cambio en bancos (0,49) = lo real del día → OK', ctrl && ctrl.estado === 'OK', JSON.stringify(ctrl && { d: ctrl.diferencia, r: ctrl.real_del_periodo, e: ctrl.estado }))
 await servidor()

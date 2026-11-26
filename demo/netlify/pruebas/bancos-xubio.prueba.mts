@@ -77,6 +77,8 @@ function mundo(tablas: Record<string, Fila[]> = {}, xubio: Externo = xubioFalso(
         { email: 'controller@prueba.com', nombre: 'Santi', rol: 'CONTROLLER', activo: true, todas_empresas: true },
         { email: 'baja@prueba.com', nombre: 'Baja', rol: 'TESORERIA', activo: false, todas_empresas: true },
       ],
+      cuentas_origen: [{ id: CUENTA_BANCO, empresa_id: 'beratung', nombre: 'Hipotecario CC 0319', cuenta_contable_id: 'cc-banco' }],
+      cuentas_contables: [{ id: 'cc-banco', nombre: 'Banco Hipotecario CC 0319' }],
       facturas: [], asientos: [], asiento_lineas: [], movimientos_bancarios: [], pagos: [], cheques: [],
       xubio_log: [], procesos_log: [], conexiones_erp: [], control_envios: [], control_bancos: [],
       ...tablas,
@@ -132,6 +134,7 @@ const item = (enviado?.payload.transaccionProductoItems as Fila[] | undefined)?.
 check('…neto al producto GASTOS_BANCARIOS (por código) e IVA en el ítem', (item?.producto as Fila | undefined)?.codigo === 'GASTOS_BANCARIOS' && item?.precio === 1000 && item?.iva === 210)
 const perc = (enviado?.payload.transaccionPercepcionItems as Fila[] | undefined) ?? []
 check('…la percepción de IIBB va en percepciones, con la cuenta de la regla', perc.length === 1 && perc[0].importe === 50 && (perc[0].percepcionImpuesto as Fila).codigo === 'PERCEPCION_IIBB' && (perc[0].percepcionImpuesto as Fila).nombre === 'RETENCIÓN BANCARIA IIBB (SIRCREB)')
+check('…y manda la cuenta bancaria de Xubio (la del banco en el plan de cuentas), no vacía', (enviado?.payload.cuentaBancaria as Fila | undefined)?.ID === 2 && (enviado?.payload.cuentaBancaria as Fila | undefined)?.nombre === 'Banco Hipotecario CC 0319')
 check('…y queda en procesos_log en modo PRUEBA', log(m, 'COMPROBANTE')[0]?.modo === 'PRUEBA' && log(m, 'COMPROBANTE')[0]?.estado === 'PRUEBA_OK')
 
 // Real: sube una vez; la segunda corrida no lo vuelve a mandar.
@@ -145,6 +148,22 @@ Object.assign(m.tablas.facturas[0], { estado_xubio: 'PENDIENTE', xubio_id: null 
 r = await correr(m, true)
 check('…y si ya está en Xubio con el mismo número y banco, se vincula sin duplicar', aXubio(m, 'POST', 'comprobanteCompraBean').length === 1 && m.tablas.facturas[0].estado_xubio === 'SUBIDA' && /Ya estaba en Xubio/.test(r.items[0]?.detalle ?? ''), JSON.stringify(r.items))
 check('…procesos_log: OK en modo REAL', log(m, 'COMPROBANTE').some((l) => l.estado === 'OK' && l.modo === 'REAL'))
+
+// Sin cuenta contable en la cuenta bancaria, o sin esa cuenta en Xubio: error claro, nada se manda ni se sube vacío.
+m = mundo({ facturas: [factura()], cuentas_origen: [{ id: CUENTA_BANCO, empresa_id: 'beratung', nombre: 'Hipotecario CC 0319', cuenta_contable_id: null }] })
+r = await correr(m, true)
+check('cuenta bancaria sin cuenta contable: ERROR claro y no se sube', aXubio(m, 'POST', 'comprobanteCompraBean').length === 0 && m.tablas.facturas[0].estado_xubio === 'ERROR' && /no tiene su cuenta contable/.test(String(m.tablas.facturas[0].xubio_error)), String(m.tablas.facturas[0].xubio_error))
+m = mundo({ facturas: [factura()], cuentas_contables: [{ id: 'cc-banco', nombre: 'Banco Que No Existe' }] })
+r = await correr(m, true)
+check('cuenta que no está en el plan de Xubio: ERROR que la nombra y no se sube', aXubio(m, 'POST', 'comprobanteCompraBean').length === 0 && /Banco Que No Existe/.test(String(m.tablas.facturas[0].xubio_error)), String(m.tablas.facturas[0].xubio_error))
+let falloArmado = ''
+try { (await import('../functions/lib/xubio-armado.ts')).facturaCompra({ ...(factura() as never), percepciones_json: [], descripcion: '' } as never, { ID: 1, id: 1, nombre: 'B', codigo: '' }, { ID: 2, id: 2, nombre: 'P', codigo: '' }) } catch (e) { falloArmado = String(e) }
+check('el armado se niega a mandar un Extracto Bancario sin cuenta bancaria', /cuenta bancaria/.test(falloArmado))
+// Real: la cuenta bancaria viaja en el POST.
+xf = xubioFalso()
+m = mundo({ facturas: [factura()] }, xf.handler)
+await correr(m, true)
+check('real: el POST lleva cuentaBancaria con el ID de Xubio', (aXubio(m, 'POST', 'comprobanteCompraBean')[0]?.cuerpo as Fila | undefined)?.cuentaBancaria != null && ((aXubio(m, 'POST', 'comprobanteCompraBean')[0]?.cuerpo as Fila).cuentaBancaria as Fila).ID === 2)
 
 // Una factura común no la toca este circuito (la sube el subidor de facturas).
 m = mundo({ facturas: [factura({ tipo: 'Factura A', cuenta_origen_extracto_id: null })] })

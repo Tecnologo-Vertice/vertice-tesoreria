@@ -58,8 +58,8 @@ const factura = async (empresa, proveedor, total, vence, extra = {}) => (await v
    values ($1, $2, 'Factura A', 'A', 1, $3, $4, $5, $6, $6, 'PARA_PAGAR', $7, $8, 'PROVEEDORES LOCALES') returning id`,
   [empresa, proveedor, nro++, extra.fecha ?? dia(-10), vence, total, extra.pagado ?? 0, extra.anticipo_pct ?? null])).id
 const pago = async (empresa, proveedor, importe, extra = {}) => (await val(
-  `insert into pagos (empresa_id, proveedor_id, fecha, importe, medio, cargado_por, tipo_pago, forma_carga_xubio, factura_asociada, estado)
-   values ($1, $2, $3, $4, 'TRANSFERENCIA', 'teso@prueba.com', $5, $6, $7, $8) returning id`,
+  `insert into pagos (empresa_id, proveedor_id, fecha, importe, medio, cargado_por, tipo_pago, forma_carga_xubio, factura_asociada, estado, estado_xubio_pago)
+   values ($1, $2, $3, $4, 'TRANSFERENCIA', 'teso@prueba.com', $5, $6, $7, $8, 'SUBIDO') returning id`,
   [empresa, proveedor, extra.fecha ?? dia(-3), importe, extra.tipo_pago ?? 'SIN_FACTURA', extra.forma ?? 'SALIDA_FONDOS',
    extra.factura_asociada ?? null, extra.estado ?? 'CARGADO'])).id
 const proyectado = async (facturaId) => filas(

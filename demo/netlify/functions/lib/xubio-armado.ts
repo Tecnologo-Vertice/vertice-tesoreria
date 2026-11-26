@@ -52,7 +52,19 @@ export interface FacturaParaXubio {
   descripcion?: string
 }
 
-export function facturaCompra(f: FacturaParaXubio, proveedor: Ref, producto: Ref) {
+/** ¿Es el comprobante de gastos bancarios que sale del extracto? */
+export const esExtractoBancario = (tipo: string) => tipoComprobante(tipo) === 8
+
+/**
+ * cuentaBancaria: obligatoria en el comprobante "Extracto Bancario" (sin ella Xubio responde "La cuenta bancaria
+ * no existe", como pasó con el Apps Script de producción; Code.js construirFacturaCompra_). Es la cuenta del
+ * banco en el plan de Xubio. En una factura común se manda vacía, como siempre.
+ */
+export function facturaCompra(f: FacturaParaXubio, proveedor: Ref, producto: Ref, cuentaBancaria?: Ref | null) {
+  const extracto = esExtractoBancario(f.tipo)
+  if (extracto && !(cuentaBancaria && cuentaBancaria.ID > 0)) {
+    throw new Error('El comprobante Extracto Bancario necesita la cuenta bancaria de Xubio: no se manda vacía')
+  }
   const percepciones = (f.percepciones_json ?? [])
     .filter((p) => Number(p.importe) > 0)
     .map((p) => ({
@@ -69,7 +81,7 @@ export function facturaCompra(f: FacturaParaXubio, proveedor: Ref, producto: Ref
     circuitoContable: CIRCUITO,
     comprobante: 0,
     fechaFiscal: f.fecha,
-    cuentaBancaria: VACIO,
+    cuentaBancaria: extracto && cuentaBancaria ? { ID: cuentaBancaria.ID, nombre: cuentaBancaria.nombre, codigo: cuentaBancaria.codigo, id: cuentaBancaria.ID } : VACIO,
     transaccionid: 0,
     externalId: f.id, // MEJORA: Code.gs dejaba "". Con el id propio, la factura se encuentra en Xubio sin adivinar.
     tipo: tipoComprobante(f.tipo),

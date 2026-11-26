@@ -54,8 +54,9 @@ const saldo = (c, fecha, s, origen = 'EXTRACTO') => db.query(
   `insert into saldos_bancarios (cuenta_origen_id, fecha, empresa_id, saldo, origen, cargado_por) values ($1, $2, 'beratung', $3, $4, 'prueba')
    on conflict (cuenta_origen_id, fecha) do update set saldo = excluded.saldo, origen = excluded.origen`, [c, fecha, s, origen])
 const pago = async (importe, fecha, extra = {}) => (await val(
-  `insert into pagos (empresa_id, fecha, importe, medio, cargado_por, cuenta_origen, banco_origen, numero_cuenta, proveedor_destino, estado)
-   values ('beratung', $1, $2, $3, 'prueba', $4, $5, $6, $7, 'CARGADO') returning id, cuenta_origen_id`,
+  `insert into pagos (empresa_id, fecha, importe, medio, cargado_por, cuenta_origen, banco_origen, numero_cuenta, proveedor_destino, estado, estado_xubio_pago)
+   values ('beratung', $1, $2, $3, 'prueba', $4, $5, $6, $7, 'CARGADO', 'SUBIDO')   -- 0034: al Flujo entran los pagos que están en Xubio
+   returning id, cuenta_origen_id`,
   [fecha, importe, extra.medio ?? 'TRANSFERENCIA', extra.cuenta ?? null, extra.banco ?? null, extra.numero ?? null, extra.proveedor ?? 'Proveedor Prueba SRL']))
 const linea = async (tipo, id) => val(`select l.fecha::text, l.importe::text, u.codigo as unidad, l.fila, l.afecta_bancos
   from flujo_lineas l join unidades u on u.id = l.unidad_id where l.origen_tipo = $1 and l.origen_id = $2 and l.naturaleza = 'REAL'`, [tipo, id])
@@ -112,7 +113,7 @@ check('anular el pago vinculado suelta el débito y lo toma el otro pago igual (
 
 // ---------------------------------------------------------------- 6. Efectivo
 const pc = (await pago(30, '2026-11-06', { medio: 'CAJA', banco: 'Caja' })).id
-check('pago en efectivo: real pero fuera del control contra bancos (afecta_bancos = false)', (await linea('PAGO', pc))?.afecta_bancos === false)
+check('pago en efectivo: no entra al Flujo (0034: se excluye como el motor; impacta por la reposición del fondo fijo)', !(await linea('PAGO', pc)))
 
 // ---------------------------------------------------------------- 4. FCI: la suscripción no es rendimiento
 await saldo(icbc, '2026-11-03', 5000); await saldo(fci, '2026-11-03', 0, 'TENENCIA')

@@ -5,7 +5,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { env, ErrorHttp } from './comun'
 import * as xubio from './xubio'
-import { elegirProducto, elegirProveedor, facturaCompra, facturaYaExiste, idCreado, numeroDocumento, type Ref } from './xubio-armado'
+import { elegirProducto, elegirProveedor, esExtractoBancario, facturaCompra, facturaYaExiste, idCreado, numeroDocumento, type Ref } from './xubio-armado'
 
 export type ResultadoXubioFactura = { estado: 'SUBIDA' | 'EN_SECO' | 'ERROR' | 'NO_APLICA'; xubioId?: string; detalle: string }
 
@@ -55,7 +55,26 @@ export async function subirFacturaAXubio(db: SupabaseClient, facturaId: string, 
   if (!producto)
     return fallo(`No hay producto de compra en Xubio para la cuenta "${f.cuenta_contable ?? ''}"${codigoProducto ? ` ni con el código ${codigoProducto}` : ''}. Crear el producto en Xubio o cargar el código en la memoria del proveedor.`)
 
-  const payload = facturaCompra(f, proveedor, producto)
+  // Extracto Bancario: Xubio pide la cuenta bancaria (la contable de la cuenta del banco, buscada en el plan de
+  // cuentas como los asientos). Si no está, error claro: no se manda vacía.
+  let cuentaBancaria: Ref | null = null
+  if (f.cuenta_origen_extracto_id && esExtractoBancario(f.tipo)) {
+    const { data: co } = await db.from('cuentas_origen').select('id, nombre, cuenta_contable_id').eq('id', f.cuenta_origen_extracto_id).maybeSingle()
+    if (!co) return fallo('El comprobante del extracto apunta a una cuenta bancaria que no existe')
+    if (!co.cuenta_contable_id) return fallo(`La cuenta ${co.nombre} no tiene su cuenta contable de Xubio: cargarla en Cuentas antes de subir el comprobante`)
+    const { data: cc } = await db.from('cuentas_contables').select('nombre').eq('id', co.cuenta_contable_id).maybeSingle()
+    if (!cc?.nombre) return fallo(`La cuenta contable de ${co.nombre} no existe`)
+    let plan: xubio.RefXubio[]
+    try {
+      plan = await xubio.cuentas(t)
+    } catch (e) {
+      return fallo(`No se pudo leer el plan de cuentas de Xubio: ${e instanceof Error ? e.message : e}`)
+    }
+    cuentaBancaria = xubio.buscarCuenta(plan, String(cc.nombre))
+    if (!cuentaBancaria || !(cuentaBancaria.ID > 0)) return fallo(`No encuentro en el plan de cuentas de Xubio la cuenta bancaria "${cc.nombre}" (${co.nombre}): el comprobante necesita la cuenta del banco`)
+  }
+
+  const payload = facturaCompra(f, proveedor, producto, cuentaBancaria)
   const nroDoc = numeroDocumento(f.letra, f.punto_venta, f.numero)
 
   // Duplicado: si ya está en Xubio (subida por el Apps Script o a mano), se toma su id y no se vuelve a crear.
