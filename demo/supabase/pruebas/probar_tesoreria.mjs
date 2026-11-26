@@ -56,7 +56,7 @@ await db.exec(`
 `)
 const cc = async (nombre) => (await val(`select id from cuentas_contables where nombre = $1`, [nombre])).id
 const ca = (await val(`insert into cuentas_origen (empresa_id, nombre, banco, clase, cuit_banco, cuenta_contable_id, patrones)
-  values ('india', 'HIPOTECARIO CA-0010', 'HIPOTECARIO', 'CA', '30500011072', $1, '{hipotecario ca-0010}') returning id`, [await cc('Banco Hipotecario CA')])).id
+  values ('india', 'HIPOTECARIO CA-0010', 'HIPOTECARIO', 'CA', '30999999991', $1, '{hipotecario ca-0010}') returning id`, [await cc('Banco Hipotecario CA')])).id
 const fci = (await val(`insert into cuentas_origen (empresa_id, nombre, banco, clase, cuenta_madre_id)
   values ('india', 'HIPOTECARIO FCI', 'HIPOTECARIO', 'FCI', $1) returning id`, [ca])).id
 const mp = (await val(`insert into cuentas_origen (empresa_id, nombre, banco, clase, rinde_diario, cuenta_contable_id)
@@ -146,7 +146,7 @@ await falla('un día con movimientos no se marca sin movimientos', `select marca
 const fid = (await val(`select generar_comprobante_gastos($1, '2026-11-24') id`, [ca])).id
 let f = await val(`select f.*, p.cuit from facturas f join proveedores p on p.id = f.proveedor_id where f.id = $1`, [fid])
 check('comprobante: neto 100 + IVA 21 + percepciones 7 = 128', n(f.neto) === 100 && n(f.iva) === 21 && n(f.percepciones) === 7 && n(f.total) === 128, `${f.neto} ${f.iva} ${f.percepciones}`)
-check('comprobante: 09990-20261124 del banco (por CUIT), nace pagado', f.punto_venta === 9990 && f.numero === 20261124 && f.cuit === '30500011072' && n(f.pagado) === 128)
+check('comprobante: 09990-20261124 del banco (por CUIT), nace pagado', f.punto_venta === 9990 && f.numero === 20261124 && f.cuit === '30999999991' && n(f.pagado) === 128)
 check('regenerar el mismo día no duplica', (await val(`select generar_comprobante_gastos($1, '2026-11-24') = $2 x`, [ca, fid])).x)
 await como('admin@prueba.com')
 await db.query(`select aprobar_factura($1, 'GASTOS BANCARIOS', 'DEBITO')`, [fid])

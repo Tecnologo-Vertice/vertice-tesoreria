@@ -31,7 +31,7 @@ function xubioFalso(opc: OpcXubio = {}) {
   const handler: Externo = (p, corte) => {
     const r = p.ruta.replace('/API/1.1/', '')
     if (r === 'TokenEndpoint') return json({ access_token: 't', token_type: 'Bearer' })
-    if (r === 'ProveedorBean') return json([{ proveedorid: 300, nombre: 'BANCO HIPOTECARIO S.A.', CUIT: '30-50001107-2' }])
+    if (r === 'ProveedorBean') return json([{ proveedorid: 300, nombre: 'BANCO HIPOTECARIO S.A.', CUIT: '30-99999999-1' }])
     // El nombre no coincide con la cuenta: se elige por el código GASTOS_BANCARIOS.
     if (r === 'ProductoCompraBean') return json([{ productoid: 40, nombre: 'Comisiones y gastos de banco', codigo: 'GASTOS_BANCARIOS' }])
     if (r === 'comprobanteCompraBean' && p.metodo === 'GET') return json(creadas)
@@ -55,7 +55,7 @@ const factura = (extra: Fila = {}): Fila => ({
   cuenta_origen_extracto_id: CUENTA_BANCO, letra: null, punto_venta: 9990, numero: 20261125, fecha: '2026-11-25', vencimiento: '2026-11-25', cotizacion: 1,
   neto: 1000, iva: 210, exento: 0, percepciones: 50, total: 1260, codigo_producto: null, cuenta_contable: 'GASTOS BANCARIOS',
   percepciones_json: [{ tipo: 'PERCEPCION_IIBB', cuenta: 'RETENCIÓN BANCARIA IIBB (SIRCREB)', importe: 50, movimiento: 'm3' }],
-  proveedores: { nombre: 'BANCO HIPOTECARIO S.A.', cuit: '30500011072' }, empresas: EMPRESA, ...extra,
+  proveedores: { nombre: 'BANCO HIPOTECARIO S.A.', cuit: '30999999991' }, empresas: EMPRESA, ...extra,
 })
 const asiento = (extra: Fila = {}): Fila => ({
   id: A1, empresa_id: 'beratung', cuenta_origen_id: CUENTA_BANCO, fecha: '2026-11-25', tipo: 'BANCARIO_DIARIO', descripcion: 'Movimientos del extracto Hipotecario 25/11/2026',
