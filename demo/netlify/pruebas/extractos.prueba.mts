@@ -729,4 +729,40 @@ check('base sin 0029: a_revisar 0 y el resto igual', r.status === 200 && res.aRe
 check('respuesta vieja de la función (solo "cuentas"): la pantalla igual suma',
   (() => { const v = leerResultadoExtracto({ cuentas: [{ cuenta_origen_id: 'a', cuenta: 'A', parte: 'CC', nuevos: 2, movimientos: 3 }, { cuenta_origen_id: 'b', cuenta: 'B', parte: 'REMUNERADA', nuevos: 1, movimientos: 1, repetido: true }] }); return v.nuevos === 3 && v.movimientos === 4 && v.repetido === false })())
 
+// ================================================================ ¿El archivo es de la cuenta elegida? (T-208, revisión T-207 hallazgo 9)
+const { verificarCuentaDelArchivo } = await import('../functions/lib/extractos/cuenta-del-archivo.ts')
+const caH = { id: 'h-ca', nombre: 'HIPOTECARIO CA', numero: '4-001-0000111222-3', cbu: null }
+const ccH = { id: 'h-cc', nombre: 'HIPOTECARIO CC', numero: '3-001-0000999888-7', cbu: '0440001130000099988870' }
+check('cuenta del archivo: el número de la elegida está en el nombre → coincide', verificarCuentaDelArchivo('Extracto_CA40010000111222 3.csv', '', caH, [ccH]).estado === 'COINCIDE')
+check('…los últimos dígitos en el nombre alcanzan', verificarCuentaDelArchivo('SaldMovs_CA-1112223.csv', '', caH, [ccH]).estado === 'COINCIDE')
+const otra = verificarCuentaDelArchivo('SaldMovs_CC-0009998887.csv', '', caH, [ccH])
+check('…el número de OTRA cuenta del banco → no es de la elegida', otra.estado === 'OTRA' && otra.cuenta.id === 'h-cc')
+check('…el CBU en el encabezado del CSV también cuenta', verificarCuentaDelArchivo('movimientos.csv', 'Cuenta;CBU 0440001130000099988870\nFecha;Importe', caH, [ccH]).estado === 'OTRA')
+check('…una fecha en el nombre no se confunde con un número de cuenta', verificarCuentaDelArchivo('extracto_20261124.csv', '', { ...caH, numero: '5520261124' }, [ccH]).estado === 'SIN_DATOS')
+const sinDatos = verificarCuentaDelArchivo('extracto.csv', '', caH, [ccH])
+check('…sin número en el archivo y con otra cuenta posible: avisa', sinDatos.estado === 'SIN_DATOS' && /revisá que sea de HIPOTECARIO CA/.test(sinDatos.aviso ?? ''))
+const unica = verificarCuentaDelArchivo('extracto.csv', '', caH, [])
+check('…sin otra cuenta del banco: no hay nada que avisar', unica.estado === 'SIN_DATOS' && unica.aviso === null)
+
+const dosDelBanco = [
+  { id: 'c-hip', empresa_id: 'india', nombre: 'HIPOTECARIO CA', banco: 'HIPOTECARIO', clase: 'CA', cuenta_madre_id: null, activa: true, numero: '4-001-0000111222-3' },
+  { id: 'c-hcc', empresa_id: 'india', nombre: 'HIPOTECARIO CC', banco: 'HIPOTECARIO', clase: 'CC', cuenta_madre_id: null, activa: true, numero: '3-001-0000999888-7' },
+  { id: 'c-sinb', empresa_id: 'india', nombre: 'CUENTA SIN BANCO', banco: null, clase: 'CC', cuenta_madre_id: null, activa: true },
+]
+m = mundo({ cuentas: dosDelBanco })
+r = await importar(comoPantalla('c-hip', 'SaldMovs_CC-0009998887.csv', latin(csvHipotecario())))
+cuerpo = await r.json()
+check('extracto de la CC subido en la CA del mismo banco: no importa nada y dice de cuál es', r.status === 422 && /parece de HIPOTECARIO CC/.test(cuerpo.error) && importaciones(m).length === 0 && subidas(m).length === 0, cuerpo.error)
+m = mundo({ cuentas: dosDelBanco })
+r = await importar(comoPantalla('c-hcc', 'SaldMovs_CC-0009998887.csv', latin(csvHipotecario())))
+check('…subido en su cuenta: entra', r.status === 200 && importaciones(m).length === 1 && importaciones(m)[0].cuenta_origen_id === 'c-hcc')
+m = mundo({ cuentas: dosDelBanco })
+r = await importar(comoPantalla('c-hip', 'x.csv', latin(csvHipotecario())))
+cuerpo = await r.json()
+check('…archivo sin número con dos cuentas del banco: entra con un aviso para revisar', r.status === 200 && (cuerpo.avisos as string[]).some((a) => /revisá que sea de HIPOTECARIO CA/.test(a)), JSON.stringify(cuerpo.avisos))
+m = mundo({ cuentas: dosDelBanco })
+r = await importar(comoPantalla('c-sinb', 'x.csv', latin(csvHipotecario())))
+cuerpo = await r.json()
+check('cuenta sin banco cargado: ya no acepta cualquier archivo', r.status === 422 && /no tiene el banco cargado/.test(cuerpo.error) && importaciones(m).length === 0, cuerpo.error)
+
 cerrar()

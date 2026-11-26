@@ -48,6 +48,7 @@ interface Store {
   tesoreria: DatosTesoreria | null
   subirExtracto: (archivo: File, cuentaId: string, opciones?: OpcionesExtracto) => Promise<ResultadoExtracto | null>
   reclasificarMovimiento: (id: string, categoria: CategoriaMovimiento, cuenta: string | null, aprender: string | null) => Promise<boolean>
+  asignarContraparte: (movimientoId: string, cuentaId: string | null) => Promise<boolean>
   marcarSinMovimientos: (cuentaId: string, fecha: string, confirmo: boolean) => Promise<boolean>
   registrarSaldo: (cuentaId: string, fecha: string, saldo: number, origen: Extract<OrigenSaldo, 'TENENCIA' | 'MANUAL'>) => Promise<boolean>
   generarComprobanteGastos: (cuentaId: string, fecha: string) => Promise<void>
@@ -288,6 +289,8 @@ export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fu
         ),
       reclasificarMovimiento: async (id, cat, cta, apr) =>
         (await accion(() => fuente.reclasificarMovimiento(id, cat, cta, apr, usuario).then(() => true), apr ? 'Reclasificado. Regla aprendida: la próxima vez entra sola' : 'Reclasificado')) === true,
+      asignarContraparte: async (id, cuentaId) =>
+        (await accion(() => fuente.asignarContraparte(id, cuentaId, usuario).then(() => true), cuentaId ? 'Contraparte asignada: la conciliación del fondo ya la descuenta' : 'Contraparte quitada')) === true,
       marcarSinMovimientos: async (c, f, conf) =>
         (await accion(() => fuente.marcarSinMovimientos(c, f, conf, usuario).then((s) => s), (s) => `Sin movimientos el ${fmtFecha(f)}: se repitió el saldo ${money(s)}`)) !== null,
       registrarSaldo: async (c, f, s, o) =>

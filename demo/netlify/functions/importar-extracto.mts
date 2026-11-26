@@ -9,7 +9,8 @@
 //                 filas, debitos, creditos, desde, hasta, saldo_final, saldos, resultado }] }
 //   repetido = el archivo ya estaba importado en TODAS sus cuentas; los totales suman las cuentas.
 // Pasos: lee el archivo (detecta banco y formato por el contenido) → controla que sea de la cuenta elegida
-// (mismo banco; tenencia de FCI solo a una cuenta FCI/remunerada) → si ya se importó, no hace nada → guarda
+// (mismo banco y, si el archivo trae el número de cuenta o el CBU, que no sea el de otra cuenta de ese banco;
+// tenencia de FCI solo a una cuenta FCI/remunerada) → si ya se importó, no hace nada → guarda
 // el archivo en <organización>/<empresa>/extractos/… → llama a importar_extracto (una vez por cuenta).
 // Brubank trae la CC y la remunerada en el mismo Excel: cada parte va a su cuenta (la remunerada es la que
 // tiene como cuenta madre a la CC, o la que se indique en cuentaRemuneradaId).
@@ -19,6 +20,7 @@ import type { Config } from '@netlify/functions'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { ErrorHttp, exigirEmpresa, exigirRol, json, manejar, supabaseAdmin, usuarioDesde, type UsuarioFn } from './lib/comun'
 import { ErrorExtracto, leerExtracto, totales, type CuentaLeida, type Leido } from './lib/extractos/index'
+import { verificarCuentaDelArchivo } from './lib/extractos/cuenta-del-archivo'
 
 /** Netlify corta los pedidos de más de 6 MB; en base64 eso es un archivo de unos 4 MB. */
 const MAX_BYTES = 4 * 1024 * 1024
@@ -36,8 +38,10 @@ interface Cuenta {
   clase: string
   cuenta_madre_id: string | null
   activa: boolean
+  numero?: string | null
+  cbu?: string | null
 }
-const COLUMNAS_CUENTA = 'id, empresa_id, nombre, banco, clase, cuenta_madre_id, activa'
+const COLUMNAS_CUENTA = 'id, empresa_id, nombre, banco, clase, cuenta_madre_id, activa, numero, cbu'
 const CLASES_TENENCIA = ['FCI', 'REMUNERADA']
 
 interface Pedido {
@@ -91,7 +95,27 @@ async function cuenta(db: SupabaseClient, id: string): Promise<Cuenta> {
   return data as Cuenta
 }
 
-const mismoBanco = (a: string | null, b: string) => !a || a.toUpperCase().replace(/[^A-Z]/g, '') === b.replace(/[^A-Z]/g, '')
+const mismoBanco = (a: string | null, b: string) => !!a && a.toUpperCase().replace(/[^A-Z]/g, '') === b.replace(/[^A-Z]/g, '')
+
+/**
+ * El banco coincide, pero ¿es ESA cuenta? Con dos cuentas del mismo banco en la empresa (CA y CC, o las de dos
+ * unidades) el archivo entraba en la que se eligiera. Se busca el número de cuenta o el CBU en el nombre del
+ * archivo y, si es CSV, en su encabezado: si es el de otra cuenta, no se importa; si no se puede saber, se avisa.
+ */
+async function controlarCuenta(db: SupabaseClient, principal: Cuenta, l: Leido, nombre: string, bytes: Uint8Array): Promise<string | null> {
+  const { data, error } = await db.from('cuentas_origen').select(COLUMNAS_CUENTA).eq('empresa_id', principal.empresa_id)
+  if (error) throw new ErrorHttp(500, error.message)
+  const tenencia = CLASES_TENENCIA.includes(principal.clase)
+  const hermanas = ((data ?? []) as Cuenta[]).filter(
+    (c) => c.id !== principal.id && c.activa !== false && mismoBanco(c.banco, l.banco) && CLASES_TENENCIA.includes(c.clase) === tenencia,
+  )
+  const encabezado = l.tipoArchivo === 'CSV' ? Buffer.from(bytes.subarray(0, 3000)).toString('latin1') : ''
+  const v = verificarCuentaDelArchivo(nombre, encabezado, principal, hermanas)
+  if (v.estado === 'OTRA') {
+    throw new ErrorHttp(422, `El archivo parece de ${v.cuenta.nombre} (su número está en el archivo) y elegiste ${principal.nombre}. No se importó nada.`)
+  }
+  return v.estado === 'SIN_DATOS' ? v.aviso : null
+}
 
 /** A qué cuenta va cada parte del archivo. */
 async function destinos(db: SupabaseClient, u: UsuarioFn, elegida: Cuenta, l: Leido, remuneradaId?: string): Promise<{ cuenta: Cuenta; parte: CuentaLeida }[]> {
@@ -117,7 +141,7 @@ async function destinos(db: SupabaseClient, u: UsuarioFn, elegida: Cuenta, l: Le
     else if (partes.has('REMUNERADA')) {
       const { data, error } = await db.from('cuentas_origen').select(COLUMNAS_CUENTA).eq('cuenta_madre_id', cc.id).in('clase', CLASES_TENENCIA)
       if (error) throw new ErrorHttp(500, error.message)
-      const hijas = ((data ?? []) as Cuenta[]).filter((c) => c.activa !== false && mismoBanco(c.banco, l.banco))
+      const hijas = ((data ?? []) as Cuenta[]).filter((c) => c.activa !== false && (!c.banco || mismoBanco(c.banco, l.banco)))
       if (hijas.length > 1) throw new ErrorHttp(409, `${cc.nombre} tiene ${hijas.length} cuentas remuneradas: indicá cuál en cuentaRemuneradaId`)
       rem = hijas[0] ?? null
     }
@@ -208,8 +232,12 @@ export default manejar(async (req) => {
     if (e instanceof ErrorExtracto) throw new ErrorHttp(422, e.message)
     throw e
   }
+  if (!elegida.banco) throw new ErrorHttp(422, `${elegida.nombre} no tiene el banco cargado: completalo en la cuenta antes de importar un extracto`)
   if (!mismoBanco(elegida.banco, l.banco)) throw new ErrorHttp(422, `El archivo es de ${l.banco} (${l.formato}) y la cuenta ${elegida.nombre} es de ${elegida.banco}`)
   const lista = await destinos(db, u, elegida, l, p.cuentaRemuneradaId)
+  // El control de cuenta va sobre la cuenta donde entra la parte principal del archivo (en Brubank, la CC).
+  const avisoCuenta = await controlarCuenta(db, lista[0].cuenta, l, p.nombre, p.bytes)
+  const avisos = avisoCuenta ? [...l.avisos, avisoCuenta] : l.avisos
 
   // ¿Ya se importó este mismo archivo en todas sus cuentas? Entonces no se guarda de nuevo.
   const { data: ya, error: eYa } = await db.from('extractos').select('id, cuenta_origen_id').eq('archivo_hash', l.hash).in('cuenta_origen_id', lista.map((d) => d.cuenta.id))
@@ -269,10 +297,10 @@ export default manejar(async (req) => {
     formato: l.formato,
     banco: l.banco,
     tenencia: l.tenencia,
-    detalle: detalleImportacion(l.tenencia, cuentas, l.avisos),
+    detalle: detalleImportacion(l.tenencia, cuentas, avisos),
     archivo: { nombre: p.nombre, hash: l.hash, path },
     cuentas,
-    avisos: l.avisos,
+    avisos,
   })
 })
 

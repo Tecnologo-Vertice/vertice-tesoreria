@@ -454,6 +454,18 @@ export class FuenteSupabase implements Fuente {
     return filas.map(map)
   }
 
+  /**
+   * El Flujo y su control en UNA llamada (flujo_rango y flujo_control_rango, 0031): la base aplica el rango de
+   * fechas antes de calcular y devuelve todo junto. Antes se pedía la vista de a 1000 filas y cada página la
+   * recalculaba entera. Si la base todavía no tiene 0031, lee la vista como antes.
+   */
+  private async porRango<T>(fn: string, args: Record<string, unknown>, vista: string, map: (r: Row) => T, filtrar: (q: Consulta) => Consulta, orden: [string, 'asc' | 'desc'][]): Promise<T[]> {
+    const { data, error } = await this.db.rpc(fn, args)
+    if (!error) return ((data ?? []) as Row[]).map(map)
+    if (error.code === 'PGRST202' || /could not find the function/i.test(error.message)) return this.consulta<T>(vista, map, filtrar, orden)
+    throw new Error(`${fn}: ${error.message}`)
+  }
+
   async cargarTesoreria(): Promise<DatosTesoreria> {
     const hoy = iso(new Date())
     const desde = iso(addDays(new Date(), -45))
@@ -541,7 +553,7 @@ export class FuenteSupabase implements Fuente {
         ),
         this.consulta<DocumentoBancario>(
           'facturas',
-          (r) => ({ id: String(r.id), tipo: 'COMPROBANTE', cuentaId: String(r.cuenta_origen_extracto_id), fecha: String(r.fecha), numero: `09990-${s(r.numero) ?? ''}`, total: n(r.total), estado: String(r.estado), estadoXubio: s(r.estado_xubio) }),
+          (r) => ({ id: String(r.id), tipo: 'COMPROBANTE', cuentaId: String(r.cuenta_origen_extracto_id), fecha: String(r.fecha), numero: `${String(nu(r.punto_venta) ?? 9990).padStart(5, '0')}-${s(r.numero) ?? ''}`, total: n(r.total), estado: String(r.estado), estadoXubio: s(r.estado_xubio) }),
           (q) => q.gte('fecha', desde).not('cuenta_origen_extracto_id', 'is', null),
           [['fecha', 'asc'], ['id', 'asc']],
         ),
@@ -571,7 +583,9 @@ export class FuenteSupabase implements Fuente {
           (q) => q.eq('activa', true),
           [['unidad_id', 'asc'], ['orden', 'asc'], ['id', 'asc']],
         ),
-        this.consulta<LineaFlujo>(
+        this.porRango<LineaFlujo>(
+          'flujo_rango',
+          { p_unidad: null, p_desde: desde, p_hasta: hasta },
           'flujo_lineas',
           (r) => ({
             empresaId: String(r.empresa_id),
@@ -593,7 +607,9 @@ export class FuenteSupabase implements Fuente {
           (q) => q.gte('fecha', desde).lte('fecha', hasta),
           [['fecha', 'asc'], ['origen_tipo', 'asc'], ['origen_id', 'asc'], ['ocurrencia', 'asc']],
         ),
-        this.consulta<ControlFlujo>(
+        this.porRango<ControlFlujo>(
+          'flujo_control_rango',
+          { p_desde: desde, p_hasta: null },
           'flujo_control',
           (r) => ({
             unidadId: String(r.unidad_id),
@@ -760,6 +776,10 @@ export class FuenteSupabase implements Fuente {
 
   async reclasificarMovimiento(id: string, categoria: CategoriaMovimiento, cuenta: string | null, aprender: string | null) {
     await this.rpc('reclasificar_movimiento', { p_id: id, p_categoria: categoria, p_cuenta: cuenta, p_aprender_patron: aprender })
+  }
+
+  async asignarContraparte(movimientoId: string, cuentaId: string | null) {
+    await this.rpc('asignar_contraparte', { p_mov: movimientoId, p_cuenta: cuentaId })
   }
 
   async marcarSinMovimientos(cuentaId: string, fecha: string, confirmo: boolean): Promise<number> {

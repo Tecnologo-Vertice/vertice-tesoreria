@@ -105,5 +105,16 @@ check('lectura de un banco: asociada a su cuenta', (await uno(`select c.nombre f
 check('cobro con su cuenta', (await uno(`select c.nombre, b.importe::text from cobros b join cuentas_origen c on c.id = b.cuenta_origen_id`))?.importe === '1500.25')
 check('log del robot: tres filas (dos del mismo minuto distintas)', (await uno(`select count(*)::int n from procesos_log`)).n === 3)
 
+// Con más de una organización hay que decir en cuál se carga (T-208, revisión T-207 hallazgo 21)
+const slug = (await uno(`select o.slug from organizaciones o join empresas e on e.organizacion_id = o.id limit 1`)).slug
+const otraOrg = (await uno(`insert into organizaciones (slug, nombre) values ('otra-prueba', 'Otra Organización de Prueba') returning id`)).id
+await db.query(`insert into empresas (id, nombre, nombre_corto, organizacion_id, cuit) values ('otra-prueba-sa', 'Otra Prueba SA', 'Otra', $1, '30000000007')`, [otraOrg])
+const intento = async (o) => { try { await cargar(db, plan, o); return 'ok' } catch (e) { return e.message } }
+check('dos organizaciones sin --organizacion: no carga y pide cuál', /indicá en cuál cargar con --organizacion/.test(await intento({})))
+check('…con la organización correcta: carga (y sigue sin duplicar)', (await intento({ organizacion: slug })) === 'ok')
+check('…con la organización equivocada: no carga empresas ajenas', /son de otra organización/.test(await intento({ organizacion: 'otra-prueba' })))
+check('…organización inexistente: lo dice', /No existe la organización/.test(await intento({ organizacion: 'no-existe' })))
+check('…nada quedó en la otra organización', (await uno(`select (select count(*) from flujo_reglas where organizacion_id = $1)::int + (select count(*) from acreedores where organizacion_id = $1)::int n`, [otraOrg])).n === 0)
+
 console.log(`\n${ok} OK · ${mal} MAL`)
 process.exit(mal ? 1 : 0)

@@ -11,6 +11,7 @@
 //   node scripts/migrar-desde-planillas/migrar.mjs --escribir --confirmo escribe en la base (SUPABASE_DB_URL)
 // Opciones: --reporte ARCHIVO.md (fuera del repo; por defecto en la carpeta temporal) · --desde AAAA-MM-DD (movimientos y saldos; 2026-11-02) · --hoy AAAA-MM-DD
 //           --guardar-instantaneas DIR (fuera del repo: tienen datos reales) · --migraciones DIR
+//           --organizacion SLUG (obligatoria si la base tiene más de una organización: en cuál se carga)
 //
 // Variables de entorno (las pone Santiago; nada de esto va al repo):
 //   PLANILLA_VBI, PLANILLA_MOTOR, PLANILLA_FLUJO_ORIGINAL, PLANILLA_CASHFLOW   IDs de las planillas
@@ -43,6 +44,7 @@ export function opciones(argv = process.argv.slice(2)) {
     else if (a === '--desde') o.desde = sig()
     else if (a === '--hoy') o.hoy = sig()
     else if (a === '--migraciones') o.migraciones = sig()
+    else if (a === '--organizacion') o.organizacion = sig()
     else throw new Error(`Opción desconocida: ${a}`)
   }
   o.hoy ??= new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Argentina/Buenos_Aires' }).format(new Date())
@@ -114,8 +116,8 @@ async function main() {
   let db, carga1, carga2, verificado, chequeos
   if (!op.escribir) {
     db = await basePrueba(op.migraciones)
-    carga1 = await cargar(db, plan)
-    carga2 = await cargar(db, plan)
+    carga1 = await cargar(db, plan, { organizacion: op.organizacion })
+    carga2 = await cargar(db, plan, { organizacion: op.organizacion })
     verificado = await verificar(db, plan)
     chequeos = await chequeosBase(db)
   } else {
@@ -127,7 +129,7 @@ async function main() {
     try {
       await cliente.query('set role service_role')
       db = cliente
-      carga1 = await cargar(db, plan)
+      carga1 = await cargar(db, plan, { organizacion: op.organizacion })
       verificado = await verificar(db, plan)
     } finally { await cliente.end() }
   }

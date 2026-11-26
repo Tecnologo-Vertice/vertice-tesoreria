@@ -337,7 +337,8 @@ export interface SaldoBancario {
   origen: OrigenSaldo
 }
 
-export type EstadoConciliacion = 'OK' | 'DIFERENCIA' | 'SIN_EXTRACTO' | 'SIN_MOVIMIENTOS' | 'PRIMER_SALDO'
+/** REVISAR: un FCI o remunerada "rindió" más del 1 % en un día: falta una suscripción o un rescate (0031). */
+export type EstadoConciliacion = 'OK' | 'DIFERENCIA' | 'REVISAR' | 'SIN_EXTRACTO' | 'SIN_MOVIMIENTOS' | 'PRIMER_SALDO'
 
 /** Una fila de la vista conciliacion_bancaria: banco vs calculado vs Xubio, por cuenta y día. */
 export interface Conciliacion {
@@ -362,7 +363,7 @@ export interface Conciliacion {
   estado: EstadoConciliacion
 }
 
-/** Comprobante "Extracto Bancario" (09990-AAAAMMDD) o asiento del día, por cuenta y fecha. */
+/** Comprobante "Extracto Bancario" (0999X-AAAAMMDD, X = dígito de la cuenta) o asiento del día, por cuenta y fecha. */
 export interface DocumentoBancario {
   id: string
   tipo: 'COMPROBANTE' | 'ASIENTO'

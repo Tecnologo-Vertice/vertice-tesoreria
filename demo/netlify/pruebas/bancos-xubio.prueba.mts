@@ -302,6 +302,27 @@ ev = enviadorFalso()
 rc = await control.enviarControlDiario(db, { organizacionId: ORG_PRUEBA, real: true, enviador: ev.enviador, ahora: AHORA })
 check('sin pendientes: igual sale el mail "sin pendientes"', rc.estado === 'OK' && /sin pendientes/.test(ev.enviados[0]?.asunto ?? ''))
 
+// Cada destinatario recibe solo las empresas que ve (T-208, revisión T-207 hallazgo 11).
+m = mundo({
+  empresas: [EMPRESA, { ...EMPRESA, id: 'india', nombre: 'India de Prueba S.A.' }],
+  usuarios: [
+    { email: 'tesoreria@prueba.com', nombre: 'Vivi', rol: 'TESORERIA', activo: true, todas_empresas: true, organizacion_id: ORG_PRUEBA },
+    { email: 'controller@prueba.com', nombre: 'Santi', rol: 'CONTROLLER', activo: true, todas_empresas: true, organizacion_id: ORG_PRUEBA },
+    { email: 'solo-beratung@prueba.com', nombre: 'Solo Beratung', rol: 'TESORERIA', activo: true, todas_empresas: false, organizacion_id: ORG_PRUEBA },
+    { email: 'sin-empresas@prueba.com', nombre: 'Sin empresas', rol: 'TESORERIA', activo: true, todas_empresas: false, organizacion_id: ORG_PRUEBA },
+  ],
+  control_bancos: [...hallazgos(), { empresa_id: 'india', control: 'DIFERENCIA', sujeto: 'Banco de India', fecha: '2026-11-25', detalle: 'Banco 10 · calculado 8', importe: 2, gravedad: 1 }],
+})
+m.rpc.empresas_visibles_de = (a) => (a.p_email === 'solo-beratung@prueba.com' ? ['beratung'] : a.p_email === 'sin-empresas@prueba.com' ? [] : ['beratung', 'india'])
+ev = enviadorFalso()
+rc = await control.enviarControlDiario(db, { organizacionId: ORG_PRUEBA, real: true, enviador: ev.enviador, ahora: AHORA })
+const mailSolo = ev.enviados.find((x) => x.para.includes('solo-beratung@prueba.com'))
+const mailTodo = ev.enviados.find((x) => x.para.includes('controller@prueba.com'))
+check('control por destinatario: un mail por cada conjunto de empresas visibles', rc.estado === 'OK' && ev.enviados.length === 2 && JSON.stringify(mailTodo?.para) === JSON.stringify(['controller@prueba.com', 'tesoreria@prueba.com']) && JSON.stringify(mailSolo?.para) === JSON.stringify(['solo-beratung@prueba.com']), JSON.stringify(ev.enviados.map((x) => x.para)))
+check('…quien ve solo una empresa no recibe datos de la otra', !!mailSolo && !/India de Prueba|Banco de India/.test(mailSolo.html) && /Beratung/.test(mailSolo.html) && /2 pendientes/.test(mailSolo.asunto), mailSolo?.asunto)
+check('…quien ve todas recibe todas', !!mailTodo && /India de Prueba/.test(mailTodo.html) && /Banco de India/.test(mailTodo.html) && /3 pendientes/.test(mailTodo.asunto), mailTodo?.asunto)
+check('…quien no ve ninguna empresa no recibe nada, y queda un solo registro del día', ev.enviados.every((x) => !x.para.includes('sin-empresas@prueba.com')) && m.tablas.control_envios.length === 1 && (m.tablas.control_envios[0].destinatarios as string[]).length === 3)
+
 // Nada de lo de arriba habló con un servicio que no fuera el simulado.
 check('ningún pedido salió del simulador', m.pedidos.every((p: Pedido) => p.url.startsWith('http://supabase.prueba') || p.url.startsWith('https://xubio.com/')))
 

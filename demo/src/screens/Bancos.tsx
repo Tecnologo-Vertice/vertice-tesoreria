@@ -75,7 +75,7 @@ export function Bancos() {
 // ---------------------------------------------------------------- Movimientos bancarios
 
 function Movimientos({ cuentas, dia, puede }: { cuentas: CuentaBancaria[]; dia: string; puede: boolean }) {
-  const { tesoreria, empresa, subirExtracto, generarComprobanteGastos, generarAsientoBancario } = useStore()
+  const { tesoreria, empresa, subirExtracto, generarComprobanteGastos, generarAsientoBancario, asignarContraparte } = useStore()
   const t = tesoreria!
   const [resultado, setResultado] = useState<{ cuenta: string; r: ResultadoExtracto } | null>(null)
   const [subiendo, setSubiendo] = useState<string | null>(null)
@@ -86,6 +86,7 @@ function Movimientos({ cuentas, dia, puede }: { cuentas: CuentaBancaria[]; dia: 
   const [extracto, setExtracto] = useState<CuentaBancaria | null>(null)
   const nombre = (id: string) => t.cuentas.find((c) => c.id === id)?.nombre ?? id
   const unidad = (id?: string) => t.unidades.find((u) => u.id === id)?.nombre
+  const fondosDe = (cuentaId: string) => t.cuentas.filter((c) => c.cuentaMadreId === cuentaId && (c.clase === 'FCI' || c.clase === 'REMUNERADA'))
 
   const ids = new Set(cuentas.map((c) => c.id))
   const movs = t.movimientos
@@ -276,6 +277,22 @@ function Movimientos({ cuentas, dia, puede }: { cuentas: CuentaBancaria[]; dia: 
                     {m.descripcion}
                   </p>
                   {m.contraparteCuentaId && <p className="text-[0.6875rem] text-seco">contra {nombre(m.contraparteCuentaId)}</p>}
+                  {/* Suscripción o rescate en una cuenta con más de un fondo: Tesorería dice a cuál corresponde (0031). */}
+                  {puede && !m.contraparteCuentaId && m.categoria === 'FCI' && fondosDe(m.cuentaId).length > 1 && (
+                    <select
+                      className="mt-1 text-[0.6875rem] bg-suave border border-borde rounded px-1 py-0.5"
+                      defaultValue=""
+                      aria-label="Fondo de la suscripción o el rescate"
+                      onChange={(e) => e.target.value && void asignarContraparte(m.id, e.target.value)}
+                    >
+                      <option value="">¿De qué fondo es?</option>
+                      {fondosDe(m.cuentaId).map((f) => (
+                        <option key={f.id} value={f.id}>
+                          {f.nombre}
+                        </option>
+                      ))}
+                    </select>
+                  )}
                 </td>
                 <td className={`px-4 py-2 text-right tabular whitespace-nowrap font-semibold ${m.importe < 0 ? 'text-red-300' : 'text-emerald-300'}`}>{num(m.importe)}</td>
                 <td className="px-4 py-2">

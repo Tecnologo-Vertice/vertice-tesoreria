@@ -1,6 +1,7 @@
 // Mail del control diario de bancos (reemplaza Control_Diario_Bancos). Lee la vista control_bancos de cada
 // organización, arma un HTML simple (una tabla por empresa, ordenada por gravedad), lo registra en
 // control_envios (uno por organización y día: la base lo exige con su clave única) y lo manda.
+// Cada destinatario recibe solo las empresas que ve: un mail por cada conjunto distinto de empresas visibles.
 //
 // Proveedor de mail: el repo no tiene ninguno (docs/07 lo deja abierto entre Gmail API y Resend).
 // PENDIENTE DE FIRMA: el envío queda detrás de EnviadorMail y, sin proveedor, no se manda nada.
@@ -64,6 +65,9 @@ const NOMBRE_CONTROL: Record<string, string> = {
   ASIENTO_ERROR: 'Asiento con error en Xubio',
   FLUJO_F: 'Control del Flujo en F',
   CHEQUE_SIN_MARCAR: 'Cheque sin marcar',
+  RENDIMIENTO_A_REVISAR: 'Rendimiento de FCI a revisar',
+  FCI_SIN_CONTRAPARTE: 'Suscripción o rescate sin fondo asignado',
+  SIN_COMPROBANTE: 'Gasto del banco sin comprobante',
 }
 
 export function armarMailControl(fecha: string, empresas: Record<string, string>, hallazgos: Hallazgo[]): { asunto: string; html: string } {
@@ -134,25 +138,76 @@ export async function enviarControlDiario(db: SupabaseClient, o: OpcionesControl
   if (eUs) return fin({ estado: 'ERROR', detalle: `No se pudieron leer los destinatarios: ${eUs.message}` })
   const para = [...new Set((us ?? []).map((u) => String(u.email).toLowerCase()).filter(Boolean))].sort()
 
-  const { asunto, html } = armarMailControl(fecha, nombres, hallazgos)
-  const resumen = { hallazgos: hallazgos.length, asunto }
-  if (!para.length) return fin({ estado: 'OMITIDO', detalle: 'No hay destinatarios activos (Controller, Tesorería o Admin)', ...resumen })
+  if (!para.length) {
+    const { asunto } = armarMailControl(fecha, nombres, hallazgos)
+    return fin({ estado: 'OMITIDO', detalle: 'No hay destinatarios activos (Controller, Tesorería o Admin)', hallazgos: hallazgos.length, asunto })
+  }
 
-  if (!o.real) return fin({ estado: 'PRUEBA_OK', detalle: `En seco: se mandaría "${asunto}" a ${para.length} destinatario(s)`, ...resumen }, { para, html })
-  if (!o.enviador) return fin({ estado: 'OMITIDO', detalle: 'Sin proveedor de mail (decisión PENDIENTE DE FIRMA): no se envió', ...resumen }, { para })
+  // Cada persona recibe solo las empresas que ve (0031, revisión T-207): se arma un mail por cada conjunto
+  // distinto de empresas visibles. Antes iba un solo mail con todas las empresas a todos.
+  const grupos = new Map<string, { para: string[]; empresas: string[] }>()
+  const sinEmpresas: string[] = []
+  for (const email of para) {
+    const { data, error } = await db.rpc('empresas_visibles_de', { p_email: email })
+    if (error) return fin({ estado: 'ERROR', detalle: `No se pudo saber qué empresas ve ${email}: ${error.message}` })
+    const visibles = (Array.isArray(data) ? (data as unknown[]).map(String) : []).filter((id) => id in nombres).sort()
+    if (!visibles.length) {
+      sinEmpresas.push(email)
+      continue
+    }
+    const clave = visibles.join('|')
+    const g = grupos.get(clave) ?? { para: [], empresas: visibles }
+    g.para.push(email)
+    grupos.set(clave, g)
+  }
+  const mails = [...grupos.values()].map((g) => {
+    const propios = hallazgos.filter((h) => g.empresas.includes(h.empresa_id))
+    const nombresGrupo = Object.fromEntries(g.empresas.map((id) => [id, nombres[id]]))
+    return { para: g.para, empresas: g.empresas, hallazgos: propios.length, ...armarMailControl(fecha, nombresGrupo, propios) }
+  })
+  const destinatarios = mails.flatMap((x) => x.para).sort()
+  // El asunto que se informa: el del mail que ve más empresas (con una sola lista de empresas, el único).
+  const asunto = [...mails].sort((a, b) => b.empresas.length - a.empresas.length)[0]?.asunto ?? armarMailControl(fecha, nombres, hallazgos).asunto
+  const resumen = { hallazgos: hallazgos.length, asunto }
+  const nota = sinEmpresas.length ? ` · ${sinEmpresas.length} sin empresas asignadas no recibe(n)` : ''
+  if (!mails.length) return fin({ estado: 'OMITIDO', detalle: 'Ningún destinatario ve empresas de la organización', ...resumen }, { sin_empresas: sinEmpresas })
+
+  const detalleMails = mails.map((x) => ({ para: x.para, empresas: x.empresas, hallazgos: x.hallazgos, asunto: x.asunto }))
+  if (!o.real) {
+    return fin(
+      { estado: 'PRUEBA_OK', detalle: `En seco: se mandaría "${asunto}" a ${destinatarios.length} destinatario(s) en ${mails.length} mail(s)${nota}`, ...resumen },
+      { para: destinatarios, mails: mails.map((x) => ({ para: x.para, empresas: x.empresas, asunto: x.asunto, html: x.html })) },
+    )
+  }
+  if (!o.enviador) return fin({ estado: 'OMITIDO', detalle: 'Sin proveedor de mail (decisión PENDIENTE DE FIRMA): no se envió', ...resumen }, { para: destinatarios })
 
   // Reserva del día: la clave única (organización, fecha) impide un segundo envío aunque corran dos a la vez.
-  const { error: eIns } = await db.from('control_envios').insert({ organizacion_id: o.organizacionId, fecha, destinatarios: para, hallazgos })
+  const { error: eIns } = await db.from('control_envios').insert({ organizacion_id: o.organizacionId, fecha, destinatarios, hallazgos })
   if (eIns) {
     if (eIns.code === '23505') return fin({ estado: 'OMITIDO', detalle: `El control del ${fecha} ya se envió (otra corrida)`, ...resumen })
     return fin({ estado: 'ERROR', detalle: `No se pudo registrar el envío: ${eIns.message}`, ...resumen })
   }
-  try {
-    const r = await o.enviador.enviar({ para, asunto, html })
-    return fin({ estado: 'OK', detalle: `Enviado por ${o.enviador.nombre} a ${para.length} destinatario(s)`, ...resumen }, { para, mensaje_id: r.id ?? null })
-  } catch (e) {
-    // No salió: se libera la reserva para poder reintentar el mismo día.
-    await db.from('control_envios').delete().eq('organizacion_id', o.organizacionId).eq('fecha', fecha)
-    return fin({ estado: 'ERROR', detalle: `${o.enviador.nombre} no lo envió: ${e instanceof Error ? e.message : String(e)}`, ...resumen })
+  const enviados: { para: string[]; mensaje_id: string | null }[] = []
+  const fallidos: { para: string[]; error: string }[] = []
+  for (const x of mails) {
+    try {
+      const r = await o.enviador.enviar({ para: x.para, asunto: x.asunto, html: x.html })
+      enviados.push({ para: x.para, mensaje_id: r.id ?? null })
+    } catch (e) {
+      fallidos.push({ para: x.para, error: e instanceof Error ? e.message : String(e) })
+    }
   }
+  if (!fallidos.length) {
+    return fin({ estado: 'OK', detalle: `Enviado por ${o.enviador.nombre} a ${destinatarios.length} destinatario(s) en ${mails.length} mail(s)${nota}`, ...resumen }, { para: destinatarios, mails: detalleMails, enviados })
+  }
+  if (!enviados.length) {
+    // No salió ninguno: se libera la reserva para poder reintentar el mismo día.
+    await db.from('control_envios').delete().eq('organizacion_id', o.organizacionId).eq('fecha', fecha)
+    return fin({ estado: 'ERROR', detalle: `${o.enviador.nombre} no lo envió: ${fallidos[0].error}`, ...resumen })
+  }
+  // Salieron algunos: el día queda registrado (reintentar duplicaría los que sí llegaron) y se avisa cuáles faltan.
+  return fin(
+    { estado: 'ERROR', detalle: `${o.enviador.nombre} envió ${enviados.length} de ${mails.length} mail(s). Faltó: ${fallidos.map((f) => `${f.para.join(', ')} (${f.error})`).join(' · ')}`, ...resumen },
+    { enviados, fallidos },
+  )
 }

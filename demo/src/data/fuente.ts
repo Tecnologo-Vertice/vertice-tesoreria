@@ -294,6 +294,8 @@ export interface Fuente {
   /** Sube el archivo del banco a POST /api/bancos/extracto (el lector por banco lo arma el servidor). */
   subirExtracto(archivo: File, cuentaId: string, u: Usuario, opciones?: OpcionesExtracto): Promise<ResultadoExtracto>
   reclasificarMovimiento(id: string, categoria: CategoriaMovimiento, cuenta: string | null, aprenderPatron: string | null, u: Usuario): Promise<void>
+  /** La otra cuenta propia de una suscripción, un rescate o una transferencia entre cuentas (null la quita). */
+  asignarContraparte(movimientoId: string, cuentaId: string | null, u: Usuario): Promise<void>
   /** Repite el saldo anterior. Devuelve el saldo que quedó. */
   marcarSinMovimientos(cuentaId: string, fecha: string, confirmoSinRendimiento: boolean, u: Usuario): Promise<number>
   registrarSaldo(cuentaId: string, fecha: string, saldo: number, origen: Extract<OrigenSaldo, 'TENENCIA' | 'MANUAL'>, u: Usuario): Promise<void>

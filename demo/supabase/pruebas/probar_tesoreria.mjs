@@ -187,8 +187,9 @@ l = await val(`select naturaleza, fecha, importe from flujo_lineas where origen_
 check('cheque emitido: proyectado en su fecha de pago', l.naturaleza === 'PROYECTADO' && l.fecha.toISOString().startsWith('2026-12-10') && n(l.importe) === -768767.13)
 await falla('cheque repetido (misma chequera y número) se rechaza', `select emitir_cheque($1)`, [{ empresa_id: 'india', cuenta_origen_id: ca, tipo: 'ECHEQ', numero: '13506485',
   beneficiario: 'X', importe: 1, fecha_emision: '2026-11-20', fecha_pago: '2026-12-10' }], /unique|duplicate|duplicad/i)
-await falla('marcar debitado con otro número no marca nada', `select marcar_cheque_debitado($1, '13506490', '2026-12-10')`, [chq], /no coincide/)
-await db.query(`select marcar_cheque_debitado($1, '13506485', '2026-12-10')`, [chq])
+await falla('marcar debitado con otro número no marca nada', `select marcar_cheque_debitado($1, '13506490', '2026-11-25')`, [chq], /no coincide/)
+// La fecha del débito va entre la emisión y hoy (0031): antes la prueba marcaba un débito con fecha futura.
+await db.query(`select marcar_cheque_debitado($1, '13506485', '2026-11-25')`, [chq])
 l = await val(`select naturaleza from flujo_lineas where origen_tipo = 'CHEQUE' and origen_id = $1`, [chq])
 check('debitado: pasa a real en la fecha del débito', l.naturaleza === 'REAL')
 await falla('un cheque debitado no se anula', `select anular_cheque($1, 'x')`, [chq], /ya se debitó/)

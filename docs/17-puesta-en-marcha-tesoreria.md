@@ -24,19 +24,23 @@ Regla de todo el documento: **todo arranca en seco**. Ningún interruptor de env
 - [ ] `[FIRMA SANTIAGO]` Copia de seguridad de la base de Supabase (Database → Backups) antes de aplicar migraciones.
 - [ ] `[FIRMA SANTIAGO]` Fecha de inicio del período en paralelo (paso 7). Recomendado: un lunes hábil, para tener 10 días hábiles completos.
 
-## 1 · Migraciones 0023 a 0029
+## 1 · Migraciones 0023 a 0031
 
 En el proyecto de Supabase que ya tiene 0001 a 0022 (no usar `instalar_todo.sql`, que es para un proyecto nuevo):
 
-- [ ] SQL Editor → pegar y correr **una por una, en orden**: `0023_cuentas_y_unidades.sql`, `0024_bancos.sql`, `0025_cheques_y_cobros.sql`, `0026_flujo.sql`, `0027_operacion.sql`, `0028_espera_fc_flujo.sql`, `0029_cabos_tesoreria.sql`. Si una falla, parar: no seguir con la próxima.
+- [ ] SQL Editor → pegar y correr **una por una, en orden**: `0023_cuentas_y_unidades.sql`, `0024_bancos.sql`, `0025_cheques_y_cobros.sql`, `0026_flujo.sql`, `0027_operacion.sql`, `0028_espera_fc_flujo.sql`, `0029_cabos_tesoreria.sql`, `0030_ajustes_paralelo.sql`, `0031_correcciones_revision.sql`. Si una falla, parar: no seguir con la próxima.
 - [ ] Verificar:
   ```sql
   select count(*) from unidades;                                   -- una por empresa (Beratung: dos)
   select prosrc like '%origen_saldos%' from pg_proc where proname = 'importar_extracto';   -- true (0029)
   select * from xubio_bancos_pendientes limit 1;                   -- existe (0029)
   select has_function_privilege('authenticated', 'importar_extracto(jsonb)', 'execute');  -- false
+  select hoy_ar();                                                 -- la fecha de Buenos Aires (0031)
+  select jsonb_array_length(flujo_rango(null, hoy_ar() - 45, hoy_ar() + 200));            -- responde en segundos (0031)
+  select nombre, cuit_banco, digito_comprobante from cuentas_origen where cuit_banco is not null order by 2, 3;  -- un dígito por cuenta del mismo banco (0031)
   ```
-- [ ] En un proyecto nuevo: `npm run sql:unir` y pegar `demo/supabase/instalar_todo.sql` (ya incluye 0029), después `configurar_equipo.sql`.
+- [ ] En un proyecto nuevo: `npm run sql:unir` y pegar `demo/supabase/instalar_todo.sql` (ya incluye 0031), después `configurar_equipo.sql`.
+- [ ] **Orden al publicar 0031:** primero la migración, después la pantalla y las funciones. La pantalla nueva anda igual contra una base sin 0031 (lee la vista como antes, lenta); la pantalla vieja contra una base con 0031 también anda.
 
 Qué agrega 0029 (T-205):
 
@@ -46,6 +50,18 @@ Qué agrega 0029 (T-205):
 | `marcar_anulacion_xubio_manual(tipo, id, nota)` (Administración / Admin) | Órdenes de pago y cheques que Xubio no deja anular por API: se anulan a mano en Xubio y se marcan, con nota y auditoría |
 | Vista `xubio_bancos_pendientes` | Pantalla Bancos › Pendiente en Xubio |
 | `control_bancos` avisa también pagos y cheques pendientes de anular en Xubio | Mail del control diario |
+
+Qué agrega 0031 (T-208, correcciones de la revisión técnica; el detalle está en [16](16-base-de-datos-sin-planillas.md)):
+
+| Qué | Para qué |
+|---|---|
+| `flujo_rango()`, `flujo_control_rango()` y las vistas del Flujo rehechas | Con un año de datos la pantalla y el mail del control responden en menos de un segundo (antes se cortaban por tiempo) |
+| `hoy_ar()` | "Hoy" es la fecha de Buenos Aires también de 21 a 24 h |
+| `cuentas_origen.digito_comprobante` y comprobante 0999X por cuenta | Dos cuentas del mismo banco ya no pisan el mismo comprobante |
+| `asignar_contraparte()`, estado REVISAR, avisos nuevos en `control_bancos` | Suscripciones y rescates con más de un fondo en la cuenta |
+| Asientos, cheques, importación y reglas del Flujo más estrictos | Ver la tabla de hallazgos en el doc 16 |
+
+- [ ] Después de correr 0031, si ya había comprobantes "Extracto Bancario" de bancos con más de una cuenta: `select * from control_bancos where control = 'SIN_COMPROBANTE'` muestra los movimientos que habían quedado en el comprobante de otra cuenta. Regenerar el comprobante de cada cuenta y día desde Bancos (los que ya subieron a Xubio no se tocan: revisarlos a mano).
 
 ## 2 · Variables de entorno (Netlify → Site configuration → Environment variables)
 
@@ -89,7 +105,7 @@ Credenciales de Xubio: por empresa en la base (cifradas con `CREDENCIALES_CLAVE`
 
 ### 2.1 · Mail del control diario
 
-- [ ] `[FIRMA SANTIAGO]` Elegir proveedor (Gmail API con la cuenta de Tesorería o Resend). Hasta entonces `enviadorConfigurado()` devuelve ninguno y el control solo queda registrado en `control_envios` (en seco). Destinatarios: usuarios activos con rol Controller, Tesorería o Admin de la organización.
+- [ ] `[FIRMA SANTIAGO]` Elegir proveedor (Gmail API con la cuenta de Tesorería o Resend). Hasta entonces `enviadorConfigurado()` devuelve ninguno y el control solo queda registrado en `control_envios` (en seco). Destinatarios: usuarios activos con rol Controller, Tesorería o Admin de la organización. Cada uno recibe solo las empresas que ve: sale un mail por cada conjunto distinto de empresas visibles, y quien no tiene empresas asignadas no recibe nada (0031).
 
 ## 3 · Datos de las cuentas
 
@@ -97,6 +113,8 @@ Credenciales de Xubio: por empresa en la base (cifradas con `CREDENCIALES_CLAVE`
 - [ ] Cuenta contable de Xubio de cada banco (`cuentas_origen.cuenta_contable_id`). Sin ella no se genera el asiento del día.
 - [ ] Cuentas FCI y remuneradas con su **cuenta madre** (`cuenta_madre_id`): Brubank reparte el Excel en la CC y la remunerada por esa relación; una tenencia de FCI solo entra a una cuenta FCI o remunerada.
 - [ ] `rinde_diario` en Mercado Pago y remuneradas ("Sin movimientos" pide confirmación).
+- [ ] **Número de cuenta y CBU** (`cuentas_origen.numero`, `cbu`) y **banco** en todas las cuentas con extracto. Con dos cuentas del mismo banco en la empresa, es lo que le permite al sistema rechazar un archivo subido en la cuenta equivocada (0031). Una cuenta sin banco cargado no acepta extractos.
+- [ ] El **dígito del comprobante** (`digito_comprobante`) se asigna solo al cargar el CUIT del banco: 0 para la primera cuenta de ese banco en la empresa, 1 para la segunda, y así. No cambia más. Hasta 10 cuentas por banco y empresa.
 
 ## 4 · Carga de datos desde las planillas (script de migración)
 
@@ -108,6 +126,7 @@ Lo mantiene otro empleado en `demo/scripts/migrar-desde-planillas/`. Comandos de
   node scripts/migrar-desde-planillas/migrar.mjs --reporte /fuera/del/repo/reporte.md
   ```
   Opcional `--guardar-instantaneas DIR` (fuera del repo: tienen datos reales) y después `--instantaneas DIR` para repetir sin leer Google.
+  Si la base tiene más de una organización, `--organizacion <slug>` es obligatorio (si no, el script se detiene sin cargar nada).
 - [ ] Revisar el reporte: conteos y sumas por tabla y empresa contra las planillas, y cada `[FALTA]`. `[FIRMA SANTIAGO]` resolver los `[FALTA]`.
 - [ ] `[FIRMA SANTIAGO]` **Real** (escribe en la base):
   ```

@@ -535,17 +535,31 @@ export class FuenteDemo implements Fuente {
     if (!mv) throw new Error('Movimiento inexistente')
     if (mv.estado === 'CONTABILIZADO' || mv.estado === 'CARGADO_A_MANO') throw new Error('El movimiento ya está contabilizado')
     const asiento = ['IMPUESTO', 'FCI', 'FCI_RENDIMIENTO', 'INTERESES'].includes(categoria)
+    // Como en la base (0031): un gasto bancario va al comprobante, como neto.
+    const comprobante = categoria === 'GASTO_BANCARIO'
+    const destino = comprobante ? 'COMPROBANTE' : asiento ? 'ASIENTO' : 'NINGUNO'
     if (aprender?.trim()) {
       if (!textoBanco(mv.descripcion).includes(textoBanco(aprender))) throw new Error('El texto a aprender no está en la descripción del movimiento')
       this.t.reglas = [
         ...this.t.reglas,
-        { orden: 5, patrones: [textoBanco(aprender)], sentido: mv.importe < 0 ? 'DEBITO' : 'CREDITO', categoria, cuenta: cuenta ?? undefined, destino: asiento ? 'ASIENTO' : 'NINGUNO' },
+        { orden: 5, patrones: [textoBanco(aprender)], sentido: mv.importe < 0 ? 'DEBITO' : 'CREDITO', categoria, cuenta: cuenta ?? undefined, destino },
       ]
     }
     this.t.movimientos = this.t.movimientos.map((m) =>
-      m.id === id ? { ...m, categoria, cuentaContable: cuenta ?? undefined, destinoXubio: asiento ? 'ASIENTO' : 'NINGUNO', componente: undefined, estado: 'PENDIENTE', revisadoPor: u.nombre } : m,
+      m.id === id ? { ...m, categoria, cuentaContable: cuenta ?? undefined, destinoXubio: destino, componente: comprobante ? 'NETO' : undefined, estado: 'PENDIENTE', revisadoPor: u.nombre } : m,
     )
     this.log(u, { accion: 'RECLASIFICAR', entidad: 'MOVIMIENTO', entidadId: id, detalle: `${categoria} · ${cuenta ?? ''}${aprender ? ` · regla "${aprender}"` : ''}` })
+    this.commit()
+  }
+
+  async asignarContraparte(movimientoId: string, cuentaId: string | null, u: Usuario) {
+    this.exigirRol(u, ['TESORERIA', 'ADMINISTRACION', 'ADMIN'])
+    const mv = this.t.movimientos.find((m) => m.id === movimientoId)
+    if (!mv) throw new Error('Movimiento inexistente')
+    const c = cuentaId ? this.t.cuentas.find((x) => x.id === cuentaId) : undefined
+    if (cuentaId && (!c || c.empresaId !== mv.empresaId || c.id === mv.cuentaId)) throw new Error('La contraparte tiene que ser otra cuenta de la misma empresa')
+    this.t.movimientos = this.t.movimientos.map((m) => (m.id === movimientoId ? { ...m, contraparteCuentaId: cuentaId ?? undefined, revisadoPor: u.nombre } : m))
+    this.log(u, { accion: 'CONTRAPARTE', entidad: 'MOVIMIENTO', entidadId: movimientoId, detalle: c?.nombre ?? 'sin contraparte' })
     this.commit()
   }
 

@@ -11,7 +11,10 @@ const marca = (k) => `[mig:${k}]`
 
 // correcciones (T-206, por defecto sí): categoría del acreedor, destino de cheques por unidad (si_unidad_id) y cheques
 // DEBITADO. Necesitan la migración 0030; con false se carga como antes (para comparar en el simulacro del paralelo).
-export async function cargar(db, plan, { correcciones = true } = {}) {
+// organizacion (T-208): slug de la organización donde se carga. Con una sola organización en la base no hace falta;
+// con dos o más es obligatorio (antes se tomaba "la primera" y las reglas, acreedores y percepciones podían quedar
+// en la organización equivocada). Todas las empresas del plan que existen en la base tienen que ser de esa.
+export async function cargar(db, plan, { correcciones = true, organizacion = null } = {}) {
   const q = async (sql, p = []) => {
     try { return (await db.query(sql, p)).rows }
     catch (e) { e.message = `${e.message} · en: ${sql.replace(/\s+/g, ' ').slice(0, 140)}`; throw e }
@@ -24,10 +27,18 @@ export async function cargar(db, plan, { correcciones = true } = {}) {
 
   await q('begin')
   try {
-    const empresas = new Set((await q(`select id from empresas`)).map((x) => x.id))
-    const org = (await uno(`select organizacion_id from empresas where id = any($1::text[]) and organizacion_id is not null limit 1`,
-      [[...empresas]]))?.organizacion_id
-    if (!org) throw new Error('No hay organización para las empresas')
+    const orgs = await q(`select o.id, o.slug from organizaciones o where exists (select 1 from empresas e where e.organizacion_id = o.id) order by o.slug`)
+    if (!orgs.length) throw new Error('No hay organización para las empresas')
+    let org
+    if (organizacion) {
+      org = orgs.find((o) => o.slug === organizacion)?.id
+      if (!org) throw new Error(`No existe la organización "${organizacion}" (hay: ${orgs.map((o) => o.slug).join(', ')})`)
+    } else if (orgs.length === 1) org = orgs[0].id
+    else throw new Error(`La base tiene ${orgs.length} organizaciones (${orgs.map((o) => o.slug).join(', ')}): indicá en cuál cargar con --organizacion <slug>`)
+    const empresas = new Set((await q(`select id from empresas where organizacion_id = $1`, [org])).map((x) => x.id))
+    const delPlan = [...new Set(Object.values(plan).flatMap((l) => (Array.isArray(l) ? l.map((x) => x?.empresa) : [])).filter((e) => typeof e === 'string'))]
+    const ajenas = (await q(`select id from empresas where id = any($1::text[]) and organizacion_id is distinct from $2`, [delPlan, org])).map((x) => x.id)
+    if (ajenas.length) throw new Error(`Empresas del plan que son de otra organización: ${ajenas.join(', ')}. No se cargó nada.`)
     const unidades = new Map((await q(`select id, empresa_id, codigo from unidades`)).map((u) => [`${u.empresa_id}|${u.codigo}`, u.id]))
     const unidad = (emp, cod) => unidades.get(`${emp}|${cod}`) ?? unidades.get(`${emp}|${emp}`)
 

@@ -1,5 +1,5 @@
 // Envíos a Xubio de lo bancario (T-202): lo que la base deja "pendiente" sube solo.
-//   a) Comprobante "Extracto Bancario" (facturas con cuenta_origen_extracto_id, 09990-AAAAMMDD, tipo 8):
+//   a) Comprobante "Extracto Bancario" (facturas con cuenta_origen_extracto_id, 0999X-AAAAMMDD con X = dígito de la cuenta, tipo 8):
 //      reusa subirFacturaAXubio (reserva para no duplicar, búsqueda por número + CUIT del banco, xubio_log).
 //   b) Asientos del banco (asientos + asiento_lineas, estado_xubio PENDIENTE) → POST asientoContableManualBean
 //      (el mismo endpoint que usa producción para SALIDA_FONDOS y ASIENTO_MANUAL, docs/12 §6) y
@@ -216,7 +216,7 @@ export async function procesarPendientesBancos(db: SupabaseClient, o: OpcionesBa
       if (error) throw new Error(`No se pudieron leer los comprobantes: ${error.message}`)
       for (const f of (data ?? []).filter((x) => x.cuenta_origen_extracto_id)) {
         if (!queda()) break
-        const nro = `09990-${f.numero}`
+        const nro = `${String(f.punto_venta ?? 9990).padStart(5, '0')}-${f.numero}`
         try {
           const r = await subirFacturaAXubio(db, String(f.id), usuario, { real: o.real })
           const estado: EstadoLog = r.estado === 'SUBIDA' ? 'OK' : r.estado === 'EN_SECO' ? 'PRUEBA_OK' : r.estado === 'ERROR' ? 'ERROR' : 'OMITIDO'

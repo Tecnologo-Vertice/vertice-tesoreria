@@ -132,6 +132,7 @@ type Tono = 'neutro' | 'dorado' | 'rojo' | 'verde' | 'azul' | 'naranja'
 export const ESTADO_CONCILIACION: Record<EstadoConciliacion, { label: string; tone: Tono }> = {
   OK: { label: 'OK', tone: 'verde' },
   DIFERENCIA: { label: 'Diferencia', tone: 'rojo' },
+  REVISAR: { label: 'Revisar rendimiento', tone: 'naranja' },
   SIN_EXTRACTO: { label: 'Sin extracto', tone: 'naranja' },
   SIN_MOVIMIENTOS: { label: 'Sin movimientos', tone: 'azul' },
   PRIMER_SALDO: { label: 'Primer saldo', tone: 'neutro' },
