@@ -20,6 +20,7 @@ Carpeta del sistema nuevo. Acá vive todo lo que reemplaza, por etapas, al Apps 
 | [docs/11-puesta-en-marcha-hoy.md](docs/11-puesta-en-marcha-hoy.md) | **Empezar acá.** Qué hace el sistema hoy, los pasos para encenderlo (cuentas, claves, mails) y lo que falta. |
 | [docs/12-produccion-apps-script-como-funciona.md](docs/12-produccion-apps-script-como-funciona.md) | Cómo funciona el Apps Script que usa el equipo en producción, qué le falta al sistema nuevo, decisiones de la demo y el puente que copia la hoja real. |
 | [docs/13-que-tengo-que-hacer.md](docs/13-que-tengo-que-hacer.md) | **Checklist** para encender la copia de la hoja real (Supabase, Netlify, puente). |
+| [docs/16-base-de-datos-sin-planillas.md](docs/16-base-de-datos-sin-planillas.md) | Base de datos de Tesorería sin planillas (migraciones 0023 a 0027): qué reemplaza cada tabla, reglas y lo que falta. |
 | `apps_script_copia/` | Copia del código de la copia de desarrollo del Apps Script, para leer. **Tiene claves: no se commitea** (está en `.gitignore`). |
 
 ## Correr la demo
