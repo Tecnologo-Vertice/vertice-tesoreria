@@ -17,7 +17,7 @@ async function falla(nombre, sql, p, patron) {
 const como = (email) => db.query(`select set_config('request.jwt.claims', $1, false)`, [JSON.stringify({ email })])
 
 // --- Supabase mínimo: roles, auth.users, auth.jwt(), storage.
-await db.exec(`
+const SUPABASE_MINIMO = `
   create role anon; create role authenticated; create role service_role bypassrls; -- como en Supabase: la clave de servicio salta el RLS
   create schema auth; create schema storage;
   create table auth.users (id uuid primary key default gen_random_uuid(), email text);
@@ -28,7 +28,8 @@ await db.exec(`
   grant select, insert on storage.objects to authenticated; -- como en Supabase: el RLS decide
   grant usage on schema public, auth, storage to anon, authenticated, service_role;
   grant execute on function auth.jwt() to anon, authenticated;
-`)
+`
+await db.exec(SUPABASE_MINIMO)
 
 for (const f of readdirSync(dir).filter((x) => x.endsWith('.sql')).sort()) {
   try { await db.exec(readFileSync(join(dir, f), 'utf8').replace(/create extension if not exists pgcrypto;/i, '')); check(`migración ${f}`, true) }
@@ -780,6 +781,151 @@ await db.exec(`reset role`)
 for (const fn of ['plazo_envio_xubio()', 'plazo_envio_xubio_segundos()'])
   check(`anon NO puede ejecutar ${fn.split('(')[0]}; las personas sí`, !(await val(`select has_function_privilege('anon', $1, 'execute') p`, [fn])).p && (await val(`select has_function_privilege('authenticated', $1, 'execute') p`, [fn])).p)
 check('anon no puede liberar pagos', !(await val(`select has_function_privilege('anon', 'liberar_pago_xubio(uuid,text,text,forma_carga_xubio)', 'execute') p`)).p)
+
+// ================================================================ Organizaciones: tablas y claves (0017)
+await db.exec(`reset role`)
+await como('')
+const orgV = (await val(`select id from organizaciones where slug = 'vertice'`)).id
+r = await val(`select count(*)::int n, bool_and(es_proveedor) p from organizaciones`)
+check('hay una sola organización, Vértice, y es la que da el servicio', r.n === 1 && r.p === true && !!orgV)
+r = await val(`select organizacion_unica() o, organizacion_del_servidor() s`)
+check('con una sola organización, lo que no la trae se asigna a esa', r.o === orgV && r.s === orgV)
+const CON_ORGANIZACION = ['empresas', 'usuarios', 'proveedores', 'documentos', 'auditoria', 'cuentas_contables', 'reglas_cuenta', 'productos_xubio', 'espejo_estado']
+for (const tabla of CON_ORGANIZACION) {
+  r = await val(`select count(*)::int n, count(*) filter (where organizacion_id is distinct from $1)::int ajenos from ${tabla}`, [orgV])
+  check(`todo lo que había en ${tabla} quedó a nombre de Vértice`, r.ajenos === 0, `${r.n} filas`)
+}
+check('las tablas de las pruebas tienen datos (si no, lo de arriba no prueba nada)',
+  (await val(`select least((select count(*) from proveedores), (select count(*) from documentos), (select count(*) from auditoria), (select count(*) from cuentas_contables), (select count(*) from productos_xubio))::int n`)).n > 0)
+r = await val(`select count(*)::int n, count(*) filter (where a.empresa_id is distinct from f.empresa_id)::int mal from auditoria a join facturas f on f.id::text = a.entidad_id where a.entidad = 'FACTURA'`)
+check('auditoría de facturas: cada renglón lleva la empresa de su factura', r.n > 0 && r.mal === 0, JSON.stringify(r))
+r = await val(`select count(*)::int n, count(*) filter (where a.empresa_id is distinct from p.empresa_id)::int mal from auditoria a join pagos p on p.id::text = a.entidad_id where a.entidad = 'PAGO'`)
+check('auditoría de pagos: cada renglón lleva la empresa de su pago', r.n > 0 && r.mal === 0, JSON.stringify(r))
+check('auditoría del sistema (sin factura ni pago): sin empresa, con organización', (await val(`select count(*)::int n from auditoria where entidad = 'SISTEMA' and empresa_id is null and organizacion_id = $1`, [orgV])).n > 0)
+check('las personas no ejecutan las funciones de apoyo de organizaciones',
+  !(await val(`select has_function_privilege('authenticated', 'organizacion_del_servidor()', 'execute') p`)).p && !(await val(`select has_function_privilege('anon', 'organizacion_unica()', 'execute') p`)).p)
+await falla('la organización de una empresa no se cambia', `update empresas set organizacion_id = gen_random_uuid() where id = 'india'`, [], /no se cambia/)
+
+// --- Segunda organización, de mentira. Queda para el resto del archivo: es la prueba fija de separación.
+const orgB = (await val(`insert into organizaciones (slug, nombre) values ('otra', 'Otra Organización S.A.') returning id`)).id
+check('la segunda organización no es la que da el servicio', (await val(`select es_proveedor p from organizaciones where id = $1`, [orgB])).p === false)
+await falla('no puede haber dos organizaciones que den el servicio', `insert into organizaciones (slug, nombre, es_proveedor) values ('tercera', 'Tercera', true)`, [], /organizaciones_un_solo_proveedor/)
+check('con dos organizaciones ya no hay "la única"', (await val(`select organizacion_unica() o`)).o === null)
+await falla('…y el servidor no adivina para cuál trabaja', `select organizacion_del_servidor()`, [], /más de una organización/)
+await falla('con dos organizaciones, una empresa nueva tiene que decir de cuál es', `insert into empresas (id, nombre, nombre_corto, cuit) values ('huerfana', 'Huérfana', 'Huérfana', '30999999990')`, [], /No se sabe de qué organización/)
+await falla('…y un usuario nuevo también', `insert into usuarios (email, nombre, rol) values ('huerfano@otra.com', 'Huérfano', 'ADMIN')`, [], /No se sabe de qué organización/)
+await db.query(`insert into empresas (id, nombre, nombre_corto, cuit, erp, organizacion_id) values
+  ('otra-uno', 'Otra Uno S.A.', 'Otra Uno', '30999999991', 'XUBIO', $1), ('otra-dos', 'Otra Dos S.R.L.', 'Otra Dos', '30999999992', 'NINGUNO', $1)`, [orgB])
+await db.query(`insert into usuarios (email, nombre, rol, todas_empresas, organizacion_id) values
+  ('admin@otra.com', 'Admin de Otra', 'ADMIN', true, $1), ('teso@otra.com', 'Tesorería de Otra', 'TESORERIA', true, $1),
+  ('aprob.uno@otra.com', 'Aprobador de Otra Uno', 'APROBADOR', false, $1)`, [orgB])
+await db.exec(`insert into usuarios_empresas (email, empresa_id) values ('aprob.uno@otra.com', 'otra-uno')`)
+await falla('a una persona no se le asigna una empresa de otra organización', `insert into usuarios_empresas (email, empresa_id) values ('aprob.uno@otra.com', 'india')`, [], /otra organización/)
+await falla('…ni a una de Vértice una empresa de la otra', `insert into usuarios_empresas (email, empresa_id) values ('aprob.india@verticebi.com', 'otra-uno')`, [], /otra organización/)
+await falla('una persona no se pasa de organización', `update usuarios set organizacion_id = $1 where email = 'nuevo@verticebi.com'`, [orgB], /no se cambia/)
+
+// El mismo CUIT puede ser proveedor de las dos: son dos proveedores distintos.
+const provV = await val(`select id, nombre from proveedores where cuit = '30712345678' and organizacion_id = $1`, [orgV])
+const fB1 = (await val(`select ingresar_factura($1) id`, [factura({ empresa_id: 'otra-uno', proveedor: 'Laboratorio (ficha de Otra)', numero: 1001 })])).id
+r = await val(`select count(*)::int n, count(distinct organizacion_id)::int orgs from proveedores where cuit = '30712345678'`)
+check('el mismo CUIT en dos organizaciones: dos proveedores', r.n === 2 && r.orgs === 2, JSON.stringify(r))
+const provB = await val(`select p.id, p.nombre, p.organizacion_id from proveedores p join facturas f on f.proveedor_id = p.id where f.id = $1`, [fB1])
+check('la factura de la otra organización usa su propio proveedor', provB.organizacion_id === orgB && provB.id !== provV.id && provB.nombre === 'Laboratorio (ficha de Otra)')
+check('…y la ficha del proveedor de Vértice no cambió', (await val(`select nombre from proveedores where id = $1`, [provV.id])).nombre === provV.nombre)
+check('la misma factura (mismo proveedor, tipo y número) existe en las dos sin pisarse', (await val(`select count(*)::int n from facturas where numero = 1001 and punto_venta = 5 and tipo = 'Factura A'`)).n === 2)
+await falla('un pago no puede llevar el proveedor de otra organización', `insert into pagos (empresa_id, proveedor_id, fecha, importe, medio, cargado_por) values ('otra-uno', $1, '2026-11-01', 10, 'TRANSFERENCIA', 'x')`, [provV.id], /proveedor es de otra organización/)
+await falla('…ni una factura', `update facturas set proveedor_id = $2 where id = $1`, [fB1, provV.id], /proveedor es de otra organización/)
+await falla('factura de una empresa que no existe: mensaje claro', `select ingresar_factura($1)`, [factura({ empresa_id: 'no-existe', numero: 1 })], /Empresa inexistente: no-existe/)
+
+// Documentos: cada uno con su organización; el mismo adjunto puede llegar a las dos.
+await falla('un adjunto que no dice de quién es no entra (con dos organizaciones)', `select * from registrar_documento($1)`, [doc('msg-org-0')], /más de una organización/)
+const dOrgV = await val(`select * from registrar_documento($1)`, [{ ...doc('msg-org-1'), organizacion_id: orgV }])
+const dOrgB = await val(`select * from registrar_documento($1)`, [{ ...doc('msg-org-1'), organizacion_id: orgB }])
+check('el mismo adjunto del mismo mail entra una vez en cada organización', dOrgV.nuevo && dOrgB.nuevo && dOrgV.id !== dOrgB.id)
+check('…y repetido en la misma, una sola', (await val(`select * from registrar_documento($1)`, [{ ...doc('msg-org-1'), organizacion_id: orgB }])).id === dOrgB.id)
+const dListaB = await val(`select * from registrar_documento($1)`, [{ ...doc('', 'subida-otra.pdf'), origen: 'MANUAL', empresas_permitidas: ['otra-uno'] }])
+check('un documento subido para una empresa toma la organización de esa empresa', (await val(`select organizacion_id o from documentos where id = $1`, [dListaB.id])).o === orgB)
+await falla('un documento de una organización no puede ser para una empresa de otra', `select * from registrar_documento($1)`,
+  [{ ...doc('', 'cruzado.pdf'), origen: 'MANUAL', organizacion_id: orgV, empresas_permitidas: ['otra-uno'] }], /otra organización/)
+
+// Copia de la hoja con dos organizaciones: lo que trae empresa sigue andando; lo que no, se rechaza.
+ep = await espPag([filaP({ _fila: 60, ID_PAGO: 'PAGO-1792698010000-0', FACTURA_ASOCIADA: '', TIPO_PAGO: 'SIN_FACTURA', EMPRESA: 'BERATUNG S.A.' }),
+  filaP({ _fila: 61, ID_PAGO: 'PAGO-1792698010001-0', FACTURA_ASOCIADA: '00007-00000350' })])
+check('copia de pagos con dos organizaciones: el que trae empresa entra', ep.nuevas === 1 && (await val(`select empresa_id from pagos where hoja_id = 'PAGO-1792698010000-0'`))?.empresa_id === 'beratung', JSON.stringify(ep))
+check('…y el que no trae empresa se omite con el motivo (no se adivina de quién es)', ep.omitidas.length === 1 && /más de una organización/.test(ep.omitidas[0].motivo), JSON.stringify(ep.omitidas))
+e1 = await espFact([filaF({ _fila: 62, NUMERO: '00007-00000380' })])
+check('copia de facturas con dos organizaciones: sigue andando (la empresa dice de quién es)', e1.nuevas === 1 && e1.omitidas.length === 0, JSON.stringify(e1))
+r = (await val(`select espejar_catalogos($1) r`, [JSON.stringify({ cuentas: cat.cuentas, origen: cat.origen, porEmpresa: cat.porEmpresa })])).r
+check('catálogos por empresa con dos organizaciones: siguen andando', r.cuentas === 1 && r.origen === 1 && r.porEmpresa === 1, JSON.stringify(r))
+await falla('catálogos sin empresa (mails de proveedores) con dos organizaciones: se rechazan', `select espejar_catalogos($1)`, [JSON.stringify({ emails: cat.emails })], /más de una organización/)
+await falla('…y los productos también', `select espejar_catalogos($1)`, [JSON.stringify({ productos: cat.productos })], /más de una organización/)
+await db.query(`insert into cuentas_contables (organizacion_id, nombre) values ($1, 'SEGUROS'), ($1, 'CUENTA SOLO DE OTRA')`, [orgB])
+check('cada organización tiene sus cuentas comunes: el mismo nombre no choca', (await val(`select count(*)::int n from cuentas_contables where empresa_id is null and nombre = 'SEGUROS'`)).n === 2)
+await falla('…y dentro de una organización no se repite', `insert into cuentas_contables (organizacion_id, nombre) values ($1, 'SEGUROS')`, [orgB], /cuentas_contables_organizacion_empresa_nombre_key/)
+await falla('una cuenta no puede decir una organización y ser de una empresa de otra', `insert into cuentas_contables (organizacion_id, empresa_id, nombre) values ($1, 'india', 'X')`, [orgB], /otra organización/)
+
+// ================================================================ Migrar una base que ya tiene datos (0017 en adelante)
+// La base real tiene datos: las migraciones nuevas se aplican sobre una base cargada con las anteriores.
+{
+  const db2 = new PGlite()
+  await db2.exec(SUPABASE_MINIMO)
+  const v2 = async (sql, p = []) => (await db2.query(sql, p)).rows[0]
+  const archivos = readdirSync(dir).filter((x) => x.endsWith('.sql')).sort()
+  const aplicar = async (lista) => { for (const f of lista) await db2.exec(readFileSync(join(dir, f), 'utf8').replace(/create extension if not exists pgcrypto;/i, '')) }
+  await aplicar(archivos.filter((f) => f < '0017'))
+  // Datos como los de la base real: facturas de dos empresas, documentos, un pago, catálogos y auditoría.
+  await db2.exec(`insert into usuarios (email, nombre, rol, todas_empresas) values ('aprobador@verticebi.com', 'Aprobador', 'APROBADOR', true);
+    insert into usuarios (email, nombre, rol) values ('teso.india@verticebi.com', 'Tesorería India', 'TESORERIA');
+    insert into usuarios_empresas (email, empresa_id) values ('teso.india@verticebi.com', 'india')`)
+  await db2.query(`select ingresar_factura($1)`, [factura()])
+  await db2.query(`select ingresar_factura($1)`, [factura({ empresa_id: 'india', numero: 2001, cuit_proveedor: '30-70000001-9', proveedor: 'Otro proveedor' })])
+  const gd = await v2(`select * from registrar_documento($1)`, [doc('msg-viejo')])
+  await db2.query(`select * from registrar_documento($1)`, [{ ...doc('', 'manual-viejo.pdf'), origen: 'MANUAL', empresas_permitidas: ['india'] }])
+  await db2.query(`select tomar_documento($1)`, [gd.id])
+  await db2.query(`select guardar_factura_leida($1, $2)`, [gd.id, leida()])
+  await db2.query(`select espejar_catalogos($1)`, [JSON.stringify(cat)])
+  await db2.exec(`insert into espejo_estado (hoja, filas) values ('Facturas', 10), ('Pagos', 5);
+    insert into reglas_cuenta (empresa_id, patron, cuenta_contable) values (null, 'alquiler', 'ALQUILER DE OFICINA'), ('india', 'seguro', 'SEGUROS');
+    insert into pagos (empresa_id, fecha, importe, medio, cargado_por, comprobante_path) values ('india', '2026-10-01', 100, 'TRANSFERENCIA', 'Vivi', '2026/1700000000000_comprobante.pdf');
+    insert into auditoria (usuario, accion, entidad, entidad_id, detalle) select 'Vivi', 'PAGO_CARGADO', 'PAGO', id::text, 'x' from pagos;
+    insert into auditoria (usuario, accion, entidad, entidad_id, detalle) values ('Sistema', 'AVISO', 'SISTEMA', null, 'sin entidad'), ('Sistema', 'AVISO', 'SISTEMA', 'texto-que-no-es-un-id', 'x')`)
+  const TABLAS = ['empresas', 'usuarios', 'usuarios_empresas', 'proveedores', 'proveedores_empresa', 'documentos', 'facturas', 'pagos', 'auditoria', 'cuentas_contables', 'cuentas_origen', 'reglas_cuenta', 'productos_xubio', 'espejo_estado']
+  const contar = async () => {
+    const c = {}
+    for (const t of TABLAS) c[t] = (await v2(`select count(*)::int n from ${t}`)).n
+    return c
+  }
+  const antes = await contar()
+  let error = ''
+  try { await aplicar(archivos.filter((f) => f >= '0017')) } catch (e) { error = e.message }
+  check('las migraciones nuevas se aplican sobre una base con datos', error === '', error)
+  const despues = await contar()
+  check('migrar no agrega ni saca filas de ninguna tabla', JSON.stringify(antes) === JSON.stringify(despues) && antes.auditoria >= 5 && antes.proveedores >= 3 && antes.documentos === 2, JSON.stringify(despues))
+  const idV = (await v2(`select id from organizaciones`)).id
+  for (const tabla of CON_ORGANIZACION)
+    check(`base con datos: ${tabla} queda entera a nombre de Vértice`, (await v2(`select count(*) filter (where organizacion_id is distinct from $1)::int n from ${tabla}`, [idV])).n === 0)
+  r = await v2(`select count(*) filter (where entidad in ('FACTURA', 'PAGO') and empresa_id is null)::int sin, count(*) filter (where entidad = 'PAGO' and empresa_id = 'india')::int pago,
+    count(*) filter (where entidad = 'SISTEMA' and empresa_id is null)::int sistema from auditoria`)
+  check('base con datos: la auditoría vieja queda con la empresa de su factura o su pago', r.sin === 0 && r.pago === 1 && r.sistema === 2, JSON.stringify(r))
+  let inmutable = false
+  try { await db2.exec(`update auditoria set detalle = 'x'`) } catch (e) { inmutable = /auditoría/.test(e.message) }
+  check('base con datos: la auditoría sigue sin poder modificarse después de migrar', inmutable)
+  await db2.query(`select ingresar_factura($1)`, [factura()])
+  r = await v2(`select (select count(*) from proveedores)::int p, (select count(*) from facturas)::int f`)
+  check('base con datos: reingresar una factura no duplica el proveedor ni la factura', r.p === antes.proveedores && r.f === antes.facturas, JSON.stringify(r))
+  check('base con datos: el mismo adjunto de antes no vuelve a entrar', (await v2(`select * from registrar_documento($1)`, [doc('msg-viejo')])).nuevo === false)
+  const antesDeCatalogos = await contar()
+  await db2.query(`select espejar_catalogos($1)`, [JSON.stringify(cat)])
+  check('base con datos: volver a copiar los catálogos no duplica', JSON.stringify(await contar()) === JSON.stringify(antesDeCatalogos) && antesDeCatalogos.productos_xubio === 1 && antesDeCatalogos.cuentas_origen === 1)
+  await db2.exec(`set role authenticated`)
+  await db2.query(`select set_config('request.jwt.claims', $1, false)`, [JSON.stringify({ email: 'teso.india@verticebi.com' })])
+  r = await v2(`select (select count(*) from empresas)::int e, (select count(*) from facturas)::int f, (select count(*) from pagos)::int p`)
+  check('base con datos: quien veía solo India sigue viendo solo India', r.e === 1 && r.f === 2 && r.p === 1, JSON.stringify(r))
+  await db2.query(`select set_config('request.jwt.claims', $1, false)`, [JSON.stringify({ email: 'aprobador@verticebi.com' })])
+  r = await v2(`select (select count(*) from empresas)::int e, (select count(*) from facturas)::int f, (select count(*) from proveedores)::int p, (select count(*) from documentos)::int d`)
+  check('base con datos: quien veía todo sigue viendo todo', r.e === 8 && r.f === antes.facturas && r.p === antes.proveedores && r.d === antes.documentos, JSON.stringify(r))
+  await db2.close()
+}
 
 console.log(`\n${ok} OK · ${mal} MAL`)
 process.exit(mal ? 1 : 0)
