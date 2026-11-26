@@ -9,7 +9,7 @@ import { cargarCatalogosXubio } from './lib/xubio-catalogos'
 export default manejar(async (req) => {
   const u = await usuarioDesde(req)
   exigirRol(u, 'ADMINISTRACION', 'ADMIN')
-  return json({ ok: true, log: await cargarCatalogosXubio(supabaseAdmin(), await empresasVisibles(u)) })
+  return json({ ok: true, log: await cargarCatalogosXubio(supabaseAdmin(), u.organizacionId, await empresasVisibles(u)) })
 })
 
 export const config: Config = { path: '/api/xubio/catalogos' }

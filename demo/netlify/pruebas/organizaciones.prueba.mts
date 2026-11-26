@@ -1,8 +1,9 @@
 // Grupo B · Las funciones del servidor con más de una organización cliente.
 // Corre las funciones enteras contra el simulador (sin Supabase, Xubio ni Gemini reales).
 //   · Lo que se hace en nombre de una persona queda dentro de su organización.
-//   · Los puentes del Apps Script (un solo secreto, sin dueño) trabajan para la única organización que
-//     haya; con dos o más se detienen sin copiar ni entregar nada.
+//   · Los puentes del Apps Script con INGESTA_TOKEN trabajan para la organización que da el servicio o, si
+//     ninguna figura así, para la única que haya; con dos o más y ninguna que dé el servicio se detienen sin
+//     copiar ni entregar nada. Los secretos por organización (grupo C) se prueban en secretos.prueba.mts.
 // Uso: npm run test:organizaciones
 import { cerrar, check, lecturaGemini, pedido, simular, type Fila, type Mundo } from './simulador.mts'
 

@@ -9,11 +9,12 @@ import { cuentasDesdeXubio, origenDesdePagos, type CuentaXubio, type PagoXubio }
 const iso = (d: Date) => d.toISOString().slice(0, 10)
 
 /**
- * Lee Xubio de cada empresa con credenciales y guarda. Devuelve una línea por empresa (como el log del Apps Script).
- * `soloEmpresas`: cuando lo pide una persona, las empresas que ve. Sin lista (tarea programada), todas.
+ * Lee Xubio de cada empresa con credenciales de UNA organización y guarda. Devuelve una línea por empresa
+ * (como el log del Apps Script). `soloEmpresas`: cuando lo pide una persona, las empresas que ve. Sin lista
+ * (tarea programada), todas las de la organización. La tarea programada llama una vez por organización.
  */
-export async function cargarCatalogosXubio(db: SupabaseClient, soloEmpresas?: string[]): Promise<string[]> {
-  const consulta = db.from('empresas').select('id, nombre, erp').eq('erp', 'XUBIO').eq('activa', true)
+export async function cargarCatalogosXubio(db: SupabaseClient, organizacion: string, soloEmpresas?: string[]): Promise<string[]> {
+  const consulta = db.from('empresas').select('id, nombre, erp').eq('organizacion_id', organizacion).eq('erp', 'XUBIO').eq('activa', true)
   const { data: empresas, error } = await (soloEmpresas ? consulta.in('id', soloEmpresas) : consulta)
   if (error) throw new Error(error.message)
   const log: string[] = []
@@ -41,7 +42,7 @@ export async function cargarCatalogosXubio(db: SupabaseClient, soloEmpresas?: st
     } catch (err) { log.push(`${e.nombre}: no se pudieron leer los pagos (${String(err instanceof Error ? err.message : err).slice(0, 120)})`) }
   }
   if (cuentas.length || origen.length) {
-    const { error: e2 } = await db.rpc('espejar_catalogos', { p: { cuentas, origen } })
+    const { error: e2 } = await db.rpc('espejar_catalogos', { p: { cuentas, origen }, p_organizacion: organizacion })
     if (e2) throw new Error(e2.message)
   }
   return log

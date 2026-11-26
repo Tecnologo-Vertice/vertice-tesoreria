@@ -5,7 +5,7 @@
 // Body: { origen?: 'GMAIL' | 'DRIVE', gmailMessageId, nombre, mimeType, data (base64), remitente?, asunto? }
 
 import type { Config } from '@netlify/functions'
-import { env, json, leerJson, manejar, organizacionDelPuente, supabaseAdmin, ErrorHttp } from './lib/comun'
+import { exigirTokenIntegracion, json, leerJson, manejar, supabaseAdmin, ErrorHttp } from './lib/comun'
 import { guardarArchivo, registrarDocumento, validarArchivo } from './lib/entrada'
 
 interface Body {
@@ -19,15 +19,13 @@ interface Body {
 }
 
 export default manejar(async (req) => {
-  const esperado = env('INGESTA_TOKEN')
-  if ((req.headers.get('x-ingesta-token') ?? '') !== esperado) throw new ErrorHttp(401, 'Token de ingesta inválido')
+  // De qué organización es el buzón: la del token.
+  const { organizacion } = await exigirTokenIntegracion(req, 'INGESTA')
   const b = await leerJson<Body>(req)
   validarArchivo(b.nombre, b.mimeType, b.data)
   const origen = b.origen === 'DRIVE' ? 'DRIVE' : 'GMAIL'
   if (origen === 'GMAIL' && !b.gmailMessageId) throw new ErrorHttp(400, 'Falta gmailMessageId')
   const db = supabaseAdmin()
-  // De qué organización es el buzón: mientras haya una sola, esa (ver organizacionDelPuente).
-  const organizacion = await organizacionDelPuente()
 
   // Si este adjunto ya llegó, no se vuelve a guardar el archivo.
   if (b.gmailMessageId) {

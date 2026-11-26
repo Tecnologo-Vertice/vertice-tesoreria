@@ -128,7 +128,7 @@ export async function procesarDocumento(db: SupabaseClient, doc: Documento): Pro
  *  - una lista de empresas: únicamente lo que una persona subió para esas empresas (nunca lo de Gmail
  *    o Drive, que puede ser de cualquiera);
  *  - una organización: únicamente los documentos de esa organización;
- *  - nada: toda la cola (el lector programado).
+ *  - nada: toda la cola. (El lector programado ya no la usa: va por organización, leerColaPorOrganizacion.)
  */
 export async function leerCola(db: SupabaseClient, presupuestoMs: number, filtro?: string[] | { organizacion: string }): Promise<ResultadoDocumento[]> {
   const inicio = Date.now()
@@ -143,6 +143,28 @@ export async function leerCola(db: SupabaseClient, presupuestoMs: number, filtro
     const doc = (data as Documento[])[0]
     if (!doc) break
     resultados.push(await procesarDocumento(db, doc))
+  }
+  return resultados
+}
+
+/**
+ * Lector programado: recorre las organizaciones activas por turnos, un documento de cada una por vez,
+ * mientras quede tiempo. Así una organización con la cola llena no deja esperando a las demás, y los
+ * documentos de una organización suspendida no se leen.
+ */
+export async function leerColaPorOrganizacion(db: SupabaseClient, presupuestoMs: number, organizaciones: string[]): Promise<ResultadoDocumento[]> {
+  const inicio = Date.now()
+  const resultados: ResultadoDocumento[] = []
+  const conPendientes = new Set(organizaciones)
+  while (conPendientes.size && Date.now() - inicio < presupuestoMs) {
+    for (const organizacion of [...conPendientes]) {
+      if (Date.now() - inicio >= presupuestoMs) break
+      const { data, error } = await db.rpc('tomar_documentos', { p_max: 1, p_organizacion: organizacion })
+      if (error) throw new ErrorHttp(500, error.message)
+      const doc = (data as Documento[])[0]
+      if (!doc) conPendientes.delete(organizacion)
+      else resultados.push(await procesarDocumento(db, doc))
+    }
   }
   return resultados
 }

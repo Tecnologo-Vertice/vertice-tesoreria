@@ -7,7 +7,7 @@
 // Las pestañas grandes llegan en lotes; el primero de cada corrida trae el header x-espejo-lote: 1.
 
 import type { Config } from '@netlify/functions'
-import { env, json, leerJson, manejar, organizacionDelPuente, supabaseAdmin, ErrorHttp } from './lib/comun'
+import { exigirTokenIntegracion, json, leerJson, manejar, supabaseAdmin, ErrorHttp } from './lib/comun'
 import { catalogosDesdeHoja, facturaDesdeFila, pagoDesdeFila, type CatalogosHoja, type FilaHoja, type HojaFacturas } from './lib/espejo'
 import type { EmpresaRef } from './lib/factura'
 
@@ -26,10 +26,8 @@ interface Conteo {
 }
 
 export default manejar(async (req) => {
-  const esperado = env('INGESTA_TOKEN')
-  if ((req.headers.get('x-ingesta-token') ?? '') !== esperado) throw new ErrorHttp(401, 'Token de ingesta inválido')
-  // De qué organización es la hoja: mientras haya una sola, esa (ver organizacionDelPuente).
-  const organizacion = await organizacionDelPuente()
+  // De qué organización es la hoja: la del token (INGESTA_TOKEN es la de Vértice, ver exigirTokenIntegracion).
+  const { organizacion } = await exigirTokenIntegracion(req, 'COPIA_HOJA')
   const b = await leerJson<Body>(req)
   const db = supabaseAdmin()
   // Las empresas de esa organización, con sus alias: contra ellas (y ninguna más) se reconoce el RECEPTOR de cada fila.
@@ -39,7 +37,7 @@ export default manejar(async (req) => {
 
   if (b.tipo === 'catalogos') {
     const c = catalogosDesdeHoja(b.catalogos ?? {}, empresas)
-    const { data, error } = await db.rpc('espejar_catalogos', { p: c })
+    const { data, error } = await db.rpc('espejar_catalogos', { p: c, p_organizacion: organizacion })
     if (error) throw new ErrorHttp(422, error.message)
     await anotar(db, organizacion, 'Catalogos', { filas: Object.values(data as Record<string, number>).reduce((a, n) => a + n, 0), nuevas: 0, actualizadas: 0, sin_cambios: 0, omitidas: c.omitidas.map((m) => ({ motivo: m })) })
     return json({ ok: true, ...(data as object), omitidas: c.omitidas })
@@ -67,7 +65,7 @@ export default manejar(async (req) => {
     throw new ErrorHttp(400, 'tipo tiene que ser facturas, pagos o catalogos')
   }
 
-  const { data, error } = await db.rpc(b.tipo === 'facturas' ? 'espejar_facturas' : 'espejar_pagos', { p_filas: traducidas })
+  const { data, error } = await db.rpc(b.tipo === 'facturas' ? 'espejar_facturas' : 'espejar_pagos', { p_filas: traducidas, p_organizacion: organizacion })
   if (error) throw new ErrorHttp(422, error.message)
   const r = data as Conteo
   const conteo: Conteo = { ...r, omitidas: [...omitidasLocal, ...r.omitidas] }

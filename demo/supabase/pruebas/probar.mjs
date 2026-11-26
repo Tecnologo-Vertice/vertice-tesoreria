@@ -1284,6 +1284,102 @@ await db.exec(`set role service_role`)
 check('conexiones_erp: el servidor (service_role) sí la lee', (await val(`select count(*)::int n from conexiones_erp`)).n === 2)
 await db.exec(`reset role`)
 
+// ================================================================ Secretos por organización (0022)
+// Vértice y Otra siguen en la base. El servidor resuelve la organización del secreto (lib/comun.ts,
+// probado en test:secretos) y se la pasa a la base; acá: que cada versión "por organización" solo cargue,
+// entregue y marque lo de esa organización, y que nadie lea los secretos.
+await db.exec(`reset role`)
+await como('')
+const { createHash } = await import('node:crypto')
+const sha = (s) => createHash('sha256').update(s, 'utf8').digest('hex')
+const secretoB = (await val(`select crear_token_integracion($1, 'COPIA_HOJA', 'Apps Script de Otra') s`, [orgB])).s
+check('crear_token_integracion devuelve el secreto una vez, con su formato', /^vti_[0-9a-f]{64}$/.test(secretoB))
+r = await val(`select organizacion_id, tarea, nombre, huella, activo, creado_por from tokens_integracion where organizacion_id = $1`, [orgB])
+check('…y guarda solo su resumen (el mismo SHA-256 que calcula el servidor)', r.huella === sha(secretoB) && r.tarea === 'COPIA_HOJA' && r.activo === true && r.creado_por === 'SQL', JSON.stringify(r))
+check('…el secreto no queda en ninguna columna', !JSON.stringify((await db.query(`select * from tokens_integracion`)).rows).includes(secretoB.slice(4)))
+const otroSecreto = (await val(`select crear_token_integracion($1, 'COPIA_HOJA', 'otro') s`, [orgB])).s
+check('dos secretos seguidos son distintos', otroSecreto !== secretoB && (await val(`select count(distinct huella)::int n from tokens_integracion`)).n === 2)
+await falla('un secreto es para una tarea conocida', `select crear_token_integracion($1, 'TODO', 'x')`, [orgB], /tokens_integracion_tarea_check/)
+await falla('…y de una organización que existe', `select crear_token_integracion(gen_random_uuid(), 'FLUJO', 'x')`, [], /no existe/)
+for (const rol of ['anon', 'authenticated']) {
+  check(`tokens_integracion: ${rol} no tiene ningún permiso sobre la tabla`, !(await val(`select has_table_privilege($1, 'tokens_integracion', 'select') s, has_table_privilege($1, 'tokens_integracion', 'insert') i,
+    has_table_privilege($1, 'tokens_integracion', 'update') u, has_table_privilege($1, 'tokens_integracion', 'delete') d`, [rol]).then((x) => x.s || x.i || x.u || x.d)))
+  check(`${rol} no crea secretos ni fija la organización del servidor`, !(await val(`select has_function_privilege($1, 'crear_token_integracion(uuid,text,text,text)', 'execute') a,
+    has_function_privilege($1, 'fijar_organizacion_del_proceso(uuid)', 'execute') b`, [rol]).then((x) => x.a || x.b)))
+}
+for (const firma of ['espejar_facturas(jsonb,uuid)', 'espejar_pagos(jsonb,uuid)', 'espejar_catalogos(jsonb,uuid)', 'cheques_para_cashflow(timestamptz,uuid)', 'marcar_cheques_cashflow(jsonb,uuid)', 'flujo_datos(uuid)', 'facturas_para_xubio(integer,uuid)'])
+  check(`una persona no ejecuta ${firma}`, !(await val(`select has_function_privilege('authenticated', $1, 'execute') p`, [firma])).p)
+for (const [quien, email] of [['un administrador de Vértice', 'tecnologia@verticebi.com'], ['el administrador de Otra', 'admin@otra.com']]) {
+  await db.exec(`set role authenticated`)
+  await como(email)
+  await falla(`tokens_integracion: ${quien}, con su sesión, no la lee`, `select huella from tokens_integracion`, [], /permission denied/)
+  await falla('…ni se agrega un secreto', `insert into tokens_integracion (organizacion_id, tarea, nombre, huella, creado_por) values ($1, 'FLUJO', 'x', $2, 'x')`, [orgB, sha('mio')], /permission denied/)
+  await db.exec(`reset role`)
+}
+check('tokens_integracion: RLS prendido y sin reglas', (await val(`select relrowsecurity r from pg_class where relname = 'tokens_integracion'`)).r === true
+  && (await val(`select count(*)::int n from pg_policies where tablename = 'tokens_integracion'`)).n === 0)
+
+// --- Las versiones de antes (sin organización) ya no devuelven todo: con dos organizaciones se detienen.
+await falla('flujo_datos() sin organización, con dos: se detiene', `select flujo_datos()`, [], /más de una organización/)
+await falla('cheques_para_cashflow sin organización, con dos: se detiene', `select * from cheques_para_cashflow('2000-01-01')`, [], /más de una organización/)
+await falla('marcar_cheques_cashflow sin organización, con dos: se detiene', `select marcar_cheques_cashflow('[]')`, [], /más de una organización/)
+await falla('facturas_para_xubio sin organización, con dos: se detiene', `select * from facturas_para_xubio(50)`, [], /más de una organización/)
+
+// --- Flujo y subida a Xubio por organización
+const EMPRESAS_OTRA = ['otra-uno', 'otra-dos']
+const NOMBRES_OTRA = ['Otra Uno S.A.', 'Otra Dos S.R.L.']
+const flB = (await val(`select flujo_datos($1) d`, [orgB])).d
+const flV = (await val(`select flujo_datos($1) d`, [orgV])).d
+check('flujo de Otra: solo pagos y facturas de sus empresas', flB.pagos.length > 0 && flB.facturas.length > 0 && [...flB.pagos.map((x) => x.EMPRESA), ...flB.facturas.map((x) => x.RECEPTOR)].every((x) => NOMBRES_OTRA.includes(x)), JSON.stringify(flB).slice(0, 200))
+check('flujo de Vértice: ningún pago ni factura de Otra, y lo suyo completo', flV.pagos.length > 0 && ![...flV.pagos.map((x) => x.EMPRESA), ...flV.facturas.map((x) => x.RECEPTOR)].some((x) => NOMBRES_OTRA.includes(x))
+  && flV.pagos.length === (await val(`select count(*)::int n from pagos p join empresas e on e.id = p.empresa_id where e.organizacion_id = $1`, [orgV])).n)
+r = (await db.query(`select empresa_id from facturas_para_xubio(500, $1)`, [orgB])).rows.map((x) => x.empresa_id)
+check('facturas para subir a Xubio de Otra: solo de sus empresas', r.length > 0 && r.every((x) => EMPRESAS_OTRA.includes(x)), r.join())
+r = (await db.query(`select empresa_id from facturas_para_xubio(500, $1)`, [orgV])).rows.map((x) => x.empresa_id)
+check('…y las de Vértice, ninguna de Otra', r.length > 0 && !r.some((x) => EMPRESAS_OTRA.includes(x)), r.join())
+
+// --- Cheques por organización
+await db.exec(`set role authenticated`)
+await como('teso@otra.com')
+const pChB = (await val(`select registrar_pago($1) id`, [pago({ empresa_id: 'otra-uno', importe: 70, medio: 'ECHEQ', cuenta_origen: 'Banco de Otra CC', numero_cheque: '0099001', fecha_acreditacion: '2026-12-20' })])).id
+await db.exec(`reset role`)
+await db.query(`update pagos set cheque_cashflow = null where id = $1`, [pCh])
+const chequesDe = async (org) => (await db.query(`select pago_id, empresa_id from cheques_para_cashflow('2000-01-01', $1)`, [org])).rows
+check('cheques de Otra: el suyo y ninguno de Vértice', (await chequesDe(orgB)).map((x) => x.pago_id).join() === pChB)
+check('cheques de Vértice: los suyos y no el de Otra', (await chequesDe(orgV)).some((x) => x.pago_id === pCh) && !(await chequesDe(orgV)).some((x) => x.pago_id === pChB))
+check('el secreto de Vértice no marca un cheque de Otra', (await val(`select marcar_cheques_cashflow($1, $2) n`, [JSON.stringify([{ pago_id: pChB, estado: 'AGREGADO' }]), orgV])).n === 0
+  && (await val(`select cheque_cashflow c from pagos where id = $1`, [pChB])).c === null)
+check('…y el de Otra sí', (await val(`select marcar_cheques_cashflow($1, $2) n`, [JSON.stringify([{ pago_id: pChB, estado: 'AGREGADO' }]), orgB])).n === 1)
+await db.query(`update pagos set cheque_cashflow = 'AGREGADO' where id = $1`, [pCh])
+
+// --- Copia de la hoja por organización
+const filaDeOtra = trad([filaF({ _fila: 90, NUMERO: '00007-00000390' })], 'Facturas')
+e1 = (await val(`select espejar_facturas($1, $2) r`, [JSON.stringify(filaDeOtra), orgB])).r
+check('copia de facturas con la organización de Otra: una fila de una empresa de Vértice se omite con el motivo', e1.nuevas === 0 && e1.omitidas.length === 1 && /otra organización/.test(e1.omitidas[0].motivo)
+  && (await val(`select count(*)::int n from facturas where numero = 390 and punto_venta = 7`)).n === 0, JSON.stringify(e1))
+e1 = (await val(`select espejar_facturas($1, $2) r`, [JSON.stringify(filaDeOtra), orgV])).r
+check('…con la de Vértice, entra', e1.nuevas === 1 && e1.omitidas.length === 0, JSON.stringify(e1))
+// Un pago de la hoja sin empresa que apunta a una factura de Vértice (la 350 de Beratung).
+const pagoSinEmpresa = trad([filaP({ _fila: 91, ID_PAGO: 'PAGO-1792698020000-0' })], 'Pagos')
+ep = (await val(`select espejar_pagos($1, $2) r`, [JSON.stringify(pagoSinEmpresa), orgB])).r
+check('copia de pagos con la organización de Otra: un pago sin empresa no se engancha a una factura de Vértice', ep.nuevas === 0 && ep.omitidas.length === 1
+  && !(await val(`select 1 x from pagos where hoja_id = 'PAGO-1792698020000-0'`)), JSON.stringify(ep))
+ep = (await val(`select espejar_pagos($1, $2) r`, [JSON.stringify(pagoSinEmpresa), orgV])).r
+check('…con la de Vértice entra, vinculado a su factura (antes, con dos organizaciones, se omitía)', ep.nuevas === 1 && (await val(`select empresa_id from pagos where hoja_id = 'PAGO-1792698020000-0'`))?.empresa_id === 'beratung', JSON.stringify(ep))
+await falla('…y después de esa copia, el servidor vuelve a no saber para quién trabaja (la organización vale solo para ese pedido)', `select organizacion_del_servidor()`, [], /más de una organización/)
+r = (await val(`select espejar_catalogos($1, $2) r`, [JSON.stringify({ emails: [{ cuit: '30777777771', proveedor: 'Proveedor de la hoja de Otra', email: 'pagos@prov-otra.com' }], productos: [{ nombre: 'Producto de la hoja de Otra', codigo: 'PHO' }] }), orgB])).r
+check('catálogos sin empresa (mails y productos) con la organización de Otra: quedan a nombre de Otra', r.emails === 1 && r.productos === 1
+  && (await val(`select organizacion_id o from proveedores where cuit = '30777777771'`)).o === orgB && (await val(`select organizacion_id o from productos_xubio where nombre = 'Producto de la hoja de Otra'`)).o === orgB)
+const antesCat = (await val(`select (select count(*) from cuentas_contables)::int c, (select count(*) from cuentas_origen)::int o, (select count(*) from proveedores_empresa)::int p`))
+await falla('catálogos de Vértice mandados con la organización de Otra: se rechazan enteros', `select espejar_catalogos($1, $2)`, [JSON.stringify(cat), orgB], /otra organización: no se copió nada/)
+check('…sin copiar nada', JSON.stringify(await val(`select (select count(*) from cuentas_contables)::int c, (select count(*) from cuentas_origen)::int o, (select count(*) from proveedores_empresa)::int p`)) === JSON.stringify(antesCat))
+await db.query(`update organizaciones set estado = 'SUSPENDIDA' where id = $1`, [orgB])
+await falla('con la organización suspendida, la copia no corre', `select espejar_facturas('[]', $1)`, [orgB], /no está activa/)
+await db.query(`update organizaciones set estado = 'ACTIVA' where id = $1`, [orgB])
+// Un registro sin organización, dentro de un pedido del servidor para Otra, queda a nombre de Otra.
+await db.exec(`begin; select fijar_organizacion_del_proceso('${orgB}'); insert into reglas_cuenta (patron, cuenta_contable) values ('regla-del-proceso', 'X'); commit;`)
+check('un registro sin organización hecho por el servidor para Otra queda a nombre de Otra', (await val(`select organizacion_id o from reglas_cuenta where patron = 'regla-del-proceso'`)).o === orgB)
+
 // ================================================================ Migrar una base que ya tiene datos (0017 en adelante)
 // La base real tiene datos: las migraciones nuevas se aplican sobre una base cargada con las anteriores.
 {

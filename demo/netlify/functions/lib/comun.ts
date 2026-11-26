@@ -1,6 +1,7 @@
 // Utilidades compartidas por las funciones: cliente de Supabase con rol de servicio,
 // identificación del usuario que llama, y respuestas JSON.
 
+import { createHash, timingSafeEqual } from 'node:crypto'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 
 export type Rol = 'TESORERIA' | 'ADMINISTRACION' | 'APROBADOR' | 'DIRECCION' | 'CONTROLLER' | 'ADMIN'
@@ -73,24 +74,62 @@ export async function empresasVisibles(u: UsuarioFn): Promise<string[]> {
   return ids
 }
 
-/**
- * Para qué organización trabajan los puentes del Apps Script (cartero, copia de la hoja, cheques, flujo).
- * Hoy tienen un solo secreto (INGESTA_TOKEN) que no dice de quién es. Mientras haya una sola organización,
- * es esa. Con dos o más se rechaza el pedido: es preferible que el puente se detenga a que cargue o entregue
- * datos de un cliente a otro. Cuando cada organización tenga su secreto, la organización sale de ahí.
- */
-export async function organizacionDelPuente(): Promise<string> {
-  const { data, error } = await supabaseAdmin().from('organizaciones').select('id').limit(2)
+/** Organizaciones activas, para las tareas programadas que recorren organización por organización. */
+export async function organizacionesActivas(db: SupabaseClient = supabaseAdmin()): Promise<string[]> {
+  const { data, error } = await db.from('organizaciones').select('id').eq('estado', 'ACTIVA')
   if (error) throw new ErrorHttp(500, error.message)
-  if (!data || data.length !== 1)
-    throw new ErrorHttp(409, 'Hay más de una organización y este puente todavía no sabe para cuál trabaja (falta el secreto por organización). No se copió ni se entregó nada.')
-  return String(data[0].id)
+  return (data ?? []).map((o) => String(o.id))
 }
 
-/** Los puentes del Apps Script (cartero, cheques, flujo) se identifican con INGESTA_TOKEN en x-ingesta-token. */
-export function exigirTokenCartero(req: Request) {
-  const esperado = env('INGESTA_TOKEN')
-  if ((req.headers.get('x-ingesta-token') ?? '') !== esperado) throw new ErrorHttp(401, 'Token del Apps Script inválido')
+/**
+ * Tipo de tarea de un puente del Apps Script. Cada secreto de tokens_integracion sirve para una sola.
+ *   INGESTA: cartero de Gmail y Drive (/api/ingesta/adjunto y /conocidos) y facturas leídas (/api/ingesta/factura).
+ *   COPIA_HOJA: /api/espejo. CHEQUES: /api/cheques/*. FLUJO: /api/flujo/datos.
+ */
+export type Tarea = 'INGESTA' | 'COPIA_HOJA' | 'CHEQUES' | 'FLUJO'
+
+/** Los secretos que crea crear_token_integracion (migración 0022). */
+const FORMATO_SECRETO = /^vti_[0-9a-f]{64}$/
+const resumen = (s: string) => createHash('sha256').update(s, 'utf8').digest()
+
+/**
+ * Para qué organización trabaja un puente del Apps Script, según el secreto que manda en x-ingesta-token:
+ *   · INGESTA_TOKEN (la variable de siempre): la organización que da el servicio (Vértice), para todas las
+ *     tareas. Así el Apps Script de Vértice sigue entrando sin cambiar nada. Si ninguna organización figura
+ *     como la que da el servicio y hay una sola, esa (como antes); con más de una, se detiene (409).
+ *   · Un secreto de tokens_integracion: su organización, solo para su tarea, si está activo y la
+ *     organización también. La base guarda solo el resumen del secreto.
+ * Ningún mensaje repite el secreto recibido.
+ */
+export async function exigirTokenIntegracion(req: Request, tarea: Tarea): Promise<{ organizacion: string }> {
+  const recibido = req.headers.get('x-ingesta-token') ?? ''
+  if (!recibido) throw new ErrorHttp(401, 'Token de ingesta inválido')
+  const general = process.env.INGESTA_TOKEN ?? ''
+  if (general && timingSafeEqual(resumen(recibido), resumen(general))) return { organizacion: await organizacionProveedora() }
+  // Lo que no tiene la forma de un secreto nuestro ni siquiera se busca en la base.
+  if (!FORMATO_SECRETO.test(recibido)) throw new ErrorHttp(401, 'Token de ingesta inválido')
+  const db = supabaseAdmin()
+  const { data: t, error } = await db.from('tokens_integracion').select('id, organizacion_id, tarea, activo').eq('huella', resumen(recibido).toString('hex')).maybeSingle()
+  if (error) throw new ErrorHttp(500, 'No se pudo verificar el token de ingesta')
+  if (!t || t.activo !== true) throw new ErrorHttp(401, 'Token de ingesta inválido')
+  if (t.tarea !== tarea) throw new ErrorHttp(403, `Este token es para la tarea ${t.tarea}, no para ${tarea}`)
+  const { data: o, error: e2 } = await db.from('organizaciones').select('id, estado').eq('id', String(t.organizacion_id)).maybeSingle()
+  if (e2) throw new ErrorHttp(500, e2.message)
+  if (!o || o.estado !== 'ACTIVA') throw new ErrorHttp(403, 'La organización de este token no está activa')
+  await db.from('tokens_integracion').update({ ultimo_uso: new Date().toISOString() }).eq('id', String(t.id))
+  return { organizacion: String(t.organizacion_id) }
+}
+
+/** La organización que da el servicio (es_proveedor). Es la de INGESTA_TOKEN. */
+async function organizacionProveedora(): Promise<string> {
+  const { data, error } = await supabaseAdmin().from('organizaciones').select('id, estado, es_proveedor')
+  if (error) throw new ErrorHttp(500, error.message)
+  const lista = data ?? []
+  const o = lista.find((x) => x.es_proveedor === true) ?? (lista.length === 1 ? lista[0] : undefined)
+  if (!o)
+    throw new ErrorHttp(409, 'Hay más de una organización y ninguna figura como la que da el servicio: INGESTA_TOKEN no sabe para cuál trabaja (usar el token de la organización). No se copió ni se entregó nada.')
+  if (o.estado !== 'ACTIVA') throw new ErrorHttp(403, 'La organización de este token no está activa')
+  return String(o.id)
 }
 
 export function json(body: unknown, status = 200): Response {

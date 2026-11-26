@@ -30,7 +30,7 @@ Por encima de las empresas está la organización: el cliente. Vértice es la pr
 | Registro nuevo sin organización | Se deduce: de la empresa, de la persona que hace la acción o, si hay una sola organización, esa. Si hay más de una y no se puede deducir, se rechaza. |
 | Cruces | Una persona solo puede tener asignadas empresas de su organización. El proveedor de una factura o un pago es de la organización de la empresa. Un adjunto de una organización no puede terminar en una factura de otra. |
 | Funciones de Netlify | `usuarioDesde` devuelve la organización y rechaza a quien es de una organización que no está activa. `leer-ahora` lee solo la cola de la organización de quien lo pide. |
-| Puentes del Apps Script | Tienen un solo secreto, sin dueño. Mientras haya una sola organización trabajan para esa. Con dos o más responden 409 y no copian ni entregan nada, hasta que cada organización tenga su secreto. |
+| Puentes del Apps Script | Desde la 0022 la organización sale del secreto (ver "Secretos por organización" más abajo). `INGESTA_TOKEN` sigue valiendo para la organización que da el servicio. |
 
 ### Archivos (migración 0019)
 
@@ -80,6 +80,20 @@ La IA recibe en el pedido solo los nombres y CUIT de las empresas de la organiza
 | Alta | `POST /api/xubio/credenciales` (`{ empresaId, clientId, secret }`), solo rol ADMIN y para una empresa que ve. Pide un token a Xubio para probarla; si Xubio la rechaza, no guarda nada. Sin `CREDENCIALES_CLAVE`, se rechaza con un mensaje claro y todo sigue con la variable. No hay pantalla todavía (grupo K) |
 | Cambio de clave | Poner la nueva en `CREDENCIALES_CLAVE` y la de antes en `CREDENCIALES_CLAVE_ANTERIOR`. Lo cifrado con la anterior se sigue leyendo y se vuelve a cifrar con la nueva la primera vez que se usa. |
 | Para volver a la variable | `delete from conexiones_erp where empresa_id = '…';` |
+
+### Secretos por organización (migración 0022)
+
+Los puentes del Apps Script (`/api/espejo`, `/api/ingesta/adjunto`, `/api/ingesta/factura`, `/api/ingesta/conocidos`, `/api/cheques/*`, `/api/flujo/datos`) mandan un secreto en `x-ingesta-token`. De ese secreto sale para qué organización trabajan.
+
+| Qué | Cómo queda |
+|---|---|
+| `INGESTA_TOKEN` (la variable de siempre) | Vale para la organización que da el servicio (`es_proveedor`, Vértice), en todas las tareas. El Apps Script de Vértice no cambia. Si ninguna organización figura así y hay una sola, esa; con dos o más, 409 como antes |
+| `tokens_integracion` | Secretos de las demás organizaciones: uno por organización y por tarea (`INGESTA`, `COPIA_HOJA`, `CHEQUES`, `FLUJO`). Se guarda solo el SHA-256 del secreto. Nadie con sesión la lee |
+| Crear uno | En el editor SQL: `select crear_token_integracion((select id from organizaciones where slug = 'otra'), 'COPIA_HOJA', 'Apps Script de Otra');`. Devuelve el secreto una sola vez; se pega en las propiedades del Apps Script de esa organización como `INGESTA_TOKEN` |
+| Revocar | `update tokens_integracion set activo = false where id = '…';` Sin redesplegar |
+| Un secreto de otra tarea | 403. Un secreto revocado o que no existe, 401. Organización suspendida, 403 |
+| En la base | La copia de la hoja, cheques, flujo y subida a Xubio tienen versión con organización: cada una solo carga, entrega y marca lo de esa organización. Lo que no trae empresa (mails, productos, pagos de la hoja sin empresa) queda a nombre de la organización del secreto. Las versiones de antes (sin organización) siguen andando con una sola organización y se detienen con dos |
+| Tareas programadas | El subidor a Xubio, los catálogos semanales y el lector de facturas recorren las organizaciones activas una por una (el lector, por turnos: un documento de cada una) |
 
 La prueba fija está en `npm run test:sql`, sección "Dos organizaciones que no se ven ni se tocan": una segunda organización de mentira con sus empresas, usuarios, proveedores, facturas, pagos, documentos y auditoría. Compara, tabla por tabla, lo que ve cada una con lo que es suyo, y prueba cada acción de negocio contra los datos de la otra. `npm run test:organizaciones` hace lo mismo con las funciones de Netlify.
 

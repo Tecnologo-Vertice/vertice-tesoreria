@@ -2,11 +2,10 @@
 // Le dice al cartero de Drive qué archivos ya entraron (por id de archivo), para no volver a bajarlos y mandarlos.
 
 import type { Config } from '@netlify/functions'
-import { exigirTokenCartero, json, leerJson, manejar, organizacionDelPuente, supabaseAdmin, ErrorHttp } from './lib/comun'
+import { exigirTokenIntegracion, json, leerJson, manejar, supabaseAdmin, ErrorHttp } from './lib/comun'
 
 export default manejar(async (req) => {
-  exigirTokenCartero(req)
-  const organizacion = await organizacionDelPuente()
+  const { organizacion } = await exigirTokenIntegracion(req, 'INGESTA')
   const { ids } = await leerJson<{ ids?: string[] }>(req)
   const lista = (ids ?? []).filter((x) => typeof x === 'string' && x).slice(0, 500)
   if (!lista.length) return json({ ok: true, conocidos: [] })
