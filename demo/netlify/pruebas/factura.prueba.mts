@@ -1,6 +1,7 @@
 // Pruebas de lib/factura.ts (lectura y validación de facturas del Flujo 1) con respuestas de IA de ejemplo.
 // Uso: npm run test:ia   (Node 24 corre TypeScript sin compilar). CUIT y montos ficticios.
-import { cuitValido, interpretarLectura, parsearNumero, promptFactura, type EmpresaRef } from '../functions/lib/factura.ts'
+import { cuitValido, empresaPorAlias, interpretarLectura, parsearNumero, promptFactura, type EmpresaRef } from '../functions/lib/factura.ts'
+import { conAlias, EMPRESAS_VERTICE } from './empresas-vertice.mts'
 
 let ok = 0
 let mal = 0
@@ -10,12 +11,13 @@ function check(nombre: string, cond: boolean, extra = '') {
   console.log(`${cond ? 'OK ' : 'MAL'} ${nombre}${extra ? ' · ' + extra : ''}`)
 }
 
-const EMPRESAS: EmpresaRef[] = [
+// Con los alias cargados como datos (migración 0020): el código ya no tiene nombres de empresas escritos.
+const EMPRESAS: EmpresaRef[] = conAlias([
   { id: 'beratung', nombre: 'Beratung S.A.', cuit: '30710000014' },
   { id: 'india', nombre: 'INDIA ADV S.A.', cuit: '00000000001' }, // CUIT marcador de la semilla
   { id: 'robles', nombre: 'Droguería Robles S.A.', cuit: '00000000005' },
   { id: 'hrobles', nombre: 'Héctor Daniel Robles', cuit: '00000000006' },
-]
+])
 const HOY = '2026-10-14'
 const PROV = '20123456786' // CUIT válido (dígito verificador correcto)
 
@@ -94,6 +96,26 @@ check('número ilegible: no crea factura', r.tipo === 'SIN_FACTURA')
 const p = promptFactura(EMPRESAS, HOY)
 check('el prompt lleva los CUIT reales del grupo', p.includes('30710000014 (Beratung S.A.)'))
 check('el prompt no lleva CUIT marcadores ni "[CUIT India]"', !p.includes('00000000001') && !p.includes('[CUIT'))
+
+// --- Alias de empresas como datos (migración 0020): el código no tiene ningún nombre escrito
+check('alias con varias partes: tienen que estar todas', empresaPorAlias('DROGUERIA ROBLES SA', EMPRESAS_VERTICE) === 'robles' && empresaPorAlias('ROBLES HNOS', EMPRESAS_VERTICE) === null)
+check('alias sin mayúsculas, tildes, espacios ni signos', empresaPorAlias('  Contról-B  s.a. ', EMPRESAS_VERTICE) === 'controlb' && empresaPorAlias('FARMACONTROL', EMPRESAS_VERTICE) === 'farmacontrol')
+check('si coinciden dos empresas, gana la de orden menor', empresaPorAlias('INDIA ADV SA (Grupo Vértice)', EMPRESAS_VERTICE) === 'india' && empresaPorAlias('Droguería Robles de Héctor Robles', EMPRESAS_VERTICE) === 'robles')
+check('…llegue la lista en el orden que llegue', empresaPorAlias('INDIA ADV SA (Grupo Vértice)', [...EMPRESAS_VERTICE].reverse()) === 'india')
+check('una empresa sin alias no se reconoce por el nombre', empresaPorAlias('Beratung S.A.', [{ id: 'beratung', nombre: 'Beratung S.A.', cuit: '30710000014' }]) === null)
+check('la lectura reconoce a Héctor Robles también como "Robles, Daniel Hect" (igual que la copia de la hoja)', factura({ CUIT_RECEPTOR: '', RECEPTOR: 'ROBLES, DANIEL HECT' }).empresa_id === 'hrobles')
+// Con las empresas de otra organización: nada de Vértice se reconoce y cada una usa sus propios alias.
+const OTRA: EmpresaRef[] = [{ id: 'otra-uno', nombre: 'Otra Uno S.A.', cuit: '30999999991', alias: ['otra uno'] }]
+r = interpretarLectura(base({ CUIT_RECEPTOR: '', RECEPTOR: 'BERATUNG S.A.' }), OTRA, HOY)
+check('otra organización: "Beratung" no se reconoce', r.tipo === 'SIN_FACTURA' && r.motivo.includes('receptora'))
+r = interpretarLectura(base({ CUIT_RECEPTOR: '30-71000001-4', RECEPTOR: 'BERATUNG S.A.' }), OTRA, HOY)
+check('…tampoco por el CUIT de una empresa de Vértice', r.tipo === 'SIN_FACTURA')
+r = interpretarLectura(base({ PROVEEDOR: 'DROGUERIA ROBLES S.A.', CUIT_RECEPTOR: '30-99999999-1', RECEPTOR: 'Otra Uno' }), OTRA, HOY)
+check('…y una factura emitida por "Droguería Robles" va a la empresa de esa organización, no a robles', r.tipo === 'FACTURA' && r.factura.empresa_id === 'otra-uno')
+r = interpretarLectura(base({ CUIT_RECEPTOR: '', RECEPTOR: 'OTRA UNO SA' }), OTRA, HOY)
+check('…que reconoce las suyas por sus propios alias', r.tipo === 'FACTURA' && r.factura.empresa_id === 'otra-uno')
+const pOtra = promptFactura([{ id: 'otra-uno', nombre: 'Otra Uno S.A.', cuit: '30999999991' }], HOY)
+check('…y su pedido a la IA lleva solo sus CUIT', pOtra.includes('30999999991 (Otra Uno S.A.)') && !pOtra.includes('30710000014') && !/beratung|robles|india/i.test(pOtra))
 
 console.log(`\n${ok} OK · ${mal} MAL`)
 process.exit(mal ? 1 : 0)

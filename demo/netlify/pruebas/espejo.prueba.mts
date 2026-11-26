@@ -1,7 +1,16 @@
 // Pruebas de lib/espejo.ts: traducción de filas de la hoja real a la base.
 // Las filas imitan las de "Facturas automatizadas" tal como las manda gas/PuenteHojas.gs. Uso: npm run test:espejo
 import { cuentasFactura, cuentasOrigenDe, cuentasPara, enLista, sugerirCuentaOrigen } from '../../src/lib/cuentas.ts'
-import { catalogosDesdeHoja, categoriaVertice, empresaDesdeTexto, facturaDesdeFila, fecha, fechaHora, importe, metodoPago, numeroComprobante, pagoDesdeFila } from '../functions/lib/espejo.ts'
+import * as espejo from '../functions/lib/espejo.ts'
+import { categoriaVertice, fecha, fechaHora, importe, metodoPago, numeroComprobante } from '../functions/lib/espejo.ts'
+import { EMPRESAS_VERTICE } from './empresas-vertice.mts'
+
+// Las empresas llegan como datos (tabla empresas, con los alias de la migración 0020): el código ya no
+// tiene sus nombres escritos. Las pruebas de abajo no cambiaron; solo reciben esa lista.
+const empresaDesdeTexto = (t: unknown) => espejo.empresaDesdeTexto(t, EMPRESAS_VERTICE)
+const facturaDesdeFila = (f: espejo.FilaHoja, hoja: espejo.HojaFacturas, fila: number) => espejo.facturaDesdeFila(f, hoja, fila, EMPRESAS_VERTICE)
+const pagoDesdeFila = (f: espejo.FilaHoja, fila: number) => espejo.pagoDesdeFila(f, fila, EMPRESAS_VERTICE)
+const catalogosDesdeHoja = (c: espejo.CatalogosHoja) => espejo.catalogosDesdeHoja(c, EMPRESAS_VERTICE)
 
 let ok = 0
 let mal = 0
@@ -172,6 +181,22 @@ so = sugerirCuentaOrigen(origenesBer, 'Banco Hipotecario')
 check('dos cuentas sin N° de cuenta: la más usada, marcada para revisar', so?.cuenta === 'Banco Hipotecario CC 0319 BERATUNG' && so.revisar === true)
 check('efectivo → caja', sugerirCuentaOrigen(origenesBer, 'Efectivo')?.cuenta === 'CAJA')
 check('banco que la empresa no tiene: sin sugerencia', sugerirCuentaOrigen(origenesBer, 'Banco Galicia') === null && sugerirCuentaOrigen(origenesBer, '') === null)
+
+// --- Empresas como datos (migración 0020)
+const SIN_ERP = EMPRESAS_VERTICE.map((e) => (e.id === 'beratung' ? { ...e, erp: 'NINGUNO' } : e))
+let rd = espejo.facturaDesdeFila({ ...base, ESTADO_XUBIO: '' }, 'Facturas', 2, SIN_ERP)
+check('qué empresas no usan Xubio sale de empresas.erp, no de una lista en el código', rd.ok && rd.dato.estado_xubio === 'PENDIENTE_RALPHARMA')
+rd = espejo.facturaDesdeFila({ ...base, RECEPTOR: 'DROGUERIA ROBLES SA', ESTADO_XUBIO: '' }, 'Facturas', 2, EMPRESAS_VERTICE.map((e) => ({ ...e, erp: 'XUBIO' })))
+check('…y una empresa que pasa a tener Xubio deja de ir a la bandeja de Ralpharma', rd.ok && rd.dato.estado_xubio === 'PENDIENTE')
+const DE_OTRA = [{ id: 'otra-uno', nombre: 'Otra Uno S.A.', cuit: '30999999991', erp: 'XUBIO', alias: ['otra uno'] }]
+rd = espejo.facturaDesdeFila(base, 'Facturas', 2, DE_OTRA)
+check('con las empresas de otra organización, una fila de "BERATUNG S.A." no se reconoce', !rd.ok && rd.motivo.includes('Receptor'))
+rd = espejo.facturaDesdeFila({ ...base, RECEPTOR: 'OTRA UNO SA' }, 'Facturas', 2, DE_OTRA)
+check('…y sus propias filas sí', rd.ok && rd.dato.empresa_id === 'otra-uno')
+const rpd = espejo.pagoDesdeFila({ ...pagoSinFactura, REALIZADO_POR: 'INDIA ADV SA' }, 2, DE_OTRA)
+check('…un pago de la hoja que dice "INDIA ADV SA" queda sin empresa (lo resuelve o lo rechaza la base)', rpd.ok && rpd.dato.empresa_id === null)
+check('…y los catálogos de otra organización no caen en empresas de Vértice', espejo.catalogosDesdeHoja({ cuentas: [{ NOMBRE: 'X', CODIGO: 'X', EMPRESA: 'Beratung S.A.' }] }, DE_OTRA).cuentas.length === 0)
+check('sin empresas no se reconoce ningún nombre: el código no tiene ninguno escrito', ['BERATUNG SA', 'India Adv SA', 'DROGUERIA ROBLES S.A.', 'VERTICE BI S. A.'].every((x) => espejo.empresaDesdeTexto(x, []) === null))
 
 console.log(`\n${ok} OK · ${mal} MAL`)
 process.exit(mal ? 1 : 0)

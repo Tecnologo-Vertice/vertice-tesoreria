@@ -85,7 +85,10 @@ async function supabase(m: Mundo, p: Pedido, req: { headers: Headers }): Promise
     const fn = u.pathname.slice('/rest/v1/rpc/'.length)
     if (!m.rpc[fn]) return responder({ message: `La prueba no definió la función ${fn}` }, 404)
     try {
-      return responder((await m.rpc[fn]((p.cuerpo ?? {}) as Record<string, unknown>, m)) ?? null)
+      let resultado = (await m.rpc[fn]((p.cuerpo ?? {}) as Record<string, unknown>, m)) ?? null
+      // Los documentos que devuelve la cola traen su organización (obligatoria en la base desde 0017).
+      if (fn.startsWith('tomar_documento') && Array.isArray(resultado)) resultado = (resultado as Fila[]).map((d) => ({ organizacion_id: ORG_PRUEBA, ...d }))
+      return responder(resultado)
     } catch (e) {
       return responder({ message: e instanceof Error ? e.message : String(e) }, 400)
     }

@@ -20,6 +20,8 @@ export interface Documento {
   intentos: number
   /** Empresas para las que se puede cargar (lo subió una persona). null = lo trajo el servidor: cualquiera. */
   empresas_permitidas?: string[] | null
+  /** Organización dueña del documento: se lee contra las empresas de esa organización y ninguna más. */
+  organizacion_id?: string | null
 }
 
 const hoyAR = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Argentina/Buenos_Aires' }).format(new Date())
@@ -57,8 +59,13 @@ export async function registrarDocumento(db: SupabaseClient, d: Record<string, u
   return fila
 }
 
-async function empresas(db: SupabaseClient): Promise<EmpresaRef[]> {
-  const { data, error } = await db.from('empresas').select('id, nombre, cuit').eq('activa', true)
+/**
+ * Empresas activas de una organización, con sus alias. Es lo único que recibe la IA (en el pedido van sus
+ * nombres y CUIT) y lo único contra lo que se busca la empresa receptora: un documento de una organización
+ * nunca manda datos de otra ni puede quedar asignado a una empresa de otra.
+ */
+async function empresas(db: SupabaseClient, organizacionId: string): Promise<EmpresaRef[]> {
+  const { data, error } = await db.from('empresas').select('id, nombre, cuit, erp, alias, alias_emisor, alias_orden').eq('activa', true).eq('organizacion_id', organizacionId)
   if (error) throw new ErrorHttp(500, error.message)
   return data as EmpresaRef[]
 }
@@ -85,7 +92,8 @@ export async function procesarDocumento(db: SupabaseClient, doc: Documento): Pro
     const { data: archivo, error } = await db.storage.from('facturas').download(doc.storage_path)
     if (error || !archivo) throw new ErrorHttp(502, `No se pudo leer el archivo guardado: ${error?.message ?? 'vacío'}`)
     const base64 = Buffer.from(await archivo.arrayBuffer()).toString('base64')
-    const grupo = await empresas(db)
+    if (!doc.organizacion_id) throw new ErrorHttp(422, 'El documento no dice de qué organización es: no se lee')
+    const grupo = await empresas(db, doc.organizacion_id)
 
     const raw = await llamarGemini({ prompt: `${promptFactura(grupo, hoyAR())}\nEl archivo se llama "${doc.nombre_archivo}".`, schema: ESQUEMA_FACTURA, mimeType: doc.mime_type, data: base64 })
     const r = interpretarLectura(raw, grupo, hoyAR())

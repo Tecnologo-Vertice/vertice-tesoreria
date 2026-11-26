@@ -12,6 +12,7 @@ process.env.CASHFLOW_CHEQUES_DESDE = '2026-01-01'
 const subirFactura = (await import('../functions/subir-factura.mts')).default
 const leerAhora = (await import('../functions/leer-ahora.mts')).default
 const leerComprobante = (await import('../functions/ia-leer-comprobante.mts')).default
+const lectorProgramado = (await import('../functions/leer-documentos.mts')).default
 const espejo = (await import('../functions/espejo.mts')).default
 const ingestaAdjunto = (await import('../functions/ingesta-adjunto.mts')).default
 const ingestaFactura = (await import('../functions/ingesta-factura.mts')).default
@@ -37,7 +38,7 @@ function mundo(organizaciones: Fila[], extra: Partial<Mundo> = {}): Mundo {
         { email: 'perdido@c.com', nombre: 'Sin organización', rol: 'ADMINISTRACION', activo: true, todas_empresas: true, organizacion_id: 'org-que-no-existe' },
       ],
       empresas: [
-        { id: 'a-uno', nombre: 'A Uno S.A.', cuit: '30710000014', erp: 'XUBIO', activa: true, organizacion_id: A },
+        { id: 'a-uno', nombre: 'A Uno S.A.', cuit: '30710000014', erp: 'XUBIO', activa: true, organizacion_id: A, alias: ['a uno'] },
         { id: 'a-dos', nombre: 'A Dos S.A.', cuit: '30710000030', erp: 'NINGUNO', activa: true, organizacion_id: A },
         { id: 'b-uno', nombre: 'B Uno S.A.', cuit: '30710000022', erp: 'XUBIO', activa: true, organizacion_id: B },
       ],
@@ -133,6 +134,46 @@ m = mundo(DOS)
 r = await leerComprobante(pedido('perdido', archivo))
 check('una cuenta cuya organización no existe no entra', r.status === 403 && llamadas(m, 'googleapis').length === 0)
 
+// ---------------------------------------------------------------- La IA recibe solo las empresas de la organización del documento
+const pedidosIa = (m: Mundo) => llamadas(m, 'googleapis').map((p) => JSON.stringify(p.cuerpo))
+m = mundo(DOS, { gemini: lectura('B UNO S.A.', '30-71000002-2') })
+await subirFactura(pedido('deB', archivo))
+check('documento de B: en el pedido a la IA van las empresas de B', pedidosIa(m).length === 1 && pedidosIa(m)[0].includes('30710000022 (B Uno S.A.)'))
+check('…y ningún dato de las empresas de A', !pedidosIa(m)[0].includes('30710000014') && !pedidosIa(m)[0].includes('A Uno') && !pedidosIa(m)[0].includes('30710000030'))
+m = mundo(DOS, { gemini: lectura('A UNO S.A.', '30-71000001-4') })
+r = await subirFactura(pedido('deB', archivo))
+cuerpo = await r.json()
+check('documento de B cuya factura trae el CUIT de una empresa de A: no se asigna a A ni a nadie', cuerpo.estado === 'ERROR' && /No se reconoce la empresa receptora/.test(cuerpo.detalle) && m.tablas.facturas.length === 0 && llamadas(m, 'guardar_factura_leida').length === 0, JSON.stringify(cuerpo))
+m = mundo(DOS, { gemini: lectura('A UNO S.A.', '') })
+r = await subirFactura(pedido('deB', archivo))
+cuerpo = await r.json()
+check('…ni por el nombre (alias) de una empresa de A', cuerpo.estado === 'ERROR' && m.tablas.facturas.length === 0, JSON.stringify(cuerpo))
+m = mundo(DOS, { gemini: lectura('A UNO S.A.', '') })
+r = await subirFactura(pedido('deA', archivo))
+cuerpo = await r.json()
+check('el mismo archivo subido por alguien de A sí se carga en A, por el alias guardado en la empresa', cuerpo.estado === 'LEIDO' && m.tablas.facturas[0]?.empresa_id === 'a-uno', JSON.stringify(cuerpo))
+// El lector programado toma documentos de las dos organizaciones: cada uno se lee con las empresas de la suya.
+const cola: Fila[] = [
+  { id: 'doc-a', origen: 'GMAIL', nombre_archivo: 'a.pdf', mime_type: 'application/pdf', storage_path: 'cola/a.pdf', intentos: 1, organizacion_id: A },
+  { id: 'doc-b', origen: 'GMAIL', nombre_archivo: 'b.pdf', mime_type: 'application/pdf', storage_path: 'cola/b.pdf', intentos: 1, organizacion_id: B },
+]
+m = mundo(DOS, { gemini: lectura('B UNO S.A.', '30-71000002-2'), archivos: { 'facturas/cola/a.pdf': new Uint8Array(0), 'facturas/cola/b.pdf': new Uint8Array(0) } })
+m.tablas.documentos.push(...cola.map((d) => ({ ...d })))
+let turno = 0
+m.rpc.tomar_documentos = () => (turno < cola.length ? [cola[turno++]] : [])
+await lectorProgramado()
+const [iaA, iaB] = pedidosIa(m)
+check('lector programado: el documento de A se lee solo con las empresas de A', !!iaA && iaA.includes('30710000014 (A Uno S.A.)') && !iaA.includes('30710000022'))
+check('…y el de B solo con las de B', !!iaB && iaB.includes('30710000022 (B Uno S.A.)') && !iaB.includes('30710000014'))
+check('…la factura de una empresa de B que llegó en el documento de A no se carga; la del documento de B sí', m.tablas.facturas.length === 1 && m.tablas.facturas[0].empresa_id === 'b-uno'
+  && m.tablas.documentos.find((d) => d.id === 'doc-a')?.estado === 'ERROR' && m.tablas.documentos.find((d) => d.id === 'doc-b')?.estado === 'LEIDO', JSON.stringify(m.tablas.documentos.map((d) => [d.id, d.estado])))
+m = mundo(DOS, { gemini: lectura('B UNO S.A.', '30-71000002-2'), archivos: { 'facturas/cola/x.pdf': new Uint8Array(0) } })
+m.tablas.documentos.push({ id: 'doc-x', estado: 'LEYENDO' })
+turno = 0
+m.rpc.tomar_documentos = () => (turno++ === 0 ? [{ id: 'doc-x', origen: 'GMAIL', nombre_archivo: 'x.pdf', mime_type: 'application/pdf', storage_path: 'cola/x.pdf', intentos: 1, organizacion_id: null }] : [])
+await lectorProgramado()
+check('un documento sin organización no se manda a la IA ni se carga', pedidosIa(m).length === 0 && m.tablas.facturas.length === 0 && m.tablas.documentos[0].estado === 'ERROR')
+
 // ---------------------------------------------------------------- Puentes del Apps Script con dos organizaciones
 const PUENTES: [string, (req: Request) => Promise<Response>, string, unknown][] = [
   ['la copia de la hoja (facturas)', espejo, '/api/espejo', { tipo: 'facturas', hoja: 'Facturas', filas: [] }],
@@ -167,6 +208,14 @@ check('…y su archivo, en la carpeta de esa organización', Object.keys(m.archi
 m = mundo(SOLO_A)
 await espejo(puente('/api/espejo', { tipo: 'facturas', hoja: 'Facturas', filas: [] }))
 check('el estado de la copia de la hoja se anota a nombre de la organización', m.tablas.espejo_estado.length === 1 && m.tablas.espejo_estado[0].organizacion_id === A && m.tablas.espejo_estado[0].hoja === 'Facturas')
+// La copia de la hoja reconoce el RECEPTOR con los alias de las empresas de la organización del puente.
+const filaHoja = (receptor: string, fila: number) => ({ _fila: fila, RECEPTOR: receptor, PROVEEDOR: 'LIMPIEZA SUR SRL', CUIT_PROVEEDOR: '30-71555555-1', TIPO: 'Factura A', NUMERO: `00007-0000035${fila}`, FECHA: '2026-10-20', TOTAL: 121000 })
+m = mundo(SOLO_A)
+r = await espejo(puente('/api/espejo', { tipo: 'facturas', hoja: 'Facturas', filas: [filaHoja('A UNO SA', 2), filaHoja('B UNO SA', 3), filaHoja('BERATUNG SA', 4)] }))
+cuerpo = await r.json()
+const copiadas = ((llamadas(m, 'espejar_facturas')[0]?.cuerpo as { p_filas: Fila[] })?.p_filas ?? []).map((f) => f.empresa_id).join()
+check('copia de la hoja: la fila de una empresa de la organización se traduce con el alias de la base', copiadas === 'a-uno', copiadas)
+check('…y las filas que dicen una empresa de otra organización, o un nombre que no es de nadie, se omiten', cuerpo.omitidas?.length === 2 && cuerpo.omitidas.every((o: { motivo: string }) => /Receptor no reconocido/.test(o.motivo)), JSON.stringify(cuerpo.omitidas))
 m = mundo(SOLO_A)
 r = await ingestaFactura(puente('/api/ingesta/factura', { empresa_id: 'b-uno', cuit_proveedor: '20123456786', total: 100 }))
 check('la ingesta no acepta una factura para una empresa que no es de la organización del puente', r.status === 403 && llamadas(m, 'ingresar_factura').length === 0, String(r.status))

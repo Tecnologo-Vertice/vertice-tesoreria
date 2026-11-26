@@ -230,7 +230,9 @@ await db.exec(`reset role`)
 // Filas con la forma real de la hoja → lib/espejo.ts (la misma traducción que usa /api/espejo) → SQL.
 const espejo = await import('../../netlify/functions/lib/espejo.ts')
 await db.exec(`reset role`)
-const trad = (filas, hoja) => filas.map((x) => (hoja === 'Pagos' ? espejo.pagoDesdeFila(x, x._fila) : espejo.facturaDesdeFila(x, hoja, x._fila))).filter((t) => t.ok).map((t) => t.dato)
+// Las empresas, con sus alias, salen de la base (migración 0020): es lo que hace /api/espejo. Son las de Vértice, dueña de la hoja.
+const EMPRESAS_BASE = (await db.query(`select id, nombre, cuit, erp::text erp, alias, alias_emisor, alias_orden from empresas`)).rows
+const trad = (filas, hoja) => filas.map((x) => (hoja === 'Pagos' ? espejo.pagoDesdeFila(x, x._fila, EMPRESAS_BASE) : espejo.facturaDesdeFila(x, hoja, x._fila, EMPRESAS_BASE))).filter((t) => t.ok).map((t) => t.dato)
 const espFact = async (filas, hoja = 'Facturas') => (await val(`select espejar_facturas($1) r`, [JSON.stringify(trad(filas, hoja))])).r
 const espPag = async (filas) => (await val(`select espejar_pagos($1) r`, [JSON.stringify(trad(filas, 'Pagos'))])).r
 const filaF = (x = {}) => ({ _fila: 2, RECEPTOR: 'BERATUNG SA', PROVEEDOR: 'LIMPIEZA SUR SRL', CUIT_PROVEEDOR: '30-71555555-1', LETRA: 'A', TIPO: 'Factura A',
@@ -244,7 +246,7 @@ const cat = espejo.catalogosDesdeHoja({
   porEmpresa: [{ RECEPTOR: 'Beratung S.A.', CUIT: '30-71555555-1', NOMBRE_XUBIO: 'LIMPIEZA SUR S.R.L.', CUENTA_CONTABLE: 'Gastos Generales', SALTAR_XUBIO: '' }],
   emails: [{ CUIT_PROVEEDOR: '30715555551', PROVEEDOR: 'LIMPIEZA SUR SRL', EMAIL: 'cobranzas@limpiezasur.com' }],
   productos: [{ 'Columna A (Nombre)': 'Gastos Generales', 'Columna B (Codigo)': 'GASTOS_GENERALES' }],
-})
+}, EMPRESAS_BASE)
 await db.query(`select espejar_catalogos($1)`, [JSON.stringify(cat)])
 check('catálogos: cuenta de origen real con su tipo e id de Xubio', (await val(`select tipo_cuenta, xubio_id from cuentas_origen where empresa_id = 'beratung' and nombre like 'Banco Hipotecario%'`))?.xubio_id === '665247')
 check('catálogos: plan de cuentas de Beratung con el nombre completo', (await val(`select count(*)::int n from cuentas_contables where empresa_id = 'beratung' and nombre = 'GASTOS_BANCARIOS GASTOS BANCARIOS'`)).n === 1)
@@ -1134,6 +1136,24 @@ av = await archivosDe('teso.india@verticebi.com')
 check('…e India sigue sin leer los comprobantes de Beratung', !av.has(rVBer) && !av.has(viejoBer) && av.has(rVInd))
 check('las personas no ejecutan el control de rutas por su cuenta', !(await val(`select has_function_privilege('authenticated', 'exigir_ruta_de_empresa(text,text)', 'execute') p`)).p)
 
+// ================================================================ Alias de empresas como datos (0020)
+await db.exec(`reset role`)
+const { EMPRESAS_VERTICE } = await import('../../netlify/pruebas/empresas-vertice.mts')
+const soloAlias = (e) => ({ id: e.id, erp: e.erp, alias: e.alias, alias_emisor: e.alias_emisor, alias_orden: e.alias_orden })
+const porId = (a, b) => a.id.localeCompare(b.id)
+r = (await db.query(`select id, erp::text erp, alias, alias_emisor, alias_orden from empresas where organizacion_id = $1`, [orgV])).rows
+check('los alias que carga la migración son los mismos con que corren las pruebas de lectura y de copia', JSON.stringify(r.sort(porId).map(soloAlias)) === JSON.stringify([...EMPRESAS_VERTICE].sort(porId).map(soloAlias)), JSON.stringify(r.map(soloAlias)))
+check('una empresa de otra organización arranca sin alias (se reconoce por su CUIT)', (await val(`select bool_and(alias = '{}' and alias_emisor = '{}') b from empresas where organizacion_id = $1`, [orgB])).b === true)
+// Las formas reales en que la hoja escribe cada empresa, contra las empresas leídas de la base.
+for (const [texto, esperado] of [['BERATUNG SA', 'beratung'], ['India Adv SA', 'india'], ['CONTROL B SA', 'controlb'], ['YSD PHARMA S.A.', 'ysd'], ['Droguería Robles', 'robles'],
+  ['ROBLES, DANIEL HECT', 'hrobles'], ['FARMA CONTROL S.A.', 'farmacontrol'], ['VERTICE BI S. A.', 'vertice'], ['SORAIRES SANTACRUZ MARIA CRISTINA', null]])
+  check(`empresa "${texto}" con los alias de la base → ${esperado}`, espejo.empresaDesdeTexto(texto, EMPRESAS_BASE) === esperado)
+const EMPRESAS_DE_OTRA = (await db.query(`select id, nombre, cuit, erp::text erp, alias, alias_emisor, alias_orden from empresas where organizacion_id = $1`, [orgB])).rows
+check('con las empresas de Otra, una fila de la hoja que dice "BERATUNG SA" no se traduce', espejo.facturaDesdeFila(filaF(), 'Facturas', 2, EMPRESAS_DE_OTRA).ok === false)
+await db.query(`update empresas set alias = '{"otra uno"}' where id = 'otra-uno'`)
+r = (await db.query(`select id, nombre, cuit, erp::text erp, alias, alias_emisor, alias_orden from empresas where organizacion_id = $1`, [orgB])).rows
+check('cargando el alias en la base, Otra reconoce su empresa por nombre', espejo.empresaDesdeTexto('OTRA UNO S.A.', r) === 'otra-uno' && espejo.empresaDesdeTexto('OTRA UNO S.A.', EMPRESAS_BASE) === null)
+
 // ================================================================ Migrar una base que ya tiene datos (0017 en adelante)
 // La base real tiene datos: las migraciones nuevas se aplican sobre una base cargada con las anteriores.
 {
@@ -1178,6 +1198,7 @@ check('las personas no ejecutan el control de rutas por su cuenta', !(await val(
   r = await v2(`select count(*) filter (where entidad in ('FACTURA', 'PAGO') and empresa_id is null)::int sin, count(*) filter (where entidad = 'PAGO' and empresa_id = 'india')::int pago,
     count(*) filter (where entidad = 'SISTEMA' and empresa_id is null)::int sistema from auditoria`)
   check('base con datos: la auditoría vieja queda con la empresa de su factura o su pago', r.sin === 0 && r.pago === 1 && r.sistema === 2, JSON.stringify(r))
+  check('base con datos: las 8 empresas quedan con sus alias', (await v2(`select count(*) filter (where cardinality(alias) > 0)::int n from empresas`)).n === 8)
   let inmutable = false
   try { await db2.exec(`update auditoria set detalle = 'x'`) } catch (e) { inmutable = /auditoría/.test(e.message) }
   check('base con datos: la auditoría sigue sin poder modificarse después de migrar', inmutable)

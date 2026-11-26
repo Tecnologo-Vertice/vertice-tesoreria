@@ -9,6 +9,7 @@
 import type { Config } from '@netlify/functions'
 import { env, json, leerJson, manejar, organizacionDelPuente, supabaseAdmin, ErrorHttp } from './lib/comun'
 import { catalogosDesdeHoja, facturaDesdeFila, pagoDesdeFila, type CatalogosHoja, type FilaHoja, type HojaFacturas } from './lib/espejo'
+import type { EmpresaRef } from './lib/factura'
 
 interface Body {
   tipo: 'facturas' | 'pagos' | 'catalogos'
@@ -31,9 +32,13 @@ export default manejar(async (req) => {
   const organizacion = await organizacionDelPuente()
   const b = await leerJson<Body>(req)
   const db = supabaseAdmin()
+  // Las empresas de esa organización, con sus alias: contra ellas (y ninguna más) se reconoce el RECEPTOR de cada fila.
+  const { data: lista, error: errorEmpresas } = await db.from('empresas').select('id, nombre, cuit, erp, alias, alias_emisor, alias_orden').eq('organizacion_id', organizacion)
+  if (errorEmpresas) throw new ErrorHttp(500, errorEmpresas.message)
+  const empresas = (lista ?? []) as EmpresaRef[]
 
   if (b.tipo === 'catalogos') {
-    const c = catalogosDesdeHoja(b.catalogos ?? {})
+    const c = catalogosDesdeHoja(b.catalogos ?? {}, empresas)
     const { data, error } = await db.rpc('espejar_catalogos', { p: c })
     if (error) throw new ErrorHttp(422, error.message)
     await anotar(db, organizacion, 'Catalogos', { filas: Object.values(data as Record<string, number>).reduce((a, n) => a + n, 0), nuevas: 0, actualizadas: 0, sin_cambios: 0, omitidas: c.omitidas.map((m) => ({ motivo: m })) })
@@ -48,13 +53,13 @@ export default manejar(async (req) => {
   if (b.tipo === 'facturas') {
     if (b.hoja !== 'Facturas' && b.hoja !== 'Facturas_Aprobadas') throw new ErrorHttp(400, 'hoja tiene que ser Facturas o Facturas_Aprobadas')
     for (const f of filas) {
-      const r = facturaDesdeFila(f, b.hoja as HojaFacturas, Number(f._fila) || 0)
+      const r = facturaDesdeFila(f, b.hoja as HojaFacturas, Number(f._fila) || 0, empresas)
       if (r.ok) traducidas.push(r.dato)
       else omitidasLocal.push({ fila: f._fila, motivo: r.motivo })
     }
   } else if (b.tipo === 'pagos') {
     for (const f of filas) {
-      const r = pagoDesdeFila(f, Number(f._fila) || 0)
+      const r = pagoDesdeFila(f, Number(f._fila) || 0, empresas)
       if (r.ok) traducidas.push(r.dato)
       else omitidasLocal.push({ fila: f._fila, motivo: r.motivo })
     }

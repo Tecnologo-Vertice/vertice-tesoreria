@@ -42,6 +42,25 @@ Por encima de las empresas está la organización: el cliente. Vértice es la pr
 | Archivos de antes | Sus rutas no tienen carpeta de organización (`año/mes/…`). Se siguen leyendo como antes: a través del pago, la factura o el documento que apunta a ellos. Un comprobante viejo que ya está en un pago de otra empresa no se puede volver a usar. |
 | Archivo suelto | Un archivo viejo al que no apunta ningún registro ya no lo lee nadie desde la pantalla (antes lo leía quien veía todas las empresas). |
 
+### Nombres de empresas como datos (migración 0020)
+
+El código ya no tiene escritos los nombres de las empresas. Para reconocer de qué empresa es una factura o una fila de la hoja, compara contra las empresas de la organización del documento, y ninguna más:
+
+| Columna de `empresas` | Para qué |
+|---|---|
+| `alias` | Formas en que aparece el nombre como receptora. Un alias con varias partes unidas con `+` (`drogueria+robles`) pide que estén todas. Se compara sin mayúsculas, tildes, espacios ni signos. |
+| `alias_emisor` | Lo mismo para el emisor: una factura emitida por alguien que coincide se asigna a esa empresa (regla del Apps Script para Robles). |
+| `alias_orden` | Si un texto coincide con dos empresas, gana la de orden menor. |
+| `erp` | Qué empresas no usan Xubio (antes, una lista en `lib/espejo.ts`). |
+
+Una empresa sin alias se reconoce solo por su CUIT. Para agregar una forma nueva de escribir una empresa:
+
+```sql
+update empresas set alias = alias || '{"beratung consultora"}' where id = 'beratung';
+```
+
+La IA recibe en el pedido solo los nombres y CUIT de las empresas de la organización del documento.
+
 La prueba fija está en `npm run test:sql`, sección "Dos organizaciones que no se ven ni se tocan": una segunda organización de mentira con sus empresas, usuarios, proveedores, facturas, pagos, documentos y auditoría. Compara, tabla por tabla, lo que ve cada una con lo que es suyo, y prueba cada acción de negocio contra los datos de la otra. `npm run test:organizaciones` hace lo mismo con las funciones de Netlify.
 
 ## Configurar

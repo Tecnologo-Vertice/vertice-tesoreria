@@ -10,10 +10,19 @@
 //    del proveedor o la elige quien aprueba (regla de oro: cuenta del plan de Xubio).
 // Sin imports: se prueba solo con Node (netlify/pruebas/factura.prueba.mts).
 
+/** Una empresa de la organización, como está en la tabla empresas. */
 export interface EmpresaRef {
   id: string
   nombre: string
   cuit: string
+  /** ERP de la empresa (XUBIO, RALPHARMA, NINGUNO). Lo usa la copia de la hoja. */
+  erp?: string | null
+  /** Formas en que aparece su nombre como receptora (migración 0020). Partes unidas con "+": tienen que estar todas. */
+  alias?: string[] | null
+  /** Lo mismo para el emisor: una factura emitida por alguien que coincide se asigna a esta empresa. */
+  alias_emisor?: string[] | null
+  /** Si un texto coincide con más de una empresa, gana la de orden menor. */
+  alias_orden?: number | null
 }
 
 export const ESQUEMA_FACTURA = {
@@ -156,27 +165,39 @@ export function parsearNumero(texto: unknown): { puntoVenta: number; numero: num
   return null
 }
 
-/** Empresa receptora: primero por CUIT (MEJORA), después por nombre como normalizarReceptorCanonico_. */
+/**
+ * Empresa cuyo alias coincide con el texto, entre las empresas recibidas y ninguna más. Los alias son
+ * datos de cada empresa (tabla empresas): acá no hay ningún nombre escrito. Un alias puede tener varias
+ * partes unidas con "+" ("drogueria+robles"): tienen que aparecer todas en el texto. Se compara sin
+ * mayúsculas, tildes, espacios ni signos. Si coincide más de una empresa, gana la de alias_orden menor.
+ */
+export function empresaPorAlias(t: unknown, empresas: EmpresaRef[], campo: 'alias' | 'alias_emisor' = 'alias'): string | null {
+  const texto = normalizarTexto(t)
+  if (!texto) return null
+  const coincide = (alias: string) => {
+    const partes = alias.split('+').map((p) => normalizarTexto(p)).filter(Boolean)
+    return partes.length > 0 && partes.every((p) => texto.includes(p))
+  }
+  const enOrden = [...empresas].sort((a, b) => (a.alias_orden ?? 100) - (b.alias_orden ?? 100) || a.id.localeCompare(b.id))
+  return enOrden.find((e) => (e[campo] ?? []).some(coincide))?.id ?? null
+}
+
+/**
+ * Empresa receptora, siempre entre las empresas recibidas (las de la organización del documento):
+ *  1. por el emisor, si coincide con el alias_emisor de una empresa (Code.gs: las facturas EMITIDAS por
+ *     Robles se asignan a la empresa Robles correspondiente);
+ *  2. por el CUIT del receptor (MEJORA);
+ *  3. por el nombre del receptor contra los alias, como normalizarReceptorCanonico_.
+ */
 export function empresaReceptora(receptor: string, cuitReceptor: string, proveedor: string, empresas: EmpresaRef[]): string | null {
-  // Code.gs: las facturas EMITIDAS por Robles se asignan a la empresa Robles correspondiente.
-  const p = normalizarTexto(proveedor)
-  if (p.includes('droguer') && p.includes('robles')) return 'robles'
-  if (p.includes('hector') && p.includes('robles')) return 'hrobles'
+  const porEmisor = empresaPorAlias(proveedor, empresas, 'alias_emisor')
+  if (porEmisor) return porEmisor
 
   const c = soloDigitos(cuitReceptor)
   const porCuit = c.length === 11 ? empresas.find((e) => soloDigitos(e.cuit) === c) : undefined
   if (porCuit) return porCuit.id
 
-  const n = normalizarTexto(receptor)
-  if (n.includes('beratung')) return 'beratung'
-  if (n.includes('india')) return 'india'
-  if (n.includes('controlb')) return 'controlb'
-  if (n.includes('ysd')) return 'ysd'
-  if (n.includes('drogueria') && n.includes('robles')) return 'robles'
-  if (n.includes('robles') && n.includes('hector')) return 'hrobles'
-  if (n.includes('farmacontrol')) return 'farmacontrol'
-  if (n.includes('vertice')) return 'vertice'
-  return null
+  return empresaPorAlias(receptor, empresas)
 }
 
 const fechaIso = (s: unknown) => (/^\d{4}-\d{2}-\d{2}/.test(String(s ?? '')) ? String(s).slice(0, 10) : '')

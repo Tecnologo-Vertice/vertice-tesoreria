@@ -4,11 +4,10 @@
 // Funciones puras: se prueban con netlify/pruebas/espejo.prueba.mts sin tocar la hoja.
 
 import { createHash } from 'node:crypto'
+import { empresaPorAlias, type EmpresaRef } from './factura.ts'
 
 export type FilaHoja = Record<string, unknown>
 export type Resultado<T> = { ok: true; dato: T } | { ok: false; motivo: string }
-
-const EMPRESAS_SIN_XUBIO = ['robles', 'hrobles', 'farmacontrol']
 
 /** Texto comparable: minúsculas, sin tildes ni símbolos (igual que normalizarTexto_ del Apps Script). */
 export function normalizar(t: unknown): string {
@@ -21,21 +20,16 @@ export function normalizar(t: unknown): string {
 
 /**
  * Empresa del sistema a partir de cómo la escribió la IA o la persona ("BERATUNG SA", "D ROBLES DANIEL HECTOR").
- * Misma lógica que normalizarReceptorCanonico_, más "ROBLES, DANIEL HECT" que la IA corta a veces.
+ * Misma lógica que normalizarReceptorCanonico_, pero los textos a buscar son los alias de cada empresa
+ * (tabla empresas, migración 0020) y solo se mira entre las empresas recibidas: las de la organización
+ * dueña de la hoja.
  */
-export function empresaDesdeTexto(t: unknown): string | null {
-  const n = normalizar(t)
-  if (!n) return null
-  if (n.includes('beratung')) return 'beratung'
-  if (n.includes('india')) return 'india'
-  if (n.includes('controlb')) return 'controlb'
-  if (n.includes('ysd')) return 'ysd'
-  if (n.includes('drogueria') && n.includes('robles')) return 'robles'
-  if (n.includes('robles') && (n.includes('hector') || n.includes('daniel'))) return 'hrobles'
-  if (n.includes('farmacontrol')) return 'farmacontrol'
-  if (n.includes('vertice')) return 'vertice'
-  return null
+export function empresaDesdeTexto(t: unknown, empresas: EmpresaRef[]): string | null {
+  return empresaPorAlias(t, empresas)
 }
+
+/** ¿La empresa no usa Xubio? Sale de empresas.erp (antes, de una lista de nombres escrita acá). */
+const sinXubio = (empresaId: string, empresas: EmpresaRef[]) => (empresas.find((e) => e.id === empresaId)?.erp ?? 'XUBIO') !== 'XUBIO'
 
 /** Importe: número tal cual; texto "1.234,56", "526,700.00", "$ -1.000" o "(1.234,56)". 0 si no se entiende. */
 export function importe(v: unknown): number {
@@ -160,8 +154,8 @@ export type HojaFacturas = 'Facturas' | 'Facturas_Aprobadas'
  *  - Facturas_Aprobadas → contabilizadas: pagadas salvo que el porcentaje diga otra cosa.
  *  - Nota de crédito aprobada → PAGADA (no se paga; su saldo va en saldo_nc).
  */
-export function facturaDesdeFila(f: FilaHoja, hoja: HojaFacturas, fila: number): Resultado<Record<string, unknown>> {
-  const empresa = empresaDesdeTexto(f.RECEPTOR)
+export function facturaDesdeFila(f: FilaHoja, hoja: HojaFacturas, fila: number, empresas: EmpresaRef[]): Resultado<Record<string, unknown>> {
+  const empresa = empresaDesdeTexto(f.RECEPTOR, empresas)
   if (!empresa) return { ok: false, motivo: `Receptor no reconocido: "${String(f.RECEPTOR ?? '')}"` }
   const cuit = String(f.CUIT_PROVEEDOR ?? '').replace(/\D/g, '')
   if (cuit.length !== 11) return { ok: false, motivo: `CUIT de proveedor inválido: "${String(f.CUIT_PROVEEDOR ?? '')}"` }
@@ -202,7 +196,7 @@ export function facturaDesdeFila(f: FilaHoja, hoja: HojaFacturas, fila: number):
   let xubioError: string | null = null
   // Empresas sin Xubio: producción no registra la carga de la factura en Ralpharma; la marca CONTABILIZADA
   // al pagarla (o al pasarla al historial). Esas cuentan como cargadas; el resto queda pendiente para Guido.
-  if (EMPRESAS_SIN_XUBIO.includes(empresa))
+  if (sinXubio(empresa, empresas))
     estadoXubio = hoja === 'Facturas_Aprobadas' || estadoPago === 'contabilizada' ? 'CARGADA_RALPHARMA' : 'PENDIENTE_RALPHARMA'
   else if (xn.startsWith('subido') || xn.includes('yaexiste')) estadoXubio = 'SUBIDA'
   else if (xn.includes('sinerp')) estadoXubio = 'SIN_ERP'
@@ -272,7 +266,7 @@ export function facturaDesdeFila(f: FilaHoja, hoja: HojaFacturas, fila: number):
  * Una fila de "Pagos" → pago de la base. La empresa sale de EMPRESA, si no de REALIZADO_POR; si tampoco,
  * la base la toma de la factura vinculada. Las facturas se vinculan por punto de venta y número.
  */
-export function pagoDesdeFila(f: FilaHoja, fila: number): Resultado<Record<string, unknown>> {
+export function pagoDesdeFila(f: FilaHoja, fila: number, empresas: EmpresaRef[]): Resultado<Record<string, unknown>> {
   const id = texto(f.ID_PAGO)
   if (!id) return { ok: false, motivo: 'Sin ID_PAGO' }
   const estadoContable = normalizar(f.ESTADO_CONTABLE)
@@ -322,7 +316,7 @@ export function pagoDesdeFila(f: FilaHoja, fila: number): Resultado<Record<strin
     }
   }
 
-  const empresa = empresaDesdeTexto(f.EMPRESA) ?? empresaDesdeTexto(f.REALIZADO_POR)
+  const empresa = empresaDesdeTexto(f.EMPRESA, empresas) ?? empresaDesdeTexto(f.REALIZADO_POR, empresas)
   const dato: Record<string, unknown> = {
     hoja_id: id,
     empresa_id: empresa,
@@ -388,16 +382,16 @@ function col(f: FilaHoja, ...nombres: string[]): unknown {
   return undefined
 }
 
-export function catalogosDesdeHoja(c: CatalogosHoja) {
+export function catalogosDesdeHoja(c: CatalogosHoja, empresas: EmpresaRef[]) {
   const omitidas: string[] = []
   const cuentas = (c.cuentas ?? []).flatMap((f) => {
-    const empresa = empresaDesdeTexto(col(f, 'EMPRESA'))
+    const empresa = empresaDesdeTexto(col(f, 'EMPRESA'), empresas)
     const completa = texto(col(f, 'CUENTA_COMPLETA')) ?? [texto(col(f, 'CODIGO')), texto(col(f, 'NOMBRE'))].filter(Boolean).join(' ')
     if (!empresa || !completa) return []
     return [{ empresa_id: empresa, nombre: completa, codigo: texto(col(f, 'CODIGO')), xubio_id: texto(col(f, 'XUBIO_ID')) }]
   })
   const origen = (c.origen ?? []).flatMap((f) => {
-    const empresa = empresaDesdeTexto(col(f, 'EMPRESA'))
+    const empresa = empresaDesdeTexto(col(f, 'EMPRESA'), empresas)
     const nombre = texto(col(f, 'NOMBRE'))
     if (!empresa || !nombre) return []
     const tipo = parseInt(String(col(f, 'TIPO_CUENTA') ?? ''), 10)
@@ -407,7 +401,7 @@ export function catalogosDesdeHoja(c: CatalogosHoja) {
     }]
   })
   const porEmpresa = (c.porEmpresa ?? []).flatMap((f) => {
-    const empresa = empresaDesdeTexto(col(f, 'RECEPTOR'))
+    const empresa = empresaDesdeTexto(col(f, 'RECEPTOR'), empresas)
     const cuit = String(col(f, 'CUIT') ?? '').replace(/\D/g, '')
     if (!empresa || cuit.length !== 11) {
       if (texto(col(f, 'CUIT'))) omitidas.push(`Proveedor por empresa: ${String(col(f, 'RECEPTOR') ?? '')} · ${String(col(f, 'CUIT') ?? '')}`)
