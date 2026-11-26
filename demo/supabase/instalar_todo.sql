@@ -3484,6 +3484,28 @@ alter table conexiones_erp enable row level security;   -- sin reglas: ninguna s
 revoke all on conexiones_erp from public, anon, authenticated;
 grant select, insert, update, delete on conexiones_erp to service_role;
 
+-- Cada alta, reemplazo o baja deja un renglón en la auditoría: quién, cuándo, la empresa y la pista.
+-- Nunca el dato cifrado ni la credencial. También si se hace a mano desde el editor SQL.
+create or replace function auditar_conexion_erp()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare v_fila conexiones_erp; v_accion text; v_usuario text;
+begin
+  if tg_op = 'DELETE' then v_fila := old; else v_fila := new; end if;
+  -- Una actualización que no cambia la credencial (por ejemplo, volver a cifrarla con la clave nueva) no se anota.
+  if tg_op = 'UPDATE' and new.pista is not distinct from old.pista and new.cargado_en is not distinct from old.cargado_en
+     and new.cargado_por is not distinct from old.cargado_por then
+    return new;
+  end if;
+  v_accion := case tg_op when 'INSERT' then 'CREDENCIAL_ERP_CARGADA' when 'UPDATE' then 'CREDENCIAL_ERP_REEMPLAZADA' else 'CREDENCIAL_ERP_BORRADA' end;
+  v_usuario := case when tg_op = 'DELETE' then coalesce(nullif(auth.jwt() ->> 'email', ''), session_user::text) else v_fila.cargado_por end;
+  insert into auditoria (usuario, accion, entidad, entidad_id, empresa_id, detalle)
+  values (v_usuario, v_accion, 'EMPRESA', v_fila.empresa_id, v_fila.empresa_id,
+          'Credencial de ' || v_fila.erp || ' (pista ' || coalesce(nullif(v_fila.pista, ''), 'sin pista') || ')');
+  return null;
+end $$;
+create trigger trg_auditar_conexion_erp after insert or update or delete on conexiones_erp for each row execute function auditar_conexion_erp();
+revoke execute on function auditar_conexion_erp() from public, anon, authenticated;
+
 
 -- ======================================== 0022_tokens_integracion.sql
 -- Tanda C2 · Secretos por organización para los puentes del Apps Script y las tareas programadas.
@@ -3525,7 +3547,8 @@ revoke all on tokens_integracion from public, anon, authenticated;
 grant select, insert, update, delete on tokens_integracion to service_role;
 
 -- Crea un secreto para una organización y una tarea. Devuelve el secreto UNA sola vez: en la base queda
--- solo su resumen. Formato: vti_ + 64 caracteres hexadecimales (dos UUID al azar, 244 bits).
+-- solo su resumen. Formato: vti_ + 64 caracteres hexadecimales: el SHA-256 de tres UUID al azar (366 bits
+-- al azar de entrada, 256 de salida). Solo para una organización activa.
 -- Solo el servidor o el editor SQL de Supabase. Ejemplo:
 --   select crear_token_integracion((select id from organizaciones where slug = 'otra'), 'COPIA_HOJA', 'Apps Script de Otra');
 create or replace function crear_token_integracion(p_organizacion uuid, p_tarea text, p_nombre text, p_creado_por text default 'SQL')
@@ -3535,11 +3558,35 @@ begin
   if not exists (select 1 from organizaciones where id = p_organizacion) then
     raise exception 'La organización % no existe', p_organizacion;
   end if;
-  v_secreto := 'vti_' || replace(gen_random_uuid()::text, '-', '') || replace(gen_random_uuid()::text, '-', '');
+  if not exists (select 1 from organizaciones where id = p_organizacion and estado = 'ACTIVA') then
+    raise exception 'La organización % no está activa: no se le crean tokens', p_organizacion;
+  end if;
+  v_secreto := 'vti_' || encode(sha256(convert_to(gen_random_uuid()::text || gen_random_uuid()::text || gen_random_uuid()::text, 'UTF8')), 'hex');
   insert into tokens_integracion (organizacion_id, tarea, nombre, huella, creado_por)
   values (p_organizacion, p_tarea, coalesce(nullif(trim(p_nombre), ''), p_tarea), encode(sha256(convert_to(v_secreto, 'UTF8')), 'hex'), coalesce(p_creado_por, 'SQL'));
   return v_secreto;
 end $$;
+
+-- Crear, revocar, reactivar o borrar un token deja un renglón en la auditoría de su organización: quién,
+-- cuándo, la tarea y el nombre. Nunca el secreto ni su resumen. Anotar el último uso no se registra.
+create or replace function auditar_token_integracion()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare v_fila tokens_integracion; v_accion text; v_usuario text;
+begin
+  if tg_op = 'DELETE' then v_fila := old; else v_fila := new; end if;
+  if tg_op = 'UPDATE' and new.activo is not distinct from old.activo then return new; end if;
+  v_accion := case
+    when tg_op = 'INSERT' then 'TOKEN_INTEGRACION_CREADO'
+    when tg_op = 'DELETE' then 'TOKEN_INTEGRACION_BORRADO'
+    when new.activo then 'TOKEN_INTEGRACION_REACTIVADO'
+    else 'TOKEN_INTEGRACION_REVOCADO' end;
+  v_usuario := case when tg_op = 'INSERT' then v_fila.creado_por else coalesce(nullif(auth.jwt() ->> 'email', ''), session_user::text) end;
+  insert into auditoria (organizacion_id, usuario, accion, entidad, entidad_id, detalle)
+  values (v_fila.organizacion_id, v_usuario, v_accion, 'TOKEN_INTEGRACION', v_fila.id::text,
+          'Token ' || v_fila.tarea || ' "' || v_fila.nombre || '"');
+  return null;
+end $$;
+create trigger trg_auditar_token_integracion after insert or update or delete on tokens_integracion for each row execute function auditar_token_integracion();
 
 -- ---------------------------------------------------------------- Para qué organización trabaja el servidor
 
@@ -3816,6 +3863,7 @@ $$;
 
 -- ---------------------------------------------------------------- Permisos: todo esto es solo del servidor
 
+revoke execute on function auditar_token_integracion() from public, anon, authenticated;
 revoke execute on function crear_token_integracion(uuid, text, text, text), organizacion_del_proceso(), fijar_organizacion_del_proceso(uuid),
   filas_de_otra_organizacion(jsonb, uuid), filas_de_la_organizacion(jsonb, uuid),
   espejar_facturas(jsonb, uuid), espejar_pagos(jsonb, uuid), espejar_catalogos(jsonb, uuid),

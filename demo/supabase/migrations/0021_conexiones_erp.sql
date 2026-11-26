@@ -30,3 +30,25 @@ create table conexiones_erp (
 alter table conexiones_erp enable row level security;   -- sin reglas: ninguna sesión de persona lee una fila
 revoke all on conexiones_erp from public, anon, authenticated;
 grant select, insert, update, delete on conexiones_erp to service_role;
+
+-- Cada alta, reemplazo o baja deja un renglón en la auditoría: quién, cuándo, la empresa y la pista.
+-- Nunca el dato cifrado ni la credencial. También si se hace a mano desde el editor SQL.
+create or replace function auditar_conexion_erp()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare v_fila conexiones_erp; v_accion text; v_usuario text;
+begin
+  if tg_op = 'DELETE' then v_fila := old; else v_fila := new; end if;
+  -- Una actualización que no cambia la credencial (por ejemplo, volver a cifrarla con la clave nueva) no se anota.
+  if tg_op = 'UPDATE' and new.pista is not distinct from old.pista and new.cargado_en is not distinct from old.cargado_en
+     and new.cargado_por is not distinct from old.cargado_por then
+    return new;
+  end if;
+  v_accion := case tg_op when 'INSERT' then 'CREDENCIAL_ERP_CARGADA' when 'UPDATE' then 'CREDENCIAL_ERP_REEMPLAZADA' else 'CREDENCIAL_ERP_BORRADA' end;
+  v_usuario := case when tg_op = 'DELETE' then coalesce(nullif(auth.jwt() ->> 'email', ''), session_user::text) else v_fila.cargado_por end;
+  insert into auditoria (usuario, accion, entidad, entidad_id, empresa_id, detalle)
+  values (v_usuario, v_accion, 'EMPRESA', v_fila.empresa_id, v_fila.empresa_id,
+          'Credencial de ' || v_fila.erp || ' (pista ' || coalesce(nullif(v_fila.pista, ''), 'sin pista') || ')');
+  return null;
+end $$;
+create trigger trg_auditar_conexion_erp after insert or update or delete on conexiones_erp for each row execute function auditar_conexion_erp();
+revoke execute on function auditar_conexion_erp() from public, anon, authenticated;

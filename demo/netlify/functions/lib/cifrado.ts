@@ -10,6 +10,9 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:
 import { ErrorHttp } from './comun'
 
 const VERSION = 'v1'
+/** Largo de la etiqueta de GCM. Se exige exacto: Node acepta etiquetas recortadas (de 4 bytes en adelante). */
+const LARGO_ETIQUETA = 16
+const LARGO_IV = 12
 export const VARIABLE_CLAVE = 'CREDENCIALES_CLAVE'
 export const VARIABLE_CLAVE_ANTERIOR = 'CREDENCIALES_CLAVE_ANTERIOR'
 
@@ -35,8 +38,8 @@ export const hayClave = () => leerClave(VARIABLE_CLAVE) !== null
 export function cifrar(texto: string, lugar: string): string {
   const clave = leerClave(VARIABLE_CLAVE)
   if (!clave) throw new ErrorHttp(503, `Falta configurar ${VARIABLE_CLAVE} en las variables del servidor: sin esa clave no se guardan credenciales en la base. Mientras tanto se siguen usando las variables de siempre.`)
-  const iv = randomBytes(12)
-  const c = createCipheriv('aes-256-gcm', clave.bytes, iv)
+  const iv = randomBytes(LARGO_IV)
+  const c = createCipheriv('aes-256-gcm', clave.bytes, iv, { authTagLength: LARGO_ETIQUETA })
   c.setAAD(Buffer.from(lugar, 'utf8'))
   const datos = Buffer.concat([c.update(texto, 'utf8'), c.final()])
   return [VERSION, clave.huella, b64(iv), b64(c.getAuthTag()), b64(datos)].join(':')
@@ -58,10 +61,13 @@ export function descifrar(cifrado: string, lugar: string, nombre: string): Desci
   const clave = [actual, anterior].find((k) => k?.huella === huella)
   if (!clave)
     throw new ErrorHttp(500, `${nombre}: se guardaron con una clave que no está configurada (huella ${huella}). Revisar ${VARIABLE_CLAVE} y ${VARIABLE_CLAVE_ANTERIOR}, o volver a cargarlas.`)
+  const bytesIv = Buffer.from(iv, 'base64url')
+  const bytesEtiqueta = Buffer.from(etiqueta, 'base64url')
   try {
-    const d = createDecipheriv('aes-256-gcm', clave.bytes, Buffer.from(iv, 'base64url'))
+    if (bytesIv.length !== LARGO_IV || bytesEtiqueta.length !== LARGO_ETIQUETA) throw new Error('largo')
+    const d = createDecipheriv('aes-256-gcm', clave.bytes, bytesIv, { authTagLength: LARGO_ETIQUETA })
     d.setAAD(Buffer.from(lugar, 'utf8'))
-    d.setAuthTag(Buffer.from(etiqueta, 'base64url'))
+    d.setAuthTag(bytesEtiqueta)
     const texto = Buffer.concat([d.update(Buffer.from(datos, 'base64url')), d.final()]).toString('utf8')
     return { texto, conClaveAnterior: clave !== actual }
   } catch {

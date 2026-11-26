@@ -246,6 +246,18 @@ const orden = rpcs(m, 'tomar_documentos').map((x) => (x.p_organizacion === A ? '
 check('el lector programado toma por turnos de cada organización (B no espera a que A vacíe su cola)', orden.slice(0, 2).sort().join() === 'A,B' && orden.filter((x) => x === 'B').length >= 1 && !orden.includes('?'), orden.join())
 check('…y lee todo lo que había', m.pedidos.filter((p) => p.url.includes('googleapis')).length === 4)
 
+m = mundo()
+m.tablas.organizaciones = []
+r = await llamar(flujo, puente('/api/flujo/datos', INGESTA_TOKEN))
+check('sin ninguna organización, INGESTA_TOKEN dice eso (no "más de una")', r.status === 409 && /No hay ninguna organización/.test(String(r.cuerpo.error)), String(r.cuerpo.error))
+m = mundo()
+m.tablas.organizaciones = [{ id: A, slug: 'a', estado: 'ACTIVA', es_proveedor: false }, { id: B, slug: 'b', estado: 'ACTIVA', es_proveedor: false }]
+r = await llamar(flujo, puente('/api/flujo/datos', INGESTA_TOKEN))
+check('con dos y ninguna proveedora, el mensaje dice que ninguna da el servicio', /Ninguna organización figura como la que da el servicio/.test(String(r.cuerpo.error)), String(r.cuerpo.error))
+m = mundo()
+await subidor()
+check('las organizaciones activas se piden en un orden fijo', m.pedidos.some((p) => p.ruta.endsWith('/organizaciones') && new URL(p.url).searchParams.get('order') === 'id.asc'))
+
 // ---------------------------------------------------------------- Ningún secreto en el registro ni en las respuestas
 const todo = [...registro, ...respuestas].join('\n')
 const fugas = [INGESTA_TOKEN, ...Object.values(DE_B), REVOCADO, SIN_CARGAR].filter((s) => todo.includes(s) || todo.includes(s.slice(4)))

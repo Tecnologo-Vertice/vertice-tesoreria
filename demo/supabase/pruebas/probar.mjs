@@ -30,8 +30,16 @@ const SUPABASE_MINIMO = `
   grant execute on function auth.jwt() to anon, authenticated;
 `
 await db.exec(SUPABASE_MINIMO)
-
+// Supabase da por defecto todos los permisos a anon y authenticated sobre lo que se crea en public (salvo que
+// el proyecto se cree con "Automatically expose new tables" desmarcado, como el nuestro). Desde la 0021 el
+// arnés lo imita: las migraciones nuevas tienen que cerrar sus tablas y funciones por sí mismas.
+const PERMISOS_AUTOMATICOS = `
+  alter default privileges in schema public grant all on tables to anon, authenticated;
+  alter default privileges in schema public grant all on sequences to anon, authenticated;
+  alter default privileges in schema public grant execute on functions to anon, authenticated;
+`
 for (const f of readdirSync(dir).filter((x) => x.endsWith('.sql')).sort()) {
+  if (f.startsWith('0021')) await db.exec(PERMISOS_AUTOMATICOS)
   try { await db.exec(readFileSync(join(dir, f), 'utf8').replace(/create extension if not exists pgcrypto;/i, '')); check(`migración ${f}`, true) }
   catch (e) { check(`migración ${f}`, false, e.message); process.exit(1) }
 }
@@ -1279,10 +1287,22 @@ for (const [quien, email] of [['un administrador de Vértice', 'tecnologia@verti
 await db.exec(`set role anon`)
 await falla('conexiones_erp: sin sesión tampoco', `select pista from conexiones_erp`, [], /permission denied/)
 await db.exec(`reset role`)
-check('conexiones_erp: ninguna función de la base la lee (no hay un camino indirecto para una persona)', (await val(`select count(*)::int n from pg_proc where prosrc ilike '%conexiones_erp%'`)).n === 0)
+check('conexiones_erp: ninguna función de la base la lee, salvo el trigger de auditoría (no hay un camino indirecto para una persona)', (await db.query(`select proname from pg_proc where prosrc ilike '%conexiones_erp%'`)).rows.map((x) => x.proname).join() === 'auditar_conexion_erp'
+  && !(await val(`select has_function_privilege('authenticated', 'auditar_conexion_erp()', 'execute') p`)).p)
+r = (await db.query(`select usuario, accion, entidad_id, empresa_id, organizacion_id, detalle from auditoria where accion like 'CREDENCIAL_ERP_%' order by id`)).rows
+check('conexiones_erp: cada alta deja un renglón de auditoría con quién, la empresa, su organización y la pista', r.length === 2 && r[0].accion === 'CREDENCIAL_ERP_CARGADA' && r[0].usuario === 'admin@prueba'
+  && r[0].empresa_id === 'beratung' && r[0].organizacion_id === orgV && /pista ab12/.test(r[0].detalle) && r[1].empresa_id === 'otra-uno' && r[1].organizacion_id === orgB, JSON.stringify(r))
+check('…sin el dato cifrado', !JSON.stringify((await db.query(`select * from auditoria`)).rows).includes(CIFRADO_DE_PRUEBA.split(':')[4]))
 await db.exec(`set role service_role`)
 check('conexiones_erp: el servidor (service_role) sí la lee', (await val(`select count(*)::int n from conexiones_erp`)).n === 2)
 await db.exec(`reset role`)
+await db.query(`update conexiones_erp set secreto_cifrado = $1 where empresa_id = 'beratung'`, [CIFRADO_DE_PRUEBA.replace('aXZpdml2aXZp', 'b3Ryb2l2b3Ry')])
+check('volver a cifrar la misma credencial (cambio de clave) no se anota como reemplazo', (await val(`select count(*)::int n from auditoria where accion = 'CREDENCIAL_ERP_REEMPLAZADA'`)).n === 0)
+await db.query(`update conexiones_erp set pista = 'zz99', cargado_por = 'otro@prueba', cargado_en = now() where empresa_id = 'beratung'`)
+await db.query(`delete from conexiones_erp where empresa_id = 'otra-uno'`)
+r = (await db.query(`select usuario, accion, empresa_id, detalle from auditoria where accion in ('CREDENCIAL_ERP_REEMPLAZADA', 'CREDENCIAL_ERP_BORRADA') order by id`)).rows
+check('reemplazar o borrar una credencial también queda en la auditoría', r.length === 2 && r[0].accion === 'CREDENCIAL_ERP_REEMPLAZADA' && r[0].usuario === 'otro@prueba' && /zz99/.test(r[0].detalle)
+  && r[1].accion === 'CREDENCIAL_ERP_BORRADA' && r[1].empresa_id === 'otra-uno' && !!r[1].usuario, JSON.stringify(r))
 
 // ================================================================ Secretos por organización (0022)
 // Vértice y Otra siguen en la base. El servidor resuelve la organización del secreto (lib/comun.ts,
@@ -1299,6 +1319,20 @@ check('…y guarda solo su resumen (el mismo SHA-256 que calcula el servidor)', 
 check('…el secreto no queda en ninguna columna', !JSON.stringify((await db.query(`select * from tokens_integracion`)).rows).includes(secretoB.slice(4)))
 const otroSecreto = (await val(`select crear_token_integracion($1, 'COPIA_HOJA', 'otro') s`, [orgB])).s
 check('dos secretos seguidos son distintos', otroSecreto !== secretoB && (await val(`select count(distinct huella)::int n from tokens_integracion`)).n === 2)
+r = (await db.query(`select usuario, accion, entidad_id, organizacion_id, detalle from auditoria where accion like 'TOKEN_INTEGRACION_%' order by id`)).rows
+check('crear un token deja un renglón en la auditoría de su organización, con la tarea y el nombre', r.length === 2 && r.every((x) => x.accion === 'TOKEN_INTEGRACION_CREADO' && x.organizacion_id === orgB && x.usuario === 'SQL')
+  && /COPIA_HOJA "Apps Script de Otra"/.test(r[0].detalle), JSON.stringify(r))
+const filaOtroSecreto = await val(`select id, huella from tokens_integracion where huella = $1`, [sha(otroSecreto)])
+await db.query(`update tokens_integracion set ultimo_uso = now() where id = $1`, [filaOtroSecreto.id])
+check('anotar el último uso no agrega renglones', (await val(`select count(*)::int n from auditoria where accion like 'TOKEN_INTEGRACION_%'`)).n === 2)
+await db.query(`update tokens_integracion set activo = false where id = $1`, [filaOtroSecreto.id])
+r = await val(`select accion, entidad_id, organizacion_id from auditoria where accion = 'TOKEN_INTEGRACION_REVOCADO'`)
+check('revocar un token queda en la auditoría', r?.entidad_id === filaOtroSecreto.id && r?.organizacion_id === orgB, JSON.stringify(r))
+const auditoriaTokens = JSON.stringify((await db.query(`select * from auditoria where accion like 'TOKEN_INTEGRACION_%'`)).rows)
+check('…y la auditoría no tiene ni el secreto ni su resumen', ![secretoB, otroSecreto].some((x) => auditoriaTokens.includes(x.slice(4)) || auditoriaTokens.includes(sha(x))))
+await db.query(`update organizaciones set estado = 'SUSPENDIDA' where id = $1`, [orgB])
+await falla('a una organización suspendida no se le crean tokens', `select crear_token_integracion($1, 'FLUJO', 'x')`, [orgB], /no está activa/)
+await db.query(`update organizaciones set estado = 'ACTIVA' where id = $1`, [orgB])
 await falla('un secreto es para una tarea conocida', `select crear_token_integracion($1, 'TODO', 'x')`, [orgB], /tokens_integracion_tarea_check/)
 await falla('…y de una organización que existe', `select crear_token_integracion(gen_random_uuid(), 'FLUJO', 'x')`, [], /no existe/)
 for (const rol of ['anon', 'authenticated']) {
@@ -1366,6 +1400,10 @@ check('copia de pagos con la organización de Otra: un pago sin empresa no se en
   && !(await val(`select 1 x from pagos where hoja_id = 'PAGO-1792698020000-0'`)), JSON.stringify(ep))
 ep = (await val(`select espejar_pagos($1, $2) r`, [JSON.stringify(pagoSinEmpresa), orgV])).r
 check('…con la de Vértice entra, vinculado a su factura (antes, con dos organizaciones, se omitía)', ep.nuevas === 1 && (await val(`select empresa_id from pagos where hoja_id = 'PAGO-1792698020000-0'`))?.empresa_id === 'beratung', JSON.stringify(ep))
+const pagoDeBeratung = trad([filaP({ _fila: 92, ID_PAGO: 'PAGO-1792698020001-0', FACTURA_ASOCIADA: '', TIPO_PAGO: 'SIN_FACTURA', EMPRESA: 'BERATUNG S.A.' })], 'Pagos')
+ep = (await val(`select espejar_pagos($1, $2) r`, [JSON.stringify(pagoDeBeratung), orgB])).r
+check('copia de pagos con la organización de Otra: un pago que dice una empresa de Vértice se omite con el motivo y no se carga', ep.nuevas === 0 && ep.omitidas.length === 1 && /otra organización/.test(ep.omitidas[0].motivo)
+  && !(await val(`select 1 x from pagos where hoja_id = 'PAGO-1792698020001-0'`)), JSON.stringify(ep))
 await falla('…y después de esa copia, el servidor vuelve a no saber para quién trabaja (la organización vale solo para ese pedido)', `select organizacion_del_servidor()`, [], /más de una organización/)
 r = (await val(`select espejar_catalogos($1, $2) r`, [JSON.stringify({ emails: [{ cuit: '30777777771', proveedor: 'Proveedor de la hoja de Otra', email: 'pagos@prov-otra.com' }], productos: [{ nombre: 'Producto de la hoja de Otra', codigo: 'PHO' }] }), orgB])).r
 check('catálogos sin empresa (mails y productos) con la organización de Otra: quedan a nombre de Otra', r.emails === 1 && r.productos === 1
@@ -1377,8 +1415,14 @@ await db.query(`update organizaciones set estado = 'SUSPENDIDA' where id = $1`, 
 await falla('con la organización suspendida, la copia no corre', `select espejar_facturas('[]', $1)`, [orgB], /no está activa/)
 await db.query(`update organizaciones set estado = 'ACTIVA' where id = $1`, [orgB])
 // Un registro sin organización, dentro de un pedido del servidor para Otra, queda a nombre de Otra.
-await db.exec(`begin; select fijar_organizacion_del_proceso('${orgB}'); insert into reglas_cuenta (patron, cuenta_contable) values ('regla-del-proceso', 'X'); commit;`)
-check('un registro sin organización hecho por el servidor para Otra queda a nombre de Otra', (await val(`select organizacion_id o from reglas_cuenta where patron = 'regla-del-proceso'`)).o === orgB)
+// Sin sesión de persona: si no, el registro iría a Otra por la persona y no por la organización fijada.
+await db.exec(`reset role`)
+await como('')
+await falla('sin sesión ni organización fijada, un registro sin organización se rechaza (hay dos)', `insert into reglas_cuenta (patron, cuenta_contable) values ('regla-sin-duenio', 'X')`, [], /No se sabe de qué organización/)
+let errorDelProceso = ''
+try { await db.exec(`begin; select fijar_organizacion_del_proceso('${orgB}'); insert into reglas_cuenta (patron, cuenta_contable) values ('regla-del-proceso', 'X'); commit;`) }
+catch (e) { errorDelProceso = e.message; await db.exec(`rollback`) }
+check('un registro sin organización hecho por el servidor para Otra queda a nombre de Otra', !errorDelProceso && (await val(`select organizacion_id o from reglas_cuenta where patron = 'regla-del-proceso'`))?.o === orgB, errorDelProceso)
 
 // ================================================================ Migrar una base que ya tiene datos (0017 en adelante)
 // La base real tiene datos: las migraciones nuevas se aplican sobre una base cargada con las anteriores.
@@ -1414,7 +1458,7 @@ check('un registro sin organización hecho por el servidor para Otra queda a nom
   }
   const antes = await contar()
   let error = ''
-  try { await aplicar(archivos.filter((f) => f >= '0017')) } catch (e) { error = e.message }
+  try { await aplicar(archivos.filter((f) => f >= '0017' && f < '0021')); await db2.exec(PERMISOS_AUTOMATICOS); await aplicar(archivos.filter((f) => f >= '0021')) } catch (e) { error = e.message }
   check('las migraciones nuevas se aplican sobre una base con datos', error === '', error)
   const despues = await contar()
   check('migrar no agrega ni saca filas de ninguna tabla', JSON.stringify(antes) === JSON.stringify(despues) && antes.auditoria >= 5 && antes.proveedores >= 3 && antes.documentos === 2, JSON.stringify(despues))

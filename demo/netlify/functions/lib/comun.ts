@@ -76,7 +76,7 @@ export async function empresasVisibles(u: UsuarioFn): Promise<string[]> {
 
 /** Organizaciones activas, para las tareas programadas que recorren organización por organización. */
 export async function organizacionesActivas(db: SupabaseClient = supabaseAdmin()): Promise<string[]> {
-  const { data, error } = await db.from('organizaciones').select('id').eq('estado', 'ACTIVA')
+  const { data, error } = await db.from('organizaciones').select('id').eq('estado', 'ACTIVA').order('id')
   if (error) throw new ErrorHttp(500, error.message)
   return (data ?? []).map((o) => String(o.id))
 }
@@ -125,9 +125,10 @@ async function organizacionProveedora(): Promise<string> {
   const { data, error } = await supabaseAdmin().from('organizaciones').select('id, estado, es_proveedor')
   if (error) throw new ErrorHttp(500, error.message)
   const lista = data ?? []
+  if (!lista.length) throw new ErrorHttp(409, 'No hay ninguna organización cargada: INGESTA_TOKEN no tiene para quién trabajar. No se copió ni se entregó nada.')
   const o = lista.find((x) => x.es_proveedor === true) ?? (lista.length === 1 ? lista[0] : undefined)
   if (!o)
-    throw new ErrorHttp(409, 'Hay más de una organización y ninguna figura como la que da el servicio: INGESTA_TOKEN no sabe para cuál trabaja (usar el token de la organización). No se copió ni se entregó nada.')
+    throw new ErrorHttp(409, 'Ninguna organización figura como la que da el servicio (es_proveedor) y hay más de una organización: INGESTA_TOKEN no sabe para cuál trabaja (usar el token de la organización). No se copió ni se entregó nada.')
   if (o.estado !== 'ACTIVA') throw new ErrorHttp(403, 'La organización de este token no está activa')
   return String(o.id)
 }

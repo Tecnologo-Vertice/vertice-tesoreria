@@ -80,6 +80,7 @@ La IA recibe en el pedido solo los nombres y CUIT de las empresas de la organiza
 | Alta | `POST /api/xubio/credenciales` (`{ empresaId, clientId, secret }`), solo rol ADMIN y para una empresa que ve. Pide un token a Xubio para probarla; si Xubio la rechaza, no guarda nada. Sin `CREDENCIALES_CLAVE`, se rechaza con un mensaje claro y todo sigue con la variable. No hay pantalla todavía (grupo K) |
 | Cambio de clave | Poner la nueva en `CREDENCIALES_CLAVE` y la de antes en `CREDENCIALES_CLAVE_ANTERIOR`. Lo cifrado con la anterior se sigue leyendo y se vuelve a cifrar con la nueva la primera vez que se usa. |
 | Para volver a la variable | `delete from conexiones_erp where empresa_id = '…';` |
+| Auditoría | Cargar, reemplazar o borrar una credencial (también a mano por SQL) deja un renglón en `auditoria` con quién, la empresa y la pista. Nunca el dato cifrado. Volver a cifrarla en un cambio de clave no se anota |
 
 ### Secretos por organización (migración 0022)
 
@@ -91,6 +92,7 @@ Los puentes del Apps Script (`/api/espejo`, `/api/ingesta/adjunto`, `/api/ingest
 | `tokens_integracion` | Secretos de las demás organizaciones: uno por organización y por tarea (`INGESTA`, `COPIA_HOJA`, `CHEQUES`, `FLUJO`). Se guarda solo el SHA-256 del secreto. Nadie con sesión la lee |
 | Crear uno | En el editor SQL: `select crear_token_integracion((select id from organizaciones where slug = 'otra'), 'COPIA_HOJA', 'Apps Script de Otra');`. Devuelve el secreto una sola vez; se pega en las propiedades del Apps Script de esa organización como `INGESTA_TOKEN` |
 | Revocar | `update tokens_integracion set activo = false where id = '…';` Sin redesplegar |
+| Auditoría | Crear, revocar, reactivar o borrar un secreto deja un renglón en la auditoría de su organización (quién, tarea y nombre; nunca el secreto ni su resumen). A una organización que no está activa no se le crean secretos |
 | Un secreto de otra tarea | 403. Un secreto revocado o que no existe, 401. Organización suspendida, 403 |
 | En la base | La copia de la hoja, cheques, flujo y subida a Xubio tienen versión con organización: cada una solo carga, entrega y marca lo de esa organización. Lo que no trae empresa (mails, productos, pagos de la hoja sin empresa) queda a nombre de la organización del secreto. Las versiones de antes (sin organización) siguen andando con una sola organización y se detienen con dos |
 | Tareas programadas | El subidor a Xubio, los catálogos semanales y el lector de facturas recorren las organizaciones activas una por una (el lector, por turnos: un documento de cada una) |

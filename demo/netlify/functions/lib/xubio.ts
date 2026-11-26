@@ -4,7 +4,7 @@
 // Las órdenes de pago NO se pueden borrar por API; los asientos manuales sí.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { cifrar, descifrar } from './cifrado'
+import { cifrar, descifrar, hayClave } from './cifrado'
 import { env, ErrorHttp } from './comun'
 
 const API = 'https://xubio.com/API/1.1/'
@@ -51,7 +51,8 @@ export async function credencialesDe(db: SupabaseClient, empresaId: string): Pro
   }
   if (!c.clientId || !c.secret) throw new ErrorHttp(500, `${nombre}: el dato guardado está incompleto.`)
   // Cambio de clave: lo que todavía estaba con la anterior se vuelve a cifrar con la actual al usarlo.
-  if (d.conClaveAnterior)
+  // Si solo está la anterior (la actual falta), se usa igual y queda como estaba.
+  if (d.conClaveAnterior && hayClave())
     await db.from('conexiones_erp').update({ secreto_cifrado: cifrar(d.texto, lugarXubio(empresaId)) }).eq('empresa_id', empresaId).eq('erp', 'XUBIO')
   return { clientId: c.clientId, secret: c.secret }
 }
@@ -75,14 +76,24 @@ export async function guardarCredencialesXubio(db: SupabaseClient, d: { empresaI
   try {
     await token({ clientId, secret })
   } catch (err) {
-    // Los mensajes de token() no llevan la credencial (va en una cabecera, nunca en el texto).
-    throw new ErrorHttp(422, `Xubio no aceptó las credenciales de ${e.nombre} (${err instanceof Error ? err.message : 'sin detalle'}). No se guardó nada.`)
+    // Texto fijo: el mensaje del error (por ejemplo, el de fetch) no se devuelve ni se registra.
+    throw new ErrorHttp(422, `${motivoAlta(err)} (${e.nombre}). No se guardó nada.`)
   }
   const verificadoEn = new Date().toISOString()
   const pista = clientId.slice(-4)
   const { error: e2 } = await db.from('conexiones_erp').upsert({ empresa_id: d.empresaId, erp: 'XUBIO', secreto_cifrado: cifrado, pista, verificado_en: verificadoEn, cargado_por: d.usuario, cargado_en: verificadoEn })
   if (e2) throw new ErrorHttp(500, `No se pudieron guardar las credenciales de ${e.nombre}`)
   return { pista, verificadoEn }
+}
+
+/** Motivo del rechazo de un alta, sin repetir nunca el mensaje del error original. */
+function motivoAlta(err: unknown): string {
+  const status = err instanceof ErrorHttp ? err.status : 0
+  const codigo = err instanceof ErrorHttp ? /^Xubio no entregó token \((\d{3})\)$/.exec(err.message)?.[1] : undefined
+  if (codigo) return `Xubio no aceptó las credenciales (código ${codigo})`
+  if (status === 504) return 'Xubio no respondió a tiempo'
+  if (err instanceof ErrorHttp && err.message.startsWith('No se pudo conectar con Xubio')) return 'No se pudo conectar con Xubio para probar las credenciales'
+  return 'Xubio no entregó un token válido con esas credenciales'
 }
 
 export interface Token {

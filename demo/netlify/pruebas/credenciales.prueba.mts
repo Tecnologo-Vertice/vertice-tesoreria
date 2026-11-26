@@ -34,6 +34,7 @@ delete process.env.CREDENCIALES_CLAVE_ANTERIOR
 const alta = (await import('../functions/xubio-credenciales.mts')).default
 const catalogos = (await import('../functions/xubio-catalogos.mts')).default
 const { credencialesDe } = await import('../functions/lib/xubio.ts')
+const { cifrar, descifrar } = await import('../functions/lib/cifrado.ts')
 const { supabaseAdmin } = await import('../functions/lib/comun.ts')
 
 const VE: Record<string, string[]> = { 'admin@prueba.com': ['beratung', 'india', 'robles'], 'guido@prueba.com': ['beratung', 'india'], 'admin.india@prueba.com': ['india'] }
@@ -182,6 +183,38 @@ check('cambio de clave: lo guardado con la anterior se sigue leyendo', c?.secret
 check('…y al usarlo se vuelve a cifrar con la nueva', recifrada !== filaGuardada.secreto_cifrado && recifrada.split(':')[1] !== String(filaGuardada.secreto_cifrado).split(':')[1])
 delete process.env.CREDENCIALES_CLAVE_ANTERIOR
 check('…así que después se puede sacar la anterior', (await credencialesDe(supabaseAdmin(), 'beratung'))?.secret === SECRETO_BASE)
+
+// ---------------------------------------------------------------- Detalles del cifrado (revisión del agente 06)
+process.env.CREDENCIALES_CLAVE = CLAVE
+const una = cifrar('mismo texto', 'lugar')
+const otra = cifrar('mismo texto', 'lugar')
+check('cifrar dos veces lo mismo da datos distintos (iv al azar en cada uno)', una !== otra && una.split(':')[2] !== otra.split(':')[2]
+  && descifrar(una, 'lugar', 'x').texto === 'mismo texto' && descifrar(otra, 'lugar', 'x').texto === 'mismo texto')
+const [v, h, iv, etiqueta, datos] = una.split(':')
+const recortada = [v, h, iv, Buffer.from(etiqueta, 'base64url').subarray(0, 4).toString('base64url'), datos].join(':')
+msg = ''
+try { descifrar(recortada, 'lugar', 'Dato de prueba') } catch (e) { msg = e instanceof Error ? e.message : String(e) }
+check('una etiqueta recortada (4 bytes) no se acepta', /no se pudieron descifrar/.test(msg), msg)
+// Solo la clave anterior configurada (la actual se borró por error): la credencial se usa igual y no se toca.
+delete process.env.CREDENCIALES_CLAVE
+process.env.CREDENCIALES_CLAVE_ANTERIOR = CLAVE
+m = mundo()
+m.tablas.conexiones_erp.push({ ...filaGuardada })
+let soloAnterior: unknown = null
+try { soloAnterior = await credencialesDe(supabaseAdmin(), 'beratung') } catch (e) { soloAnterior = e instanceof Error ? e.message : e }
+check('con solo la clave anterior configurada, la credencial guardada se sigue usando', (soloAnterior as { secret?: string } | null)?.secret === SECRETO_BASE, typeof soloAnterior === 'string' ? soloAnterior : '')
+check('…y queda como estaba (sin clave actual no se vuelve a cifrar)', m.tablas.conexiones_erp[0].secreto_cifrado === filaGuardada.secreto_cifrado)
+delete process.env.CREDENCIALES_CLAVE_ANTERIOR
+process.env.CREDENCIALES_CLAVE = CLAVE
+// Si el error de conexión trajera la credencial en el texto, no llega a la respuesta ni al registro.
+m = mundo({ xubio: () => { throw new Error(`conexión rechazada ${SECRETO_BASE} ${ID_BASE}`) } })
+r = await alta(pedido('admin', { empresaId: 'beratung', clientId: ID_BASE, secret: SECRETO_BASE }))
+cuerpo = await r.json()
+check('alta sin conexión con Xubio: texto fijo, sin el mensaje del error', r.status === 422 && /No se pudo conectar con Xubio/.test(cuerpo.error ?? '') && !textoDe(cuerpo).includes(SECRETO_BASE) && !textoDe(cuerpo).includes(ID_BASE) && m.tablas.conexiones_erp.length === 0)
+m = mundo()
+r = await alta(pedido('admin', { empresaId: 'beratung', clientId: ID_BASE, secret: SECRETO_MALO }))
+cuerpo = await r.json()
+check('alta con la credencial rechazada: dice el código que dio Xubio', r.status === 422 && /código 401/.test(cuerpo.error ?? ''))
 
 // ---------------------------------------------------------------- Ningún secreto en el registro
 const todo = registro.join('\n')
