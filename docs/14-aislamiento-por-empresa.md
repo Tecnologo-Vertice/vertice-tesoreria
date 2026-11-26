@@ -32,6 +32,16 @@ Por encima de las empresas está la organización: el cliente. Vértice es la pr
 | Funciones de Netlify | `usuarioDesde` devuelve la organización y rechaza a quien es de una organización que no está activa. `leer-ahora` lee solo la cola de la organización de quien lo pide. |
 | Puentes del Apps Script | Tienen un solo secreto, sin dueño. Mientras haya una sola organización trabajan para esa. Con dos o más responden 409 y no copian ni entregan nada, hasta que cada organización tenga su secreto. |
 
+### Archivos (migración 0019)
+
+| Qué | Cómo queda |
+|---|---|
+| Ruta de lo nuevo | `<organización>/<empresa>/…`. La organización es su identificador. En las facturas, que se suben antes de saber de qué empresa son, la segunda carpeta es la empresa elegida o `sin-empresa`. |
+| Comprobantes de pago | Se suben y se leen por carpeta: hay que ser de esa organización y ver esa empresa. `registrar_pago` rechaza un comprobante que no esté en la carpeta de la empresa del pago. Si en el formulario se cambia la empresa después de subirlo, la pantalla lo guarda de nuevo en la carpeta correcta al confirmar. |
+| PDF de facturas | Los sube solo el servidor. Se leen si la carpeta es de mi organización y, además, veo el documento o la factura que apunta al archivo. |
+| Archivos de antes | Sus rutas no tienen carpeta de organización (`año/mes/…`). Se siguen leyendo como antes: a través del pago, la factura o el documento que apunta a ellos. Un comprobante viejo que ya está en un pago de otra empresa no se puede volver a usar. |
+| Archivo suelto | Un archivo viejo al que no apunta ningún registro ya no lo lee nadie desde la pantalla (antes lo leía quien veía todas las empresas). |
+
 La prueba fija está en `npm run test:sql`, sección "Dos organizaciones que no se ven ni se tocan": una segunda organización de mentira con sus empresas, usuarios, proveedores, facturas, pagos, documentos y auditoría. Compara, tabla por tabla, lo que ve cada una con lo que es suyo, y prueba cada acción de negocio contra los datos de la otra. `npm run test:organizaciones` hace lo mismo con las funciones de Netlify.
 
 ## Configurar

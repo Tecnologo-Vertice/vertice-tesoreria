@@ -133,8 +133,8 @@ export interface Fuente {
   /** En demo recibe un comprobante de ejemplo; conectado, un File real que va a la IA. */
   leerComprobante(archivo: File | ComprobanteEjemplo): Promise<LecturaComprobante>
   comprobantesEjemplo(facturas: Factura[]): ComprobanteEjemplo[]
-  /** Guarda el archivo y devuelve la ruta con la que se registra el pago. */
-  subirComprobante(archivo: File): Promise<string>
+  /** Guarda el archivo en la carpeta de la empresa del pago y devuelve la ruta con la que se registra. */
+  subirComprobante(archivo: File, empresaId: string): Promise<string>
   /** Link temporal para abrir un archivo guardado. Null en demo (no hay archivos reales). */
   urlArchivo(bucket: Bucket, path: string): Promise<string | null>
   /** Flujo 1: carga manual de una factura (PDF o foto). La IA la lee y queda en Aprobación. */

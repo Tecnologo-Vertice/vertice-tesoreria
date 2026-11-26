@@ -6,6 +6,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Auditoria, ComprobanteEjemplo, CuentaOrigen, Documento, Empresa, EstadoEspejo, Factura, LecturaComprobante, Pago, Proveedor, Usuario } from '../types'
 import type { Bucket, Datos, DatosAprobacion, DatosContabilizacion, DatosEdicion, DatosLiberacion, DatosYaPagada, Fuente, ResultadoLiberacion, ResultadoYaPagada, ResultadoEdicion, NuevoPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
 import { archivoABase64, llamarFuncion } from '../lib/supabase'
+import { rutaComprobante } from '../lib/rutas'
 
 type Row = Record<string, unknown>
 const s = (v: unknown) => (v == null ? undefined : String(v))
@@ -135,7 +136,7 @@ export class FuenteSupabase implements Fuente {
 
   async cargar(): Promise<Datos> {
     const [empresas, proveedores, cuentasOrigen, plan, facturas, pagosRaw, vinculos, auditoria, documentos, espejo, productos, ncs, plazoEnvioXubioSeg] = await Promise.all([
-      this.lista<Empresa>('empresas', (r) => ({ id: String(r.id), nombre: String(r.nombre), corto: String(r.nombre_corto), cuit: String(r.cuit), erp: String(r.erp) as Empresa['erp'] })),
+      this.lista<Empresa>('empresas', (r) => ({ id: String(r.id), nombre: String(r.nombre), corto: String(r.nombre_corto), cuit: String(r.cuit), erp: String(r.erp) as Empresa['erp'], organizacionId: s(r.organizacion_id) })),
       this.lista<Proveedor>('proveedores', (r) => ({
         id: String(r.id),
         nombre: String(r.nombre),
@@ -213,6 +214,7 @@ export class FuenteSupabase implements Fuente {
       // Plazo para dar por cortado un envío a Xubio (0016). Sin la migración, sin dato: la pantalla no ofrece liberar.
       this.rpc<number>('plazo_envio_xubio_segundos', {}).then((v) => (typeof v === 'number' && v > 0 ? v : undefined)).catch(() => undefined),
     ])
+    this.organizacionDe = new Map(empresas.flatMap((e) => (e.organizacionId ? [[e.id, e.organizacionId] as [string, string]] : [])))
     for (const f of facturas) {
       const a = ncs.filter((x) => x.factura === f.id)
       if (a.length) f.ncAplicadas = a.map((x) => ({ ncId: x.nc, importe: x.importe }))
@@ -356,9 +358,11 @@ export class FuenteSupabase implements Fuente {
     return llamarFuncion<LecturaComprobante>('ia/leer-comprobante', { nombre: archivo.name, mimeType: archivo.type || 'application/pdf', data })
   }
 
-  async subirComprobante(archivo: File): Promise<string> {
-    const limpio = archivo.name.replace(/[^a-zA-Z0-9._-]+/g, '_')
-    const path = `${new Date().getFullYear()}/${Date.now()}_${limpio}`
+  /** Organización de cada empresa visible, para armar la carpeta de los comprobantes. Se llena al cargar. */
+  private organizacionDe = new Map<string, string>()
+
+  async subirComprobante(archivo: File, empresaId: string): Promise<string> {
+    const path = rutaComprobante(this.organizacionDe.get(empresaId), empresaId, archivo.name)
     const { error } = await this.db.storage.from('comprobantes').upload(path, archivo, { contentType: archivo.type || 'application/octet-stream' })
     if (error) throw new Error(`No se pudo guardar el comprobante: ${error.message}`)
     return path

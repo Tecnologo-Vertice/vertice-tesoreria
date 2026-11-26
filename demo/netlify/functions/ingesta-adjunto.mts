@@ -35,7 +35,7 @@ export default manejar(async (req) => {
     if (previo) return json({ ok: true, id: previo.id, nuevo: false, estado: previo.estado })
   }
 
-  const path = await guardarArchivo(db, b.nombre!, b.mimeType!, b.data!)
+  const path = await guardarArchivo(db, b.nombre!, b.mimeType!, b.data!, { organizacion })
   const r = await registrarDocumento(db, {
     origen,
     organizacion_id: organizacion,

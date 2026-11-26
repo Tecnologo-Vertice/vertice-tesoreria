@@ -9,6 +9,8 @@ export interface Empresa {
   corto: string
   cuit: string
   erp: Erp
+  /** La organización (el cliente) dueña de la empresa. Sin dato en modo demo. */
+  organizacionId?: string
 }
 
 export interface Proveedor {

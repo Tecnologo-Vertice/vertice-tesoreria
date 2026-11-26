@@ -415,6 +415,9 @@ function ModalCargarPago({ facturaIds, onClose }: { facturaIds: string[]; onClos
   const [editados, setEditados] = useState<Set<string>>(new Set())
   const [guardando, setGuardando] = useState(false)
   const inputArchivo = useRef<HTMLInputElement>(null)
+  // El comprobante se guarda en la carpeta de la empresa elegida al subirlo. Se recuerda el archivo por si
+  // después se cambia la empresa: al confirmar se guarda de nuevo en la carpeta de la empresa del pago.
+  const subido = useRef<{ archivo: File; empresaId: string } | null>(null)
 
   const cuentasEmpresa = cuentasOrigenDe(catalogos.cuentasOrigen, empresaId)
   const esCheque = medio === 'CHEQUE' || medio === 'ECHEQ'
@@ -467,8 +470,10 @@ function ModalCargarPago({ facturaIds, onClose }: { facturaIds: string[]; onClos
     setLeyendo(true)
     setLectura(null)
     try {
+      subido.current = null
       if (origen instanceof File) {
-        const path = await subirComprobante(origen)
+        const path = await subirComprobante(origen, empresaId)
+        subido.current = { archivo: origen, empresaId }
         setArchivo({ nombre: path })
       }
       aplicarLectura(await leerComprobante(origen))
@@ -501,6 +506,19 @@ function ModalCargarPago({ facturaIds, onClose }: { facturaIds: string[]; onClos
   async function confirmar() {
     const p = proveedor(proveedorId)
     setGuardando(true)
+    let comprobante = archivo!.nombre
+    if (subido.current && subido.current.empresaId !== empresaId) {
+      // Se cambió la empresa después de subir el comprobante: va a la carpeta de la empresa del pago.
+      try {
+        comprobante = await subirComprobante(subido.current.archivo, empresaId)
+        subido.current = { archivo: subido.current.archivo, empresaId }
+        setArchivo({ nombre: comprobante })
+      } catch (e) {
+        toast(`No se pudo guardar el comprobante en la empresa elegida: ${e instanceof Error ? e.message : e}`, 'error')
+        setGuardando(false)
+        return
+      }
+    }
     const r = await registrarPago({
       empresaId,
       proveedorId: proveedorId || undefined,
@@ -518,7 +536,7 @@ function ModalCargarPago({ facturaIds, onClose }: { facturaIds: string[]; onClos
       sugerenciaOrigen: editados.has('cuenta') ? 'MANUAL' : sug?.origen,
       sugerenciaConfianza: editados.has('cuenta') ? 1 : sug?.confianza,
       formaCargaXubio: formaDeCarga(facturasEmpresa.filter((f) => vinculadas.includes(f.id)), obs),
-      comprobante: archivo!.nombre,
+      comprobante,
     })
     setGuardando(false)
     if (r) onClose()

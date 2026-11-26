@@ -1048,6 +1048,92 @@ await como('tesoreria@verticebi.com')
 check('registro de Xubio: Tesorería sigue sin verlo', (await val(`select count(*)::int n from xubio_log`)).n === 0)
 await db.exec(`reset role`)
 
+// ================================================================ Archivos por organización y por empresa (0019)
+await db.exec(`reset role`)
+await como('')
+const { rutaComprobante } = await import('../../src/lib/rutas.ts')   // la misma función que usa la pantalla al subir
+const ahora = new Date('2026-11-26T12:00:00Z')
+const rVInd = rutaComprobante(orgV, 'india', 'pago india.pdf', ahora)
+const rVBer = rutaComprobante(orgV, 'beratung', 'pago beratung.pdf', ahora)
+const rBUno = rutaComprobante(orgB, 'otra-uno', 'pago otra.pdf', ahora)
+check('comprobante nuevo: la pantalla lo guarda en <organización>/<empresa>/año/archivo', rVInd === `${orgV}/india/2026/${ahora.getTime()}_pago_india.pdf`, rVInd)
+check('…y sin organización (base sin migrar) usa la ruta de antes', rutaComprobante(undefined, 'india', 'x.pdf', ahora) === `2026/${ahora.getTime()}_x.pdf`)
+r = await val(`select organizacion_de_ruta($1) a, organizacion_de_ruta('2026/10/x.pdf') b, organizacion_de_ruta('aisl/ber.pdf') c, organizacion_de_ruta(null) d`, [rVInd])
+check('la organización de una ruta sale de su primera carpeta; las rutas viejas no tienen', r.a === orgV && r.b === null && r.c === null && r.d === null, JSON.stringify(r))
+// Archivos de antes de las organizaciones: dos con su pago y uno suelto.
+const viejoBer = '2026/1700000000001_viejo-beratung.pdf', viejoInd = '2026/1700000000002_viejo-india.pdf', huerfano = '2026/1700000000003_suelto.pdf'
+const cruzado = rutaComprobante(orgB, 'india', 'cruzado.pdf', ahora)   // no se puede subir así (ver abajo); se pone a mano
+await db.query(`insert into storage.objects (bucket_id, name) select 'comprobantes', x from unnest($1::text[]) x`, [[rVInd, rVBer, rBUno, viejoBer, viejoInd, huerfano, cruzado]])
+await db.query(`insert into pagos (empresa_id, fecha, importe, medio, cargado_por, comprobante_path) values
+  ('beratung', '2026-10-01', 10, 'TRANSFERENCIA', 'Vivi', $1), ('india', '2026-10-01', 10, 'TRANSFERENCIA', 'Vivi', $2)`, [viejoBer, viejoInd])
+// PDF de facturas con ruta nueva: uno de Gmail y uno subido para India (Vértice), y uno de Gmail de Otra.
+const pdfVGmail = `${orgV}/sin-empresa/2026/11/aaa_gmail.pdf`, pdfVInd = `${orgV}/india/2026/11/bbb_india.pdf`, pdfB = `${orgB}/sin-empresa/2026/11/ccc_otra.pdf`
+const docArchivo = (extra) => ({ origen: 'GMAIL', nombre_archivo: 'archivo.pdf', mime_type: 'application/pdf', tamano: 1, ...extra })
+await db.query(`select registrar_documento($1)`, [docArchivo({ gmail_message_id: 'msg-arch-v', storage_path: pdfVGmail, organizacion_id: orgV })])
+await db.query(`select registrar_documento($1)`, [docArchivo({ origen: 'MANUAL', storage_path: pdfVInd, organizacion_id: orgV, empresas_permitidas: ['india'] })])
+await db.query(`select registrar_documento($1)`, [docArchivo({ gmail_message_id: 'msg-arch-b', storage_path: pdfB, organizacion_id: orgB })])
+await db.query(`insert into storage.objects (bucket_id, name) select 'facturas', x from unnest($1::text[]) x`, [[pdfVGmail, pdfVInd, pdfB]])
+// Una factura de Vértice apuntando, por error, al PDF de Otra: la carpeta manda y no se lo muestra.
+await db.query(`update facturas set pdf_path = $2 where id = $1`, [f5, pdfB])
+const archivosDe = async (email) => {
+  await db.exec(`set role authenticated`)
+  await como(email)
+  const nombres = (await db.query(`select name from storage.objects`)).rows.map((x) => x.name)
+  await db.exec(`reset role`)
+  return new Set(nombres)
+}
+let av = await archivosDe('aprob.india@verticebi.com')
+check('usuario de India: lee el comprobante nuevo de la carpeta de India', av.has(rVInd))
+check('…no el de la carpeta de Beratung ni el de la otra organización', !av.has(rVBer) && !av.has(rBUno))
+check('…de los viejos, el del pago de India sí y el del pago de Beratung no', av.has(viejoInd) && !av.has(viejoBer))
+check('…y un archivo viejo suelto (sin pago) no', !av.has(huerfano))
+check('…el PDF subido para India sí; el de Gmail (sin empresa) y el de Otra no', av.has(pdfVInd) && !av.has(pdfVGmail) && !av.has(pdfB))
+check('…y los PDF viejos siguen como antes: el de su factura sí, el de Beratung no', av.has('aisl/ind.pdf') && !av.has('aisl/ber.pdf'))
+check('…ni un comprobante que alguien dejó con el nombre de su empresa bajo la carpeta de otra organización', !av.has(cruzado))
+av = await archivosDe('tecnologia@verticebi.com')
+check('quien ve todo Vértice: lee los comprobantes nuevos de todas sus empresas', av.has(rVInd) && av.has(rVBer))
+check('…y los viejos que tienen pago, y los PDF de todos los documentos de Vértice', av.has(viejoInd) && av.has(viejoBer) && av.has(pdfVGmail) && av.has(pdfVInd) && av.has('aisl/ber.pdf') && av.has('aisl/ind.pdf'))
+check('…nada de la otra organización, ni siquiera el PDF al que apunta por error una factura suya', !av.has(rBUno) && !av.has(pdfB))
+check('…ni un archivo viejo suelto', !av.has(huerfano))
+av = await archivosDe('admin@otra.com')
+check('quien ve todo Otra: lee solo los archivos de Otra', [...av].sort().join() === [rBUno, pdfB].sort().join(), [...av].join())
+check('usuario sin empresas: no lee ningún archivo', (await archivosDe('nuevo@verticebi.com')).size === 0)
+
+// Subir: solo a la carpeta de una empresa que veo.
+await db.exec(`set role authenticated`)
+await como('teso.india@verticebi.com')
+await db.query(`insert into storage.objects (bucket_id, name) values ('comprobantes', $1)`, [rutaComprobante(orgV, 'india', 'otro.pdf', ahora)])
+check('Tesorería de India sube un comprobante a la carpeta de India', (await val(`select count(*)::int n from storage.objects where name = $1`, [rutaComprobante(orgV, 'india', 'otro.pdf', ahora)])).n === 1)
+await falla('…no a la carpeta de Beratung', `insert into storage.objects (bucket_id, name) values ('comprobantes', $1)`, [rutaComprobante(orgV, 'beratung', 'x.pdf', ahora)], /row-level security/)
+await falla('…ni a la de la otra organización', `insert into storage.objects (bucket_id, name) values ('comprobantes', $1)`, [rutaComprobante(orgB, 'otra-uno', 'x.pdf', ahora)], /row-level security/)
+await falla('…ni con su empresa bajo la carpeta de la otra organización', `insert into storage.objects (bucket_id, name) values ('comprobantes', $1)`, [rutaComprobante(orgB, 'india', 'x.pdf', ahora)], /row-level security/)
+await db.query(`insert into storage.objects (bucket_id, name) values ('comprobantes', '2026/1700000000008_pantalla-vieja.pdf')`)
+check('una pantalla vieja (ruta sin carpetas) todavía puede subir', true)
+await falla('las personas no suben al depósito de facturas (solo el servidor)', `insert into storage.objects (bucket_id, name) values ('facturas', $1)`, [pdfVInd + 'x'], /row-level security/)
+
+// registrar_pago rechaza una ruta que no sea de la carpeta de la empresa del pago.
+const pArch = (await val(`select registrar_pago($1) id`, [pago({ empresa_id: 'india', importe: 10, comprobante_path: rVInd })])).id
+check('pago de India con el comprobante de la carpeta de India: se registra', (await val(`select comprobante_path c from pagos where id = $1`, [pArch])).c === rVInd)
+await falla('pago de India con el comprobante de la carpeta de Beratung: rechazado', `select registrar_pago($1)`, [pago({ empresa_id: 'india', importe: 10, comprobante_path: rVBer })], /carpeta de otra empresa/)
+await falla('pago de India con el comprobante de otra organización: rechazado', `select registrar_pago($1)`, [pago({ empresa_id: 'india', importe: 10, comprobante_path: rBUno })], /carpeta de otra empresa/)
+await falla('pago de India con un comprobante viejo que ya es de un pago de Beratung: rechazado', `select registrar_pago($1)`, [pago({ empresa_id: 'india', importe: 10, comprobante_path: viejoBer })], /no es de esta empresa/)
+await falla('ruta con ".." para salir de la carpeta: rechazada', `select registrar_pago($1)`, [pago({ empresa_id: 'india', importe: 10, comprobante_path: `${orgV}/india/../beratung/x.pdf` })], /no es válida/)
+await falla('quien no ve la empresa recibe el rechazo de siempre, no el de la ruta', `select registrar_pago($1)`, [pago({ importe: 10, comprobante_path: rVBer })], /acceso a la empresa beratung/)
+await db.query(`select registrar_pago($1)`, [pago({ empresa_id: 'india', importe: 10, comprobante_path: '2026/1700000000008_pantalla-vieja.pdf' })])
+await db.query(`select registrar_pago($1)`, [pago({ empresa_id: 'india', importe: 10, comprobante_path: viejoInd })])
+check('una pantalla vieja todavía registra su pago; y un comprobante viejo se puede repetir en la misma empresa', (await val(`select count(*)::int n from pagos where empresa_id = 'india' and comprobante_path in ('2026/1700000000008_pantalla-vieja.pdf', $1)`, [viejoInd])).n === 3)
+await como('teso@otra.com')
+await falla('Otra no registra un pago con el comprobante de Vértice', `select registrar_pago($1)`, [pago({ empresa_id: 'otra-uno', importe: 10, cuenta_origen: 'Banco de Otra CC', comprobante_path: rVBer })], /carpeta de otra empresa/)
+await falla('…ni con uno viejo de Vértice', `select registrar_pago($1)`, [pago({ empresa_id: 'otra-uno', importe: 10, cuenta_origen: 'Banco de Otra CC', comprobante_path: viejoBer })], /no es de esta empresa/)
+await db.query(`select registrar_pago($1)`, [pago({ empresa_id: 'otra-uno', importe: 10, cuenta_origen: 'Banco de Otra CC', comprobante_path: rBUno })])
+await db.exec(`reset role`)
+check('ningún pago quedó apuntando a un comprobante ajeno', (await val(`select count(*)::int n from pagos where (empresa_id <> 'beratung' and comprobante_path in ($1, $2)) or (empresa_id not like 'otra-%' and comprobante_path = $3)`, [rVBer, viejoBer, rBUno])).n === 0)
+av = await archivosDe('teso@otra.com')
+check('…y después de intentarlo, Otra sigue sin leer nada de Vértice', !av.has(rVBer) && !av.has(viejoBer) && av.has(rBUno))
+av = await archivosDe('teso.india@verticebi.com')
+check('…e India sigue sin leer los comprobantes de Beratung', !av.has(rVBer) && !av.has(viejoBer) && av.has(rVInd))
+check('las personas no ejecutan el control de rutas por su cuenta', !(await val(`select has_function_privilege('authenticated', 'exigir_ruta_de_empresa(text,text)', 'execute') p`)).p)
+
 // ================================================================ Migrar una base que ya tiene datos (0017 en adelante)
 // La base real tiene datos: las migraciones nuevas se aplican sobre una base cargada con las anteriores.
 {
@@ -1071,6 +1157,7 @@ await db.exec(`reset role`)
   await db2.exec(`insert into espejo_estado (hoja, filas) values ('Facturas', 10), ('Pagos', 5);
     insert into reglas_cuenta (empresa_id, patron, cuenta_contable) values (null, 'alquiler', 'ALQUILER DE OFICINA'), ('india', 'seguro', 'SEGUROS');
     insert into pagos (empresa_id, fecha, importe, medio, cargado_por, comprobante_path) values ('india', '2026-10-01', 100, 'TRANSFERENCIA', 'Vivi', '2026/1700000000000_comprobante.pdf');
+    insert into storage.objects (bucket_id, name) values ('comprobantes', '2026/1700000000000_comprobante.pdf'), ('facturas', '2026/10/msg-viejo_factura.pdf'), ('facturas', '2026/10/suelto.pdf');
     insert into auditoria (usuario, accion, entidad, entidad_id, detalle) select 'Vivi', 'PAGO_CARGADO', 'PAGO', id::text, 'x' from pagos;
     insert into auditoria (usuario, accion, entidad, entidad_id, detalle) values ('Sistema', 'AVISO', 'SISTEMA', null, 'sin entidad'), ('Sistema', 'AVISO', 'SISTEMA', 'texto-que-no-es-un-id', 'x')`)
   const TABLAS = ['empresas', 'usuarios', 'usuarios_empresas', 'proveedores', 'proveedores_empresa', 'documentos', 'facturas', 'pagos', 'auditoria', 'cuentas_contables', 'cuentas_origen', 'reglas_cuenta', 'productos_xubio', 'espejo_estado']
@@ -1105,6 +1192,8 @@ await db.exec(`reset role`)
   await db2.query(`select set_config('request.jwt.claims', $1, false)`, [JSON.stringify({ email: 'teso.india@verticebi.com' })])
   r = await v2(`select (select count(*) from empresas)::int e, (select count(*) from facturas)::int f, (select count(*) from pagos)::int p`)
   check('base con datos: quien veía solo India sigue viendo solo India', r.e === 1 && r.f === 2 && r.p === 1, JSON.stringify(r))
+  r = (await db2.query(`select name from storage.objects order by name`)).rows.map((x) => x.name).join()
+  check('base con datos: los archivos ya guardados (rutas viejas) se siguen leyendo', r === '2026/10/msg-viejo_factura.pdf,2026/1700000000000_comprobante.pdf', r)
   await db2.query(`select set_config('request.jwt.claims', $1, false)`, [JSON.stringify({ email: 'aprobador@verticebi.com' })])
   r = await v2(`select (select count(*) from empresas)::int e, (select count(*) from facturas)::int f, (select count(*) from proveedores)::int p, (select count(*) from documentos)::int d`)
   check('base con datos: quien veía todo sigue viendo todo', r.e === 8 && r.f === antes.facturas && r.p === antes.proveedores && r.d === antes.documentos, JSON.stringify(r))

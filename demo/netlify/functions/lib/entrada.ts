@@ -31,11 +31,20 @@ export function validarArchivo(nombre: string | undefined, mimeType: string | un
   if (!nombre) throw new ErrorHttp(400, 'Falta el nombre del archivo')
 }
 
-/** Guarda el archivo en el bucket privado "facturas" y devuelve la ruta. */
-export async function guardarArchivo(db: SupabaseClient, nombre: string, mimeType: string, base64: string): Promise<string> {
+/** Carpeta de las facturas que se suben sin saber todavía de qué empresa son (la empresa la dice la IA al leerlas). */
+export const CARPETA_SIN_EMPRESA = 'sin-empresa'
+
+/**
+ * Guarda el archivo en el bucket privado "facturas" y devuelve la ruta: <organización>/<empresa>/año/mes/archivo.
+ * La primera carpeta es la organización dueña del archivo: la regla de lectura de la base (0019) la mira.
+ * La segunda es la empresa que eligió quien lo subió, o "sin-empresa".
+ */
+export async function guardarArchivo(db: SupabaseClient, nombre: string, mimeType: string, base64: string, destino: { organizacion: string; empresa?: string | null }): Promise<string> {
+  if (!destino.organizacion) throw new ErrorHttp(500, 'No se sabe de qué organización es el archivo: no se guarda')
   const limpio = nombre.replace(/[^a-zA-Z0-9._-]+/g, '_').slice(-80)
   const hoy = hoyAR()
-  const path = `${hoy.slice(0, 4)}/${hoy.slice(5, 7)}/${crypto.randomUUID()}_${limpio}`
+  const carpetaEmpresa = (destino.empresa ?? '').replace(/[^a-zA-Z0-9_-]+/g, '') || CARPETA_SIN_EMPRESA
+  const path = `${destino.organizacion}/${carpetaEmpresa}/${hoy.slice(0, 4)}/${hoy.slice(5, 7)}/${crypto.randomUUID()}_${limpio}`
   const { error } = await db.storage.from('facturas').upload(path, Buffer.from(base64, 'base64'), { contentType: mimeType })
   if (error) throw new ErrorHttp(502, `No se pudo guardar el archivo: ${error.message}`)
   return path

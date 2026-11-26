@@ -17,7 +17,8 @@ export default manejar(async (req) => {
   const permitidas = empresasParaCargar(await empresasVisibles(u), b.empresaId)
   const db = supabaseAdmin()
 
-  const path = await guardarArchivo(db, b.nombre!, b.mimeType!, b.data!)
+  // Carpeta: la organización de quien sube y, si eligió una empresa, esa empresa.
+  const path = await guardarArchivo(db, b.nombre!, b.mimeType!, b.data!, { organizacion: u.organizacionId, empresa: (b.empresaId ?? '').trim() ? permitidas[0] : null })
   const { id } = await registrarDocumento(db, {
     origen: 'MANUAL',
     organizacion_id: u.organizacionId,

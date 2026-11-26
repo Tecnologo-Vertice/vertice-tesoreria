@@ -33,7 +33,7 @@ interface Store {
   marcarRalpharma: (id: string) => Promise<void>
   leerComprobante: (archivo: File | ComprobanteEjemplo) => Promise<LecturaComprobante>
   comprobantesEjemplo: () => ComprobanteEjemplo[]
-  subirComprobante: (archivo: File) => Promise<string>
+  subirComprobante: (archivo: File, empresaId: string) => Promise<string>
   abrirArchivo: (bucket: Bucket, path: string) => Promise<void>
   subirFactura: (archivo: File) => Promise<void>
   leerAhora: () => Promise<void>
@@ -207,7 +207,7 @@ export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fu
       },
       leerComprobante: (a) => fuente.leerComprobante(a),
       comprobantesEjemplo: () => fuente.comprobantesEjemplo(facturas),
-      subirComprobante: (a) => fuente.subirComprobante(a),
+      subirComprobante: (a, empresaId) => fuente.subirComprobante(a, empresaId),
       abrirArchivo: async (bucket, path) => {
         if (fuente.modo === 'demo') return toast('En la demo los archivos son de ejemplo: no hay nada para abrir', 'info')
         // La pestaña se abre antes del await: si no, el navegador la bloquea como popup.

@@ -328,7 +328,7 @@ export class FuenteDemo implements Fuente {
     return leerSimulado(archivo)
   }
 
-  async subirComprobante(archivo: File) {
+  async subirComprobante(archivo: File, _empresaId: string) {
     return archivo.name
   }
 
