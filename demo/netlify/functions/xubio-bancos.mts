@@ -2,6 +2,8 @@
 // Corrida manual de los envíos bancarios a Xubio (la misma que la programada xubio-bancos-pendientes),
 // solo sobre las empresas que ve quien la pide. Envía de verdad solo si XUBIO_BANCOS_ENVIO_REAL=true y
 // no se pidió enSeco; si no, es una prueba en seco: no cambia ningún estado y deja todo en los registros.
+// Responde { ok, real, envioRealHabilitado, omitido?, items } (la pantalla Bancos › Pendiente en Xubio avisa
+// si se pidió enviar y el servidor está en seco).
 
 import type { Config } from '@netlify/functions'
 import { empresasVisibles, exigirRol, json, leerJson, manejar, supabaseAdmin, usuarioDesde } from './lib/comun'
@@ -18,7 +20,7 @@ export default manejar(async (req) => {
     usuario: u.nombre,
     presupuestoMs: 8_000,
   })
-  return json({ ok: true, ...r })
+  return json({ ok: true, envioRealHabilitado: envioRealBancos(), ...r })
 })
 
 export const config: Config = { path: '/api/xubio/bancos' }

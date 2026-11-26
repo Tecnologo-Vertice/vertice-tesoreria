@@ -240,7 +240,14 @@ process.env.XUBIO_BANCOS_ENVIO_REAL = 'true'
 resp = await manual(pedido('guido', { enSeco: true }))
 let rj = await resp.json()
 check('corrida manual con enSeco: no envía aunque el envío real esté prendido', resp.status === 200 && rj.real === false && aXubio(m, 'POST', 'asientoContableManualBean').length === 0)
+check('…y avisa a la pantalla que el servidor sí tiene el envío real prendido (T-205)', rj.envioRealHabilitado === true && Array.isArray(rj.items))
 delete process.env.XUBIO_BANCOS_ENVIO_REAL
+// T-205 · La pantalla pide enviar (sin enSeco) y el servidor está en seco: no se manda nada y la respuesta lo dice.
+m = mundo({ asientos: [asiento()], asiento_lineas: lineas() })
+resp = await manual(pedido('guido', { enSeco: false }))
+rj = await resp.json()
+check('corrida manual "enviar" con el servidor en seco: real=false, envioRealHabilitado=false, nada a Xubio',
+  resp.status === 200 && rj.real === false && rj.envioRealHabilitado === false && aXubio(m, 'POST', 'asientoContableManualBean').length === 0 && m.tablas.asientos[0].estado_xubio === 'PENDIENTE', JSON.stringify(rj))
 
 // ================================================================ d) Control diario
 const AHORA = new Date('2026-11-26T11:00:00Z') // 8:00 en Buenos Aires

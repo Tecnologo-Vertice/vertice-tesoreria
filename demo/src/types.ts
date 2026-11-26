@@ -407,6 +407,11 @@ export interface Cheque {
   marcadoPor?: string
   anuladoPor?: string
   motivoAnulacion?: string
+  /** Anulado en el sistema: si falta anularlo en Xubio (PENDIENTE/ERROR) o ya está (HECHA). */
+  anulacionXubio?: 'PENDIENTE' | 'HECHA' | 'ERROR'
+  /** Anulación hecha a mano en Xubio (0029): quién y la nota. */
+  anulacionManualPor?: string
+  anulacionManualNota?: string
   observaciones?: string
   /** Pagos del lote que cubre (cheques_pagos). */
   pagos: { pagoId: string; importe: number }[]

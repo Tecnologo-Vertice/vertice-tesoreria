@@ -138,6 +138,8 @@ export interface DatosTesoreria {
   documentos: DocumentoBancario[]
   extractos: Extracto[]
   cheques: Cheque[]
+  /** Lo bancario que falta en Xubio (comprobantes, asientos, anulaciones). Vacío si la base no tiene 0029. */
+  pendientesXubio: PendienteXubio[]
   filas: FilaFlujo[]
   lineas: LineaFlujo[]
   control: ControlFlujo[]
@@ -146,16 +148,75 @@ export interface DatosTesoreria {
   cuentasContables: string[]
 }
 
-/** Respuesta de POST /api/bancos/extracto (importar_extracto). */
+/** Lo que entró en cada cuenta del archivo (Brubank reparte en la CC y la remunerada). */
+export interface CuentaImportada {
+  cuentaId: string
+  cuenta: string
+  /** UNICA, o CC / REMUNERADA en Brubank. */
+  parte: string
+  repetido: boolean
+  movimientos: number
+  nuevos: number
+  aRevisar: number
+  /** EXTRACTO, o TENENCIA en el informe de un FCI (0029). */
+  origenSaldos: 'EXTRACTO' | 'TENENCIA'
+  hasta?: string
+  saldoFinal?: number
+}
+
+/** Respuesta de POST /api/bancos/extracto (importar_extracto). La lee resultadoExtracto.ts. */
 export interface ResultadoExtracto {
+  /** El archivo ya estaba importado en todas sus cuentas. */
   repetido: boolean
   movimientos?: number
   nuevos: number
   /** Formato que reconoció el lector (HIPOTECARIO_CSV, BRUBANK_XLSX…), si lo informa. */
   formato?: string
+  banco?: string
+  /** Informe de tenencia de un FCI: trae saldos, no movimientos. */
+  tenencia?: boolean
   /** Movimientos que entraron sin regla: quedan en "A revisar". */
   aRevisar?: number
   detalle?: string
+  avisos?: string[]
+  cuentas?: CuentaImportada[]
+}
+
+/** Lo que la pantalla puede indicar al subir un extracto (el servidor lo necesita a veces). */
+export interface OpcionesExtracto {
+  /** Fecha del saldo de una tenencia cuando el informe no la dice (aaaa-mm-dd). */
+  fechaTenencia?: string
+  /** Brubank: cuál es la remunerada, si la CC tiene más de una. */
+  cuentaRemuneradaId?: string
+}
+
+/** Un pendiente bancario con Xubio (vista xubio_bancos_pendientes, 0029). */
+export interface PendienteXubio {
+  empresaId: string
+  tipo: 'COMPROBANTE' | 'ASIENTO' | 'ANULAR_ASIENTO' | 'ANULAR_PAGO' | 'ANULAR_CHEQUE'
+  id: string
+  fecha: string
+  descripcion: string
+  importe?: number
+  estado: 'FALTA_APROBAR' | 'PENDIENTE' | 'EN_CURSO' | 'ERROR'
+  error?: string
+  xubioId?: string
+  /** El robot no lo puede hacer: anularlo en Xubio y marcarlo acá. */
+  aMano: boolean
+  cuentaId?: string
+  ultimoIntentoEn?: string
+  ultimoIntentoEstado?: string
+  ultimoIntentoModo?: 'PRUEBA' | 'REAL'
+  ultimoIntentoDetalle?: string
+}
+
+/** Respuesta de POST /api/xubio/bancos (corrida manual de los envíos bancarios). */
+export interface ResultadoCorridaBancos {
+  real: boolean
+  /** El servidor tiene XUBIO_BANCOS_ENVIO_REAL=true (si no, toda corrida es en seco). */
+  envioRealHabilitado: boolean
+  omitido?: string
+  items: { entidad: string; id: string; estado: 'OK' | 'PRUEBA_OK' | 'ERROR' | 'OMITIDO'; detalle: string }[]
 }
 
 export interface NuevoCheque {
@@ -231,7 +292,7 @@ export interface Fuente {
   // Tesorería (0023 a 0027). Toda escritura pasa por las funciones de la base.
   cargarTesoreria(facturas: Factura[]): Promise<DatosTesoreria>
   /** Sube el archivo del banco a POST /api/bancos/extracto (el lector por banco lo arma el servidor). */
-  subirExtracto(archivo: File, cuentaId: string, u: Usuario): Promise<ResultadoExtracto>
+  subirExtracto(archivo: File, cuentaId: string, u: Usuario, opciones?: OpcionesExtracto): Promise<ResultadoExtracto>
   reclasificarMovimiento(id: string, categoria: CategoriaMovimiento, cuenta: string | null, aprenderPatron: string | null, u: Usuario): Promise<void>
   /** Repite el saldo anterior. Devuelve el saldo que quedó. */
   marcarSinMovimientos(cuentaId: string, fecha: string, confirmoSinRendimiento: boolean, u: Usuario): Promise<number>
@@ -243,6 +304,10 @@ export interface Fuente {
   emitirCheque(c: NuevoCheque, u: Usuario): Promise<string>
   marcarChequeDebitado(id: string, numero: string, fecha: string, u: Usuario): Promise<void>
   anularCheque(id: string, motivo: string, u: Usuario): Promise<void>
+  /** Xubio no deja anular por API (órdenes de pago, cheques): Administración lo anuló a mano y lo marca (0029). */
+  marcarAnulacionXubioManual(tipo: 'PAGO' | 'CHEQUE' | 'ASIENTO', id: string, nota: string, u: Usuario): Promise<void>
+  /** Corrida manual de los envíos bancarios a Xubio (POST /api/xubio/bancos). En demo, simulada. */
+  correrEnviosBancos(enSeco: boolean, u: Usuario): Promise<ResultadoCorridaBancos>
   ajustarLineaFlujo(ref: RefLinea, cambio: CambioLinea, motivo: string, u: Usuario): Promise<void>
   restaurarLineaFlujo(ref: RefLinea, u: Usuario): Promise<void>
   crearProyeccion(p: NuevaProyeccion, u: Usuario): Promise<string>

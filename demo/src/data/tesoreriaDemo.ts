@@ -26,7 +26,7 @@ import type {
   SeccionFlujo,
   Unidad,
 } from '../types'
-import type { DatosTesoreria } from './fuente'
+import type { DatosTesoreria, PendienteXubio } from './fuente'
 import { PLAN_CUENTAS, PROVEEDORES } from './demo'
 import { addDays, iso, parseIso } from '../lib/format'
 import { diaHabilAnterior, diaHabilDesde, ocurrenciasProyeccion, sumarHabiles, textoBanco } from '../lib/tesoreria'
@@ -70,6 +70,20 @@ export interface EstadoTesoreria {
   proyecciones: Proyeccion[]
   ajustes: AjusteDemo[]
   reglas: ReglaDemo[]
+  /** Pagos anulados en el sistema que siguen en Xubio (en la demo los pagos viven aparte: se simulan acá). */
+  anulacionesPago?: AnulacionPagoDemo[]
+}
+
+export interface AnulacionPagoDemo {
+  id: string
+  empresaId: string
+  fecha: string
+  descripcion: string
+  importe: number
+  xubioId: string
+  estado: 'PENDIENTE' | 'HECHA' | 'ERROR'
+  manualPor?: string
+  manualNota?: string
 }
 
 // Feriados nacionales de fin de 2026 y 2027 (alcanza para la ventana del Flujo).
@@ -341,7 +355,7 @@ export function tesoreriaInicial(hoyIso: string): EstadoTesoreria {
     ch({ id: 'ch4', empresaId: 'beratung', cuentaId: 'cb-dax', tipo: 'FISICO', numero: '00004471', beneficiario: 'Dr. Prestador Demo Dos', proveedorId: 'p04', importe: 620_000, fechaPago: h(8) }),
     ch({ id: 'ch5', empresaId: 'india', cuentaId: 'co4', tipo: 'ECHEQ', numero: '81000077', beneficiario: 'Seguridad Integral Modelo', proveedorId: 'p13', importe: 943_800, fechaPago: h(5), estado: 'ENTREGADO' }),
     ch({ id: 'ch6', empresaId: 'india', cuentaId: 'co4', tipo: 'ECHEQ', numero: '81000081', beneficiario: 'Financiera Demo S.A.', importe: 1_500_000, fechaPago: h(12), origen: 'FINANCIERA', observaciones: 'Descuento de cheques' }),
-    ch({ id: 'ch7', empresaId: 'beratung', cuentaId: 'co1', tipo: 'FISICO', numero: '00012350', beneficiario: 'Librería Modelo', proveedorId: 'p08', importe: 96_500, fechaPago: h(2), estado: 'ANULADO', anuladoPor: 'Vivi', motivoAnulacion: 'Se pagó por transferencia' }),
+    ch({ id: 'ch7', empresaId: 'beratung', cuentaId: 'co1', tipo: 'FISICO', numero: '00012350', beneficiario: 'Librería Modelo', proveedorId: 'p08', importe: 96_500, fechaPago: h(2), estado: 'ANULADO', anuladoPor: 'Vivi', motivoAnulacion: 'Se pagó por transferencia', anulacionXubio: 'ERROR' }),
   ]
 
   // ---------------------------------------------------------------- Proyecciones
@@ -378,7 +392,11 @@ export function tesoreriaInicial(hoyIso: string): EstadoTesoreria {
     ? [{ id: 'aj1', empresaId: 'india', origenTipo: 'PROYECCION', origenId: 'pr10', ocurrencia: oc.ocurrencia, fechaNueva: sumarHabiles(oc.fecha, 2, fer), eliminada: false, motivo: 'El cliente avisó que paga el martes', creadoPor: 'Vivi', creadoEn: `${hoyIso}T09:10:00` }]
     : []
 
-  return { unidades, cuentas, feriados: FERIADOS, movimientos, saldos, lecturasXubio, documentos, extractos, cheques, filas, proyecciones, ajustes, reglas: [...REGLAS] }
+  // Una orden de pago anulada en el sistema que Xubio no deja borrar por API (queda ERROR hasta que se marque a mano).
+  const anulacionesPago: AnulacionPagoDemo[] = [
+    { id: 'pa-op1', empresaId: 'india', fecha: d[3], descripcion: 'Seguridad Integral Modelo · ORDEN_PAGO · Pago duplicado', importe: 120_000, xubioId: 'OP-0001-00000871', estado: 'ERROR' },
+  ]
+  return { unidades, cuentas, feriados: FERIADOS, movimientos, saldos, lecturasXubio, documentos, extractos, cheques, filas, proyecciones, ajustes, reglas: [...REGLAS], anulacionesPago }
 }
 
 // ---------------------------------------------------------------- Vistas (como en la base)
@@ -636,6 +654,54 @@ export function controlFlujo(e: EstadoTesoreria, lineas: LineaFlujo[]): ControlF
   return r
 }
 
+/** Lo mismo que la vista xubio_bancos_pendientes (0029), con lo que modela la demo. */
+export function pendientesXubioDemo(e: EstadoTesoreria): PendienteXubio[] {
+  const empresaDe = (cuentaId: string) => e.cuentas.find((c) => c.id === cuentaId)?.empresaId ?? ''
+  const nombre = (cuentaId: string) => e.cuentas.find((c) => c.id === cuentaId)?.nombre ?? cuentaId
+  const docs: PendienteXubio[] = e.documentos
+    .filter((d) => d.estado !== 'ANULADO' && (d.estadoXubio === 'PENDIENTE' || d.estadoXubio === 'ERROR'))
+    .map((d) => ({
+      empresaId: empresaDe(d.cuentaId),
+      tipo: d.tipo,
+      id: d.id,
+      fecha: d.fecha,
+      descripcion: d.tipo === 'COMPROBANTE' ? `${d.numero} · ${nombre(d.cuentaId)}` : `Asiento del banco ${nombre(d.cuentaId)}`,
+      importe: d.total,
+      estado: d.tipo === 'COMPROBANTE' && d.estado === 'PENDIENTE_APROBACION' ? 'FALTA_APROBAR' : d.estadoXubio === 'ERROR' ? 'ERROR' : 'PENDIENTE',
+      aMano: false,
+      cuentaId: d.cuentaId,
+    }))
+  const cheques: PendienteXubio[] = e.cheques
+    .filter((c) => c.anulacionXubio === 'PENDIENTE' || c.anulacionXubio === 'ERROR')
+    .map((c) => ({
+      empresaId: c.empresaId,
+      tipo: 'ANULAR_CHEQUE',
+      id: c.id,
+      fecha: c.fechaPago,
+      descripcion: `Cheque ${c.numero} · ${c.beneficiario} · ${c.motivoAnulacion ?? ''}`,
+      importe: c.importe,
+      estado: c.anulacionXubio as 'PENDIENTE' | 'ERROR',
+      aMano: true,
+      cuentaId: c.cuentaId,
+      ultimoIntentoDetalle: c.anulacionXubio === 'ERROR' ? `Cheque ${c.numero}: la emisión es una orden de pago y Xubio no la borra por API. Anularla a mano en Xubio.` : undefined,
+    }))
+  const pagos: PendienteXubio[] = (e.anulacionesPago ?? [])
+    .filter((p) => p.estado !== 'HECHA')
+    .map((p) => ({
+      empresaId: p.empresaId,
+      tipo: 'ANULAR_PAGO',
+      id: p.id,
+      fecha: p.fecha,
+      descripcion: p.descripcion,
+      importe: p.importe,
+      estado: p.estado as 'PENDIENTE' | 'ERROR',
+      xubioId: p.xubioId,
+      aMano: true,
+      ultimoIntentoDetalle: p.estado === 'ERROR' ? `ORDEN_PAGO ${p.xubioId}: Xubio no permite borrarlo por API. Anularlo a mano en Xubio.` : undefined,
+    }))
+  return [...docs, ...cheques, ...pagos].sort((a, b) => a.fecha.localeCompare(b.fecha))
+}
+
 export function vistaTesoreria(e: EstadoTesoreria, facturas: Factura[], hoyIso: string): DatosTesoreria {
   const conc = conciliacion(e)
   const lineas = lineasFlujo(e, facturas, hoyIso, conc)
@@ -652,6 +718,7 @@ export function vistaTesoreria(e: EstadoTesoreria, facturas: Factura[], hoyIso: 
     documentos: e.documentos,
     extractos: e.extractos,
     cheques: e.cheques,
+    pendientesXubio: pendientesXubioDemo(e),
     filas: e.filas,
     lineas,
     control: controlFlujo(e, lineas),

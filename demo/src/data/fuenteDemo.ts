@@ -2,9 +2,9 @@
 // Toda la lógica de negocio de acá tiene su equivalente en supabase/migrations/0003_funciones.sql.
 
 import type { Auditoria, ComprobanteEjemplo, Documento, Factura, LecturaComprobante, Pago, Usuario } from '../types'
-import type { CambioLinea, DatosTesoreria, NuevaProyeccion, NuevoCheque, ResultadoExtracto } from './fuente'
+import type { CambioLinea, DatosTesoreria, NuevaProyeccion, NuevoCheque, OpcionesExtracto, ResultadoCorridaBancos, ResultadoExtracto } from './fuente'
 import type { CategoriaMovimiento, Cheque, MovimientoBancario, OrigenSaldo, RefLinea, TipoPagoFactura } from '../types'
-import { reglaPara, tesoreriaInicial, vistaTesoreria, type EstadoTesoreria } from './tesoreriaDemo'
+import { pendientesXubioDemo, reglaPara, tesoreriaInicial, vistaTesoreria, type EstadoTesoreria } from './tesoreriaDemo'
 import { diaHabilAnterior, textoBanco } from '../lib/tesoreria'
 import type { Datos, DatosAprobacion, DatosContabilizacion, DatosEdicion, DatosLiberacion, DatosYaPagada, Fuente, ResultadoLiberacion, ResultadoYaPagada, ResultadoEdicion, NuevoPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
 import {
@@ -458,18 +458,41 @@ export class FuenteDemo implements Fuente {
     return vistaTesoreria(this.t, facturas, iso(new Date()))
   }
 
-  async subirExtracto(archivo: File, cuentaId: string, u: Usuario): Promise<ResultadoExtracto> {
+  /** Mismo contrato que POST /api/bancos/extracto: totales, una entrada por cuenta y, en un FCI, tenencia (0029). */
+  async subirExtracto(archivo: File, cuentaId: string, u: Usuario, o: OpcionesExtracto = {}): Promise<ResultadoExtracto> {
     this.exigirRol(u, ['TESORERIA', 'ADMINISTRACION', 'ADMIN'])
     await demora(700)
     const c = this.t.cuentas.find((x) => x.id === cuentaId)
     if (!c) throw new Error('Cuenta bancaria inexistente')
     const huella = `${archivo.name}|${archivo.size}`
-    if (this.t.extractos.some((x) => x.cuentaId === cuentaId && x.huella === huella)) return { repetido: true, nuevos: 0, detalle: 'Ese archivo ya se había importado' }
-    // La demo simula el archivo: trae el último día hábil que le falta a la cuenta (hasta ayer).
+    const formato = `${c.banco}_${c.clase === 'FCI' ? 'FCI' : 'CSV'}`
+    if (this.t.extractos.some((x) => x.cuentaId === cuentaId && x.huella === huella)) {
+      return { repetido: true, nuevos: 0, movimientos: 0, aRevisar: 0, formato, detalle: `${c.nombre}: ya estaba importado`, cuentas: [{ cuentaId, cuenta: c.nombre, parte: 'UNICA', repetido: true, movimientos: 0, nuevos: 0, aRevisar: 0, origenSaldos: 'EXTRACTO' }] }
+    }
     const fer = new Set(this.t.feriados)
     const ayer = diaHabilAnterior(iso(new Date()), fer)
+
+    // Un FCI no trae movimientos: el informe del fondo trae la tenencia (saldo) y el rendimiento sale de la conciliación.
+    if (c.clase === 'FCI') {
+      const fecha = o.fechaTenencia ?? ayer
+      const ant = [...this.t.saldos].filter((s) => s.cuentaId === cuentaId && s.fecha < fecha).sort((a, b) => b.fecha.localeCompare(a.fecha))[0]
+      const saldo = Math.round((ant?.saldo ?? 1_000_000) * 1.00095 * 100) / 100
+      const previo = this.t.saldos.find((s) => s.cuentaId === cuentaId && s.fecha === fecha)
+      if (previo?.origen !== 'MANUAL') this.t.saldos = [...this.t.saldos.filter((s) => !(s.cuentaId === cuentaId && s.fecha === fecha)), { cuentaId, fecha, saldo, origen: 'TENENCIA' }]
+      this.t.extractos = [{ id: `ex${Date.now()}`, cuentaId, archivo: archivo.name, desde: fecha, hasta: fecha, movimientos: 0, nuevos: 0, importadoPor: u.nombre, importadoEn: new Date().toISOString(), huella }, ...this.t.extractos]
+      this.log(u, { accion: 'IMPORTAR_TENENCIA', entidad: 'CUENTA', entidadId: cuentaId, detalle: `${c.nombre}: tenencia ${fecha} ${saldo}` })
+      this.commit()
+      return {
+        repetido: false, movimientos: 0, nuevos: 0, aRevisar: 0, formato, banco: c.banco, tenencia: true,
+        detalle: `${c.nombre}: tenencia al ${fecha.split('-').reverse().join('/')} (el rendimiento sale de la conciliación)`,
+        cuentas: [{ cuentaId, cuenta: c.nombre, parte: 'UNICA', repetido: false, movimientos: 0, nuevos: 0, aRevisar: 0, origenSaldos: 'TENENCIA', hasta: fecha, saldoFinal: saldo }],
+      }
+    }
+
+    // La demo simula el archivo: trae el último día hábil que le falta a la cuenta (hasta ayer).
     const falta = !this.t.saldos.some((s) => s.cuentaId === cuentaId && s.fecha === ayer)
     const nuevos: MovimientoBancario[] = []
+    let saldoFinal: number | undefined
     if (falta) {
       const ant = [...this.t.saldos].filter((s) => s.cuentaId === cuentaId && s.fecha < ayer).sort((a, b) => b.fecha.localeCompare(a.fecha))[0]
       const filas: [string, number][] = c.rindeDiario ? [['RENDIMIENTO ACREDITADO', Math.round((ant?.saldo ?? 0) * 0.00095 * 100) / 100]] : [['IMP. LEY 25413 DEB 0,6%', -1_250.4], ['COMISION MANTENIMIENTO CUENTA', -4_200], ['IVA 21% S/COMISION', -882]]
@@ -481,23 +504,28 @@ export class FuenteDemo implements Fuente {
           estado: r ? 'PENDIENTE' : 'A_REVISAR',
         })
       }
-      const saldo = Math.round(((ant?.saldo ?? 0) + nuevos.reduce((a, m) => a + m.importe, 0)) * 100) / 100
+      saldoFinal = Math.round(((ant?.saldo ?? 0) + nuevos.reduce((a, m) => a + m.importe, 0)) * 100) / 100
       this.t.movimientos = [...this.t.movimientos, ...nuevos]
-      this.t.saldos = [...this.t.saldos.filter((s) => !(s.cuentaId === cuentaId && s.fecha === ayer)), { cuentaId, fecha: ayer, saldo, origen: 'EXTRACTO' }]
+      this.t.saldos = [...this.t.saldos.filter((s) => !(s.cuentaId === cuentaId && s.fecha === ayer)), { cuentaId, fecha: ayer, saldo: saldoFinal, origen: 'EXTRACTO' }]
     }
+    const total = nuevos.length || 12
+    const aRevisar = nuevos.filter((m) => m.estado === 'A_REVISAR').length
     this.t.extractos = [
-      { id: `ex${Date.now()}`, cuentaId, archivo: archivo.name, desde: falta ? ayer : undefined, hasta: falta ? ayer : undefined, movimientos: nuevos.length || 12, nuevos: nuevos.length, importadoPor: u.nombre, importadoEn: new Date().toISOString(), huella },
+      { id: `ex${Date.now()}`, cuentaId, archivo: archivo.name, desde: falta ? ayer : undefined, hasta: falta ? ayer : undefined, movimientos: total, nuevos: nuevos.length, importadoPor: u.nombre, importadoEn: new Date().toISOString(), huella },
       ...this.t.extractos,
     ]
     this.log(u, { accion: 'IMPORTAR_EXTRACTO', entidad: 'CUENTA', entidadId: cuentaId, detalle: `${c.nombre}: ${nuevos.length} nuevos` })
     this.commit()
     return {
       repetido: false,
-      movimientos: nuevos.length || 12,
+      movimientos: total,
       nuevos: nuevos.length,
-      formato: `${c.banco}_CSV`,
-      aRevisar: nuevos.filter((m) => m.estado === 'A_REVISAR').length,
-      detalle: nuevos.length ? undefined : 'El archivo se superpone con lo ya importado: no hay movimientos nuevos',
+      formato,
+      banco: c.banco,
+      tenencia: false,
+      aRevisar,
+      detalle: nuevos.length ? `${c.nombre}: ${nuevos.length} nuevo(s) de ${total}` : 'El archivo se superpone con lo ya importado: no hay movimientos nuevos',
+      cuentas: [{ cuentaId, cuenta: c.nombre, parte: 'UNICA', repetido: false, movimientos: total, nuevos: nuevos.length, aRevisar, origenSaldos: 'EXTRACTO', hasta: falta ? ayer : undefined, saldoFinal }],
     }
   }
 
@@ -616,9 +644,59 @@ export class FuenteDemo implements Fuente {
     const ch = this.t.cheques.find((x) => x.id === id)
     if (!ch) throw new Error('Cheque inexistente')
     if (ch.estado === 'DEBITADO') throw new Error('El cheque ya se debitó: no se anula')
-    this.t.cheques = this.t.cheques.map((x): Cheque => (x.id === id ? { ...x, estado: 'ANULADO', anuladoPor: u.nombre, motivoAnulacion: motivo } : x))
+    // En la demo los cheques de un pago se emitieron en Xubio (orden de pago): quedan pendientes de anular allá.
+    const anulacionXubio = ch.origen === 'PAGO' ? 'PENDIENTE' : 'HECHA'
+    this.t.cheques = this.t.cheques.map((x): Cheque => (x.id === id ? { ...x, estado: 'ANULADO', anuladoPor: u.nombre, motivoAnulacion: motivo, anulacionXubio } : x))
     this.log(u, { accion: 'ANULAR', entidad: 'CHEQUE', entidadId: id, detalle: motivo })
     this.commit()
+  }
+
+  /** Igual que marcar_anulacion_xubio_manual (0029). La demo modela cheques y pagos; no tiene asientos anulados. */
+  async marcarAnulacionXubioManual(tipo: 'PAGO' | 'CHEQUE' | 'ASIENTO', id: string, nota: string, u: Usuario) {
+    this.exigirRol(u, ['ADMINISTRACION', 'ADMIN'])
+    if (!nota.trim()) throw new Error('Falta la nota: qué se hizo en Xubio (n.º de anulación, fecha)')
+    if (tipo === 'CHEQUE') {
+      const ch = this.t.cheques.find((x) => x.id === id)
+      if (!ch) throw new Error('No existe ese cheque')
+      if (!ch.anulacionXubio) throw new Error('No está anulado en el sistema: anulalo primero')
+      if (ch.anulacionXubio === 'HECHA') throw new Error('La anulación en Xubio ya figura hecha')
+      this.t.cheques = this.t.cheques.map((x): Cheque => (x.id === id ? { ...x, anulacionXubio: 'HECHA', anulacionManualPor: u.nombre, anulacionManualNota: nota.trim() } : x))
+    } else if (tipo === 'PAGO') {
+      const p = (this.t.anulacionesPago ?? []).find((x) => x.id === id)
+      if (!p) throw new Error('No existe ese pago')
+      if (p.estado === 'HECHA') throw new Error('La anulación en Xubio ya figura hecha')
+      this.t.anulacionesPago = (this.t.anulacionesPago ?? []).map((x) => (x.id === id ? { ...x, estado: 'HECHA', manualPor: u.nombre, manualNota: nota.trim() } : x))
+    } else {
+      throw new Error('No existe ese asiento')
+    }
+    this.log(u, { accion: 'ANULACION_XUBIO_MANUAL', entidad: tipo, entidadId: id, detalle: nota.trim() })
+    this.commit()
+  }
+
+  /** Simula POST /api/xubio/bancos: en seco lista lo que haría; "real" sube comprobantes aprobados y asientos (simulado). */
+  async correrEnviosBancos(enSeco: boolean, u: Usuario): Promise<ResultadoCorridaBancos> {
+    this.exigirRol(u, ['ADMINISTRACION', 'ADMIN'])
+    await demora(500)
+    const items: ResultadoCorridaBancos['items'] = []
+    for (const p of pendientesXubioDemo(this.t)) {
+      if (p.estado === 'FALTA_APROBAR') {
+        items.push({ entidad: p.tipo, id: p.id, estado: 'OMITIDO', detalle: `${p.descripcion}: falta aprobarlo` })
+      } else if (p.aMano) {
+        items.push({ entidad: p.tipo, id: p.id, estado: enSeco ? 'PRUEBA_OK' : 'ERROR', detalle: `${enSeco ? 'En seco: ' : ''}${p.descripcion}: Xubio no permite borrarlo por API. Anularlo a mano en Xubio.` })
+      } else if (enSeco) {
+        items.push({ entidad: p.tipo, id: p.id, estado: 'PRUEBA_OK', detalle: `En seco: se subiría ${p.descripcion}` })
+      } else {
+        const xubioId = `DEMO-${Math.floor(Math.random() * 90000 + 10000)}`
+        this.t.documentos = this.t.documentos.map((d) => (d.id === p.id ? { ...d, estadoXubio: 'SUBIDA' } : d))
+        if (p.tipo === 'ASIENTO') this.t.movimientos = this.t.movimientos.map((m) => (m.cuentaId === p.cuentaId && m.fecha === p.fecha && m.destinoXubio === 'ASIENTO' && m.estado === 'PENDIENTE' ? { ...m, estado: 'CONTABILIZADO' } : m))
+        items.push({ entidad: p.tipo, id: p.id, estado: 'OK', detalle: `Subido a Xubio (simulado) con id ${xubioId}` })
+      }
+    }
+    if (!enSeco) {
+      this.log(u, { accion: 'XUBIO_BANCOS', entidad: 'SISTEMA', entidadId: 'xubio-bancos', detalle: `${items.filter((i) => i.estado === 'OK').length} subidos (simulado)` })
+      this.commit()
+    }
+    return { real: !enSeco, envioRealHabilitado: true, items }
   }
 
   /** linea_proyectada_de: lo proyectado sigue proyectado; lo real no se toca. */

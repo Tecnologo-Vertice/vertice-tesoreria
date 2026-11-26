@@ -4,7 +4,8 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Auditoria, ComprobanteEjemplo, CuentaOrigen, Documento, Empresa, EstadoEspejo, Factura, LecturaComprobante, Pago, Proveedor, Usuario } from '../types'
-import type { CambioLinea, DatosTesoreria, NuevaProyeccion, NuevoCheque, ResultadoExtracto } from './fuente'
+import type { CambioLinea, DatosTesoreria, NuevaProyeccion, NuevoCheque, OpcionesExtracto, PendienteXubio, ResultadoCorridaBancos, ResultadoExtracto } from './fuente'
+import { leerResultadoExtracto } from './resultadoExtracto'
 import type {
   CategoriaMovimiento,
   Cheque,
@@ -650,6 +651,9 @@ export class FuenteSupabase implements Fuente {
         marcadoPor: s(r.marcado_por),
         anuladoPor: s(r.anulado_por),
         motivoAnulacion: s(r.motivo_anulacion),
+        anulacionXubio: s(r.anulacion_xubio) as Cheque['anulacionXubio'],
+        anulacionManualPor: s(r.anulacion_manual_por),
+        anulacionManualNota: s(r.anulacion_manual_nota),
         observaciones: s(r.observaciones),
         pagos: chequesPagos.filter((x) => x.cheque === String(r.id)).map((x) => ({ pagoId: x.pago, importe: x.importe })),
       }))
@@ -665,6 +669,7 @@ export class FuenteSupabase implements Fuente {
         documentos: [...asientos, ...comprobantes],
         extractos,
         cheques,
+        pendientesXubio: await this.pendientesXubio(),
         filas,
         lineas,
         control,
@@ -685,6 +690,7 @@ export class FuenteSupabase implements Fuente {
         documentos: [],
         extractos: [],
         cheques: [],
+        pendientesXubio: [],
         filas: [],
         lineas: [],
         control: [],
@@ -694,16 +700,61 @@ export class FuenteSupabase implements Fuente {
     }
   }
 
-  async subirExtracto(archivo: File, cuentaId: string): Promise<ResultadoExtracto> {
+  /** Vista xubio_bancos_pendientes (0029). Sin la migración, lista vacía: el resto de Tesorería sigue andando. */
+  private async pendientesXubio(): Promise<PendienteXubio[]> {
+    try {
+      return await this.consulta<PendienteXubio>(
+        'xubio_bancos_pendientes',
+        (r) => ({
+          empresaId: String(r.empresa_id),
+          tipo: String(r.tipo) as PendienteXubio['tipo'],
+          id: String(r.id),
+          fecha: String(r.fecha),
+          descripcion: String(r.descripcion ?? ''),
+          importe: nu(r.importe),
+          estado: String(r.estado) as PendienteXubio['estado'],
+          error: s(r.error),
+          xubioId: s(r.xubio_id),
+          aMano: Boolean(r.a_mano),
+          cuentaId: s(r.cuenta_origen_id),
+          ultimoIntentoEn: s(r.ultimo_intento_en),
+          ultimoIntentoEstado: s(r.ultimo_intento_estado),
+          ultimoIntentoModo: s(r.ultimo_intento_modo) as PendienteXubio['ultimoIntentoModo'],
+          ultimoIntentoDetalle: s(r.ultimo_intento_detalle),
+        }),
+        (q) => q,
+        [['fecha', 'asc'], ['id', 'asc']],
+        2000,
+      )
+    } catch {
+      return []
+    }
+  }
+
+  async subirExtracto(archivo: File, cuentaId: string, _u?: Usuario, o: OpcionesExtracto = {}): Promise<ResultadoExtracto> {
     const data = await archivoABase64(archivo)
-    const r = await llamarFuncion<Record<string, unknown>>('bancos/extracto', { cuentaOrigenId: cuentaId, nombre: archivo.name, mimeType: archivo.type || 'application/octet-stream', data })
+    const r = await llamarFuncion<Record<string, unknown>>('bancos/extracto', {
+      cuentaOrigenId: cuentaId,
+      nombre: archivo.name,
+      mimeType: archivo.type || 'application/octet-stream',
+      data,
+      ...(o.fechaTenencia ? { fechaTenencia: o.fechaTenencia } : {}),
+      ...(o.cuentaRemuneradaId ? { cuentaRemuneradaId: o.cuentaRemuneradaId } : {}),
+    })
+    return leerResultadoExtracto(r)
+  }
+
+  async marcarAnulacionXubioManual(tipo: 'PAGO' | 'CHEQUE' | 'ASIENTO', id: string, nota: string) {
+    await this.rpc('marcar_anulacion_xubio_manual', { p_tipo: tipo, p_id: id, p_nota: nota })
+  }
+
+  async correrEnviosBancos(enSeco: boolean): Promise<ResultadoCorridaBancos> {
+    const r = await llamarFuncion<Record<string, unknown>>('xubio/bancos', { enSeco })
     return {
-      repetido: Boolean(r.repetido),
-      movimientos: nu(r.movimientos),
-      nuevos: n(r.nuevos),
-      formato: s(r.formato),
-      aRevisar: nu(r.a_revisar ?? r.aRevisar),
-      detalle: s(r.detalle),
+      real: r.real === true,
+      envioRealHabilitado: r.envioRealHabilitado === true,
+      omitido: s(r.omitido),
+      items: Array.isArray(r.items) ? (r.items as ResultadoCorridaBancos['items']) : [],
     }
   }
 

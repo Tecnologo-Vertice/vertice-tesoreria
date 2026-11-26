@@ -55,7 +55,7 @@ export function opciones(argv = process.argv.slice(2)) {
 }
 
 /** Base PGlite en memoria con las migraciones del repo (el mismo arnés que supabase/pruebas). */
-export async function basePrueba(dir) {
+export async function basePrueba(dir, { hasta = null } = {}) {
   const { PGlite } = await import('@electric-sql/pglite')
   const db = new PGlite()
   await db.exec(`
@@ -74,7 +74,8 @@ export async function basePrueba(dir) {
     alter default privileges in schema public grant all on sequences to service_role;
     alter default privileges in schema public grant execute on functions to service_role;
   `)
-  for (const f of readdirSync(dir).filter((x) => x.endsWith('.sql')).sort()) {
+  // hasta: '0029' aplica solo hasta esa migración inclusive (para comparar antes y después de una nueva).
+  for (const f of readdirSync(dir).filter((x) => x.endsWith('.sql') && (!hasta || x.slice(0, hasta.length) <= hasta)).sort()) {
     if (f.startsWith('0021')) await db.exec(`
       alter default privileges in schema public grant all on tables to anon, authenticated;
       alter default privileges in schema public grant all on sequences to anon, authenticated;

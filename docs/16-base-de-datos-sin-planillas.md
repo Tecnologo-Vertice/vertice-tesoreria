@@ -63,3 +63,5 @@ Varios casos son los del 26/11 en VBI+ (rendimiento FCI Hipotecario 4,38; Mercad
 3. **Pantallas:** Bancos (subir extracto, revisar, sin movimientos, conciliación), Cheques y Flujo como grilla editable.
 4. ~~Descontar del Flujo los anticipos pagados sin factura (ESPERA_FC)~~: hecho en 0028 (vista `anticipos_sin_factura` + `flujo_lineas`). 0028 además borra la clave vieja de movimientos que 0024 no llegó a borrar (nombre truncado).
 5. **Período en paralelo:** dos semanas con VBI+ y la base a la vez, comparando el control del Flujo día por día antes de apagar las planillas.
+
+**0029 (T-205, 26/11):** tenencias de FCI con origen TENENCIA desde el lector, anulaciones de Xubio marcadas a mano (órdenes de pago y cheques, con nota y auditoría), vista `xubio_bancos_pendientes` (pantalla Bancos › Pendiente en Xubio) y control diario con anulaciones de pagos y cheques. El checklist para encender todo está en [17](17-puesta-en-marcha-tesoreria.md).

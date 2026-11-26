@@ -645,4 +645,88 @@ imp = importaciones(m)
 check('multipart: el CSV del Hipotecario se importa en la CA', r.status === 200 && imp[0]?.cuenta_origen_id === 'c-hip' && largo(imp[0]?.movimientos) === 7, JSON.stringify(cuerpo))
 check('…con el nombre original del archivo', (imp[0]?.archivo as Fila)?.nombre === 'Descarga_Movimientos (1).csv')
 
+
+// ================================================================ T-205 · Contrato pantalla ↔ endpoint
+// La pantalla Bancos manda { cuentaOrigenId, nombre, mimeType, data } y lee la respuesta con
+// leerResultadoExtracto (src/data/resultadoExtracto.ts). Se prueba con la respuesta REAL de la función.
+const { leerResultadoExtracto } = await import('../../src/data/resultadoExtracto.ts')
+/** Como la base con 0029: devuelve a_revisar (1 por cuenta) y el origen de los saldos que recibió. */
+function con0029(m: Mundo, repetido = false) {
+  m.rpc.importar_extracto = (a) => {
+    const p = a.p as { movimientos: unknown[]; origen_saldos?: string }
+    return repetido
+      ? { extracto_id: 'e-viejo', repetido: true, movimientos: 0, nuevos: 0, a_revisar: 0, origen_saldos: p.origen_saldos ?? 'EXTRACTO' }
+      : { extracto_id: 'ext-' + Math.random(), repetido: false, movimientos: p.movimientos.length, nuevos: p.movimientos.length, a_revisar: p.movimientos.length ? 1 : 0, saldos: 1, origen_saldos: p.origen_saldos ?? 'EXTRACTO' }
+  }
+  return m
+}
+const comoPantalla = (cuenta: string, nombre: string, bytes: Uint8Array, extra: Record<string, string> = {}) =>
+  pedirJson('teso', { cuentaOrigenId: cuenta, nombre, mimeType: 'application/octet-stream', data: b64(bytes), ...extra })
+
+// Brubank (dos cuentas)
+m = con0029(mundo())
+r = await importar(comoPantalla('c-bru', 'Brubank.xlsx', brubank()))
+cuerpo = await r.json()
+let res = leerResultadoExtracto(cuerpo)
+check('contrato: el pedido de la pantalla (con mimeType) se acepta', r.status === 200, JSON.stringify(cuerpo).slice(0, 200))
+check('contrato: la respuesta trae repetido, movimientos, nuevos y a_revisar arriba (suma de las cuentas)',
+  cuerpo.repetido === false && cuerpo.movimientos === 10 && cuerpo.nuevos === 10 && cuerpo.a_revisar === 2 && cuerpo.formato === 'BRUBANK_XLSX', JSON.stringify({ r: cuerpo.repetido, m: cuerpo.movimientos, n: cuerpo.nuevos, a: cuerpo.a_revisar }))
+check('contrato: la pantalla lee 10 nuevos de 10, 2 a revisar, formato BRUBANK_XLSX',
+  res.repetido === false && res.nuevos === 10 && res.movimientos === 10 && res.aRevisar === 2 && res.formato === 'BRUBANK_XLSX' && res.tenencia === false)
+check('contrato Brubank: una línea por cuenta (CC 6 y remunerada 4), con su saldo final',
+  res.cuentas?.length === 2 && res.cuentas[0].parte === 'CC' && res.cuentas[0].nuevos === 6 && res.cuentas[1].parte === 'REMUNERADA' && res.cuentas[1].cuentaId === 'c-rem' && res.cuentas[1].saldoFinal === 647995.25, JSON.stringify(res.cuentas))
+check('contrato Brubank: el detalle nombra las dos cuentas', /BRUBANK CC: 6 nuevo\(s\) de 6/.test(res.detalle ?? '') && /BRUBANK REMUNERADA: 4 nuevo\(s\) de 4/.test(res.detalle ?? ''), res.detalle)
+check('Brubank: los saldos van con origen EXTRACTO (no es tenencia)', importaciones(m).every((p) => p.origen_saldos === 'EXTRACTO'))
+
+// Brubank con dos remuneradas: la pantalla tiene que decir cuál
+const dosRem = [
+  { id: 'c-bru', empresa_id: 'india', nombre: 'BRUBANK CC', banco: 'BRUBANK', clase: 'CC', cuenta_madre_id: null, activa: true },
+  { id: 'c-rem', empresa_id: 'india', nombre: 'BRUBANK REMUNERADA', banco: 'BRUBANK', clase: 'REMUNERADA', cuenta_madre_id: 'c-bru', activa: true },
+  { id: 'c-rem2', empresa_id: 'india', nombre: 'BRUBANK REMUNERADA 2', banco: 'BRUBANK', clase: 'REMUNERADA', cuenta_madre_id: 'c-bru', activa: true },
+]
+m = con0029(mundo({ cuentas: dosRem }))
+r = await importar(comoPantalla('c-bru', 'Brubank.xlsx', brubank()))
+cuerpo = await r.json()
+check('Brubank con dos remuneradas y sin elegir: 409 y no importa nada', r.status === 409 && /cuentaRemuneradaId/.test(cuerpo.error) && importaciones(m).length === 0, cuerpo.error)
+m = con0029(mundo({ cuentas: dosRem }))
+r = await importar(comoPantalla('c-bru', 'Brubank.xlsx', brubank(), { cuentaRemuneradaId: 'c-rem2' }))
+res = leerResultadoExtracto(await r.json())
+check('…eligiendo la remunerada en la pantalla (cuentaRemuneradaId): va a esa', r.status === 200 && importaciones(m).map((p) => p.cuenta_origen_id).join() === 'c-bru,c-rem2' && res.cuentas?.[1]?.cuentaId === 'c-rem2')
+
+// Tenencia FCI (PDF del Hipotecario): origen TENENCIA
+m = con0029(mundo())
+r = await importar(comoPantalla('c-fci', 'Informe_FCI.pdf', informe()))
+cuerpo = await r.json()
+res = leerResultadoExtracto(cuerpo)
+imp = importaciones(m)
+check('tenencia: el endpoint pide origen_saldos TENENCIA a importar_extracto (0029)', imp.length === 1 && imp[0].origen_saldos === 'TENENCIA' && largo(imp[0].movimientos) === 0, JSON.stringify(imp[0]?.origen_saldos))
+check('tenencia: la pantalla ve tenencia, 0 movimientos, saldo final 10.005,50 y origen TENENCIA',
+  res.tenencia === true && res.nuevos === 0 && res.cuentas?.[0]?.origenSaldos === 'TENENCIA' && res.cuentas?.[0]?.saldoFinal === 10005.5 && res.cuentas?.[0]?.hasta === '2026-11-25', JSON.stringify(res.cuentas))
+check('tenencia: el detalle dice la fecha y el saldo', /tenencia al 25\/11\/2026 \$ 10\.005,50/.test(res.detalle ?? ''), res.detalle)
+
+// Tenencia de Macro con la fecha indicada en la pantalla
+const conMacro = [
+  { id: 'c-mac', empresa_id: 'india', nombre: 'MACRO CC', banco: 'MACRO', clase: 'CC', cuenta_madre_id: null, activa: true },
+  { id: 'c-mfci', empresa_id: 'india', nombre: 'MACRO FCI', banco: 'MACRO', clase: 'FCI', cuenta_madre_id: 'c-mac', activa: true },
+]
+m = con0029(mundo({ cuentas: conMacro }))
+r = await importar(comoPantalla('c-mfci', 'consulta_tenencias_FCI.xls', tenencia('30/11/2026'), { fechaTenencia: '2026-11-30' }))
+imp = importaciones(m)
+check('tenencia Macro con fechaTenencia desde la pantalla: saldo al 30/11 y origen TENENCIA',
+  r.status === 200 && (imp[0]?.saldos as Fila[])?.[0]?.fecha === '2026-11-30' && imp[0]?.origen_saldos === 'TENENCIA', JSON.stringify(imp[0]?.saldos))
+
+// Repetido en las dos cuentas
+m = con0029(mundo({ extractos: [{ id: 'e1', cuenta_origen_id: 'c-bru', archivo_hash: hash }, { id: 'e2', cuenta_origen_id: 'c-rem', archivo_hash: hash }] }), true)
+r = await importar(comoPantalla('c-bru', 'Brubank.xlsx', brubank()))
+res = leerResultadoExtracto(await r.json())
+check('repetido: la pantalla ve "ya estaba importado" (repetido, 0 nuevos, 0 movimientos)', res.repetido === true && res.nuevos === 0 && res.movimientos === 0 && /ya estaba importado/.test(res.detalle ?? ''), JSON.stringify(res))
+
+// Base sin 0029 (respuesta vieja de importar_extracto, sin a_revisar): sigue andando
+m = mundo()
+r = await importar(comoPantalla('c-hip', 'x.csv', latin(csvHipotecario())))
+res = leerResultadoExtracto(await r.json())
+check('base sin 0029: a_revisar 0 y el resto igual', r.status === 200 && res.aRevisar === 0 && res.nuevos === 7 && res.movimientos === 7)
+check('respuesta vieja de la función (solo "cuentas"): la pantalla igual suma',
+  (() => { const v = leerResultadoExtracto({ cuentas: [{ cuenta_origen_id: 'a', cuenta: 'A', parte: 'CC', nuevos: 2, movimientos: 3 }, { cuenta_origen_id: 'b', cuenta: 'B', parte: 'REMUNERADA', nuevos: 1, movimientos: 1, repetido: true }] }); return v.nuevos === 3 && v.movimientos === 4 && v.repetido === false })())
+
 cerrar()

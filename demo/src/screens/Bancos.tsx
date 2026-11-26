@@ -1,9 +1,9 @@
-import { useMemo, useRef, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useStore } from '../store'
 import type { CategoriaMovimiento, Conciliacion, CuentaBancaria, MovimientoBancario } from '../types'
-import type { ResultadoExtracto } from '../data/fuente'
+import type { PendienteXubio, ResultadoCorridaBancos, ResultadoExtracto } from '../data/fuente'
 import { Badge, Btn, Card, Desplegable, Empty, Field, inputCls, Kpi, Modal, SelectorCuenta, Table, Tabs } from '../components/ui'
-import { AvisoTesoreria, CampoMonto } from '../components/Tesoreria'
+import { AvisoTesoreria, CampoMonto, ModalAnulacionManual, PUEDE_ANULAR_XUBIO_A_MANO } from '../components/Tesoreria'
 import { fecha, fechaHora, money } from '../lib/format'
 import { CATEGORIAS_MOV, CLASES, ESTADO_CONCILIACION, diaCorto, diaHabilAnterior, diasHabiles, num, parseMonto, sumarHabiles, textoBanco } from '../lib/tesoreria'
 
@@ -20,7 +20,7 @@ const ESTADO_MOV: Record<MovimientoBancario['estado'], { label: string; tone: 'n
 
 export function Bancos() {
   const { tesoreria, empresa, usuario } = useStore()
-  const [tab, setTab] = useState<'MOVIMIENTOS' | 'CONCILIACION'>('MOVIMIENTOS')
+  const [tab, setTab] = useState<'MOVIMIENTOS' | 'CONCILIACION' | 'XUBIO'>('MOVIMIENTOS')
   const [empresaId, setEmpresaId] = useState('TODAS')
   const fer = useMemo(() => new Set(tesoreria?.feriados ?? []), [tesoreria])
   const ayer = tesoreria ? diaHabilAnterior(tesoreria.hoy, fer) : ''
@@ -34,6 +34,9 @@ export function Bancos() {
   const aRevisar = tesoreria.movimientos.filter((m) => m.estado === 'A_REVISAR' && cuentas.some((c) => c.id === m.cuentaId)).length
   const opcionesDia = diasHabiles(sumarHabiles(tesoreria.hoy, -15, fer), 16, fer).reverse()
   const puede = PUEDE_OPERAR.includes(usuario.rol)
+  const pendientes = tesoreria.pendientesXubio.filter((p) => empresaId === 'TODAS' || p.empresaId === empresaId)
+  const pendXubio = pendientes.length
+  const errXubio = pendientes.some((p) => p.estado === 'ERROR')
 
   return (
     <div className="space-y-6">
@@ -54,10 +57,17 @@ export function Bancos() {
         tabs={[
           { id: 'MOVIMIENTOS', label: 'Movimientos bancarios', n: aRevisar },
           { id: 'CONCILIACION', label: 'Conciliación bancaria' },
+          { id: 'XUBIO', label: 'Pendiente en Xubio', n: pendXubio, tone: errXubio ? 'rojo' : undefined },
         ]}
       />
 
-      {tab === 'MOVIMIENTOS' ? <Movimientos cuentas={cuentas} dia={diaSel} puede={puede} /> : <ConciliacionTab cuentas={cuentas} dia={diaSel} onDia={setDia} />}
+      {tab === 'MOVIMIENTOS' ? (
+        <Movimientos cuentas={cuentas} dia={diaSel} puede={puede} />
+      ) : tab === 'CONCILIACION' ? (
+        <ConciliacionTab cuentas={cuentas} dia={diaSel} onDia={setDia} />
+      ) : (
+        <PendientesXubioTab empresaId={empresaId} />
+      )}
     </div>
   )
 }
@@ -73,8 +83,7 @@ function Movimientos({ cuentas, dia, puede }: { cuentas: CuentaBancaria[]; dia: 
   const [reclasificar, setReclasificar] = useState<MovimientoBancario | null>(null)
   const [sinMov, setSinMov] = useState<CuentaBancaria | null>(null)
   const [tenencia, setTenencia] = useState<CuentaBancaria | null>(null)
-  const archivo = useRef<HTMLInputElement>(null)
-  const cuentaArchivo = useRef<string>('')
+  const [extracto, setExtracto] = useState<CuentaBancaria | null>(null)
   const nombre = (id: string) => t.cuentas.find((c) => c.id === id)?.nombre ?? id
   const unidad = (id?: string) => t.unidades.find((u) => u.id === id)?.nombre
 
@@ -84,30 +93,47 @@ function Movimientos({ cuentas, dia, puede }: { cuentas: CuentaBancaria[]; dia: 
     .filter((m) => (vista === 'REVISAR' ? m.estado === 'A_REVISAR' : vista === 'DIA' ? m.fecha === dia : true))
     .sort((a, b) => b.fecha.localeCompare(a.fecha) || a.cuentaId.localeCompare(b.cuentaId))
 
-  async function elegido(f: File | undefined) {
-    if (!f) return
-    const cid = cuentaArchivo.current
-    setSubiendo(cid)
-    const r = await subirExtracto(f, cid)
+  async function importar(c: CuentaBancaria, f: File, o: { fechaTenencia?: string; cuentaRemuneradaId?: string }): Promise<boolean> {
+    setSubiendo(c.id)
+    const r = await subirExtracto(f, c.id, o)
     setSubiendo(null)
-    if (r) setResultado({ cuenta: nombre(cid), r })
-    if (archivo.current) archivo.current.value = ''
+    if (r) setResultado({ cuenta: c.nombre, r })
+    return r !== null
   }
 
   return (
     <div className="space-y-6">
-      <input ref={archivo} type="file" className="hidden" accept=".csv,.xlsx,.xls,.txt,.pdf" onChange={(e) => void elegido(e.target.files?.[0])} data-testid="archivo-extracto" />
 
       {resultado && (
         <div className={`rounded-2xl border px-5 py-4 text-sm flex items-start justify-between gap-4 ${resultado.r.repetido ? 'border-amber-600 bg-amber-950/30 text-amber-100' : 'border-emerald-700 bg-emerald-950/30 text-emerald-100'}`}>
           <div>
             <p className="font-bold">
-              {resultado.cuenta}: {resultado.r.repetido ? 'ese archivo ya estaba importado' : `${resultado.r.nuevos} movimiento(s) nuevo(s)${resultado.r.movimientos !== undefined ? ` de ${resultado.r.movimientos} en el archivo` : ''}`}
+              {resultado.cuenta}:{' '}
+              {resultado.r.repetido
+                ? 'ese archivo ya estaba importado'
+                : resultado.r.tenencia
+                  ? 'tenencia del fondo importada'
+                  : `${resultado.r.nuevos} movimiento(s) nuevo(s)${resultado.r.movimientos !== undefined ? ` de ${resultado.r.movimientos} en el archivo` : ''}`}
             </p>
+            {(resultado.r.cuentas?.length ?? 0) > 1 && (
+              <ul className="opacity-90 list-disc pl-5 my-1">
+                {resultado.r.cuentas!.map((c) => (
+                  <li key={c.cuentaId}>
+                    {c.cuenta}: {c.repetido ? 'ya estaba importado' : `${c.nuevos} nuevo(s) de ${c.movimientos}${c.aRevisar ? ` · ${c.aRevisar} a revisar` : ''}`}
+                    {c.saldoFinal !== undefined && ` · saldo ${money(c.saldoFinal)}`}
+                  </li>
+                ))}
+              </ul>
+            )}
             <p className="opacity-80">
               {resultado.r.formato && `Formato ${resultado.r.formato}. `}
               {resultado.r.aRevisar ? `${resultado.r.aRevisar} quedaron "A revisar". ` : ''}
-              {resultado.r.detalle ?? (resultado.r.repetido ? 'No se duplicó nada.' : 'Los saldos de cierre ya están en la conciliación.')}
+              {resultado.r.tenencia
+                ? `Saldo${resultado.r.cuentas?.[0]?.saldoFinal !== undefined ? ` ${money(resultado.r.cuentas[0].saldoFinal!)}` : ''} guardado como tenencia: el rendimiento sale solo de la conciliación. `
+                : ''}
+              {(resultado.r.cuentas?.length ?? 0) > 1 || resultado.r.tenencia
+                ? (resultado.r.avisos ?? []).join(' · ')
+                : (resultado.r.detalle ?? (resultado.r.repetido ? 'No se duplicó nada.' : 'Los saldos de cierre ya están en la conciliación.'))}
             </p>
           </div>
           <button onClick={() => setResultado(null)} className="text-lg leading-none opacity-70 hover:opacity-100" aria-label="Cerrar">
@@ -187,12 +213,9 @@ function Movimientos({ cuentas, dia, puede }: { cuentas: CuentaBancaria[]; dia: 
                           <button
                             className="text-acento underline disabled:opacity-40"
                             disabled={subiendo !== null}
-                            onClick={() => {
-                              cuentaArchivo.current = c.id
-                              archivo.current?.click()
-                            }}
+                            onClick={() => setExtracto(c)}
                           >
-                            {subiendo === c.id ? 'Subiendo…' : 'Subir extracto'}
+                            {subiendo === c.id ? 'Subiendo…' : c.clase === 'FCI' ? 'Subir informe' : 'Subir extracto'}
                           </button>
                           {!s && movsDia.length === 0 && dia < t.hoy && (
                             <button className="text-acento underline" onClick={() => setSinMov(c)}>
@@ -303,6 +326,7 @@ function Movimientos({ cuentas, dia, puede }: { cuentas: CuentaBancaria[]; dia: 
       {reclasificar && <ModalReclasificar mov={reclasificar} onClose={() => setReclasificar(null)} />}
       {sinMov && <ModalSinMovimientos cuenta={sinMov} dia={dia} onClose={() => setSinMov(null)} />}
       {tenencia && <ModalTenencia cuenta={tenencia} dia={dia} onClose={() => setTenencia(null)} />}
+      {extracto && <ModalExtracto cuenta={extracto} onImportar={(f, o) => importar(extracto, f, o)} onClose={() => setExtracto(null)} />}
     </div>
   )
 }
@@ -409,6 +433,67 @@ function ModalSinMovimientos({ cuenta, dia, onClose }: { cuenta: CuentaBancaria;
             }}
           >
             Marcar sin movimientos
+          </Btn>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+/**
+ * Subir el archivo del banco (POST /api/bancos/extracto). El servidor detecta el banco y el formato.
+ *  · Brubank trae la CC y la remunerada en el mismo Excel: cada parte va a su cuenta. Si la CC tiene más de
+ *    una remunerada hay que decir cuál.
+ *  · El informe de un FCI es una tenencia: guarda el saldo (origen TENENCIA) y el rendimiento sale de la
+ *    conciliación. Si el informe no dice la fecha, se indica acá.
+ */
+function ModalExtracto({ cuenta, onImportar, onClose }: { cuenta: CuentaBancaria; onImportar: (f: File, o: { fechaTenencia?: string; cuentaRemuneradaId?: string }) => Promise<boolean>; onClose: () => void }) {
+  const { tesoreria } = useStore()
+  const t = tesoreria!
+  const [archivo, setArchivo] = useState<File | null>(null)
+  const [fechaTenencia, setFechaTenencia] = useState('')
+  const remuneradas = t.cuentas.filter((c) => c.cuentaMadreId === cuenta.id && c.clase === 'REMUNERADA')
+  const [remunerada, setRemunerada] = useState('')
+  const [enviando, setEnviando] = useState(false)
+  const esFondo = cuenta.clase === 'FCI' || cuenta.clase === 'REMUNERADA'
+  const faltaRemunerada = remuneradas.length > 1 && !remunerada
+  return (
+    <Modal titulo={`${cuenta.clase === 'FCI' ? 'Informe del fondo' : 'Extracto'} · ${cuenta.nombre}`} onClose={onClose} ancho="max-w-lg">
+      <div className="space-y-4">
+        <p className="text-sm text-seco">
+          {cuenta.clase === 'FCI'
+            ? 'Subí el informe de tenencia tal como lo baja el banco (PDF o Excel). Se guarda el saldo del fondo como tenencia y el rendimiento del día sale solo de la conciliación.'
+            : 'Subí el archivo tal como lo baja el banco (CSV, Excel o PDF). El sistema reconoce el banco y el formato; el mismo archivo no entra dos veces.'}
+        </p>
+        <Field label="Archivo">
+          <input type="file" accept=".csv,.xlsx,.xls,.txt,.pdf" className={`${inputCls} pt-2`} onChange={(e) => setArchivo(e.target.files?.[0] ?? null)} data-testid="archivo-extracto" aria-label="Archivo del banco" />
+        </Field>
+        {remuneradas.length === 1 && <p className="text-xs text-seco">Si el archivo trae también la cuenta remunerada (Brubank), esa parte va a {remuneradas[0].nombre}.</p>}
+        {remuneradas.length > 1 && (
+          <Field label="Cuenta remunerada" hint="El archivo de Brubank trae la CC y la remunerada: decí a cuál va la remunerada.">
+            <Desplegable value={remunerada} onChange={setRemunerada} opciones={[{ value: '', label: 'Elegí la remunerada' }, ...remuneradas.map((c) => ({ value: c.id, label: c.nombre }))]} />
+          </Field>
+        )}
+        {esFondo && (
+          <Field label="Fecha de la tenencia (opcional)" hint="Solo si el informe no dice la fecha del saldo. Si la dice, se usa la del informe.">
+            <input type="date" className={inputCls} value={fechaTenencia} max={t.hoy} onChange={(e) => setFechaTenencia(e.target.value)} />
+          </Field>
+        )}
+        <div className="flex justify-end gap-2">
+          <Btn variant="secundario" onClick={onClose}>
+            Cancelar
+          </Btn>
+          <Btn
+            disabled={!archivo || faltaRemunerada || enviando}
+            onClick={async () => {
+              if (!archivo) return
+              setEnviando(true)
+              const ok = await onImportar(archivo, { fechaTenencia: esFondo && fechaTenencia ? fechaTenencia : undefined, cuentaRemuneradaId: remunerada || undefined })
+              setEnviando(false)
+              if (ok) onClose()
+            }}
+          >
+            {enviando ? 'Importando…' : 'Importar'}
           </Btn>
         </div>
       </div>
@@ -602,5 +687,186 @@ function FilasUnidad({
         </tr>
       ))}
     </>
+  )
+}
+
+// ---------------------------------------------------------------- Pendiente en Xubio (lo bancario)
+
+const QUE_XUBIO: Record<PendienteXubio['tipo'], string> = {
+  COMPROBANTE: 'Comprobante "Extracto Bancario"',
+  ASIENTO: 'Asiento del banco',
+  ANULAR_ASIENTO: 'Anular asiento',
+  ANULAR_PAGO: 'Anular pago',
+  ANULAR_CHEQUE: 'Anular cheque',
+}
+const ESTADO_XUBIO: Record<PendienteXubio['estado'], { label: string; tone: 'neutro' | 'dorado' | 'rojo' | 'azul' | 'naranja' }> = {
+  FALTA_APROBAR: { label: 'Falta aprobar', tone: 'naranja' },
+  PENDIENTE: { label: 'Pendiente', tone: 'dorado' },
+  EN_CURSO: { label: 'Enviándose', tone: 'azul' },
+  ERROR: { label: 'Error', tone: 'rojo' },
+}
+const ESTADO_ITEM: Record<ResultadoCorridaBancos['items'][number]['estado'], { label: string; tone: 'neutro' | 'verde' | 'rojo' | 'azul' }> = {
+  OK: { label: 'Hecho', tone: 'verde' },
+  PRUEBA_OK: { label: 'En seco', tone: 'azul' },
+  ERROR: { label: 'Error', tone: 'rojo' },
+  OMITIDO: { label: 'Omitido', tone: 'neutro' },
+}
+
+/**
+ * Lo bancario que falta en Xubio (vista xubio_bancos_pendientes): comprobantes, asientos y anulaciones. El
+ * robot (xubio-bancos-pendientes) lo sube cada 15 minutos si el servidor está en real. Administración puede
+ * correrlo a mano, en seco (no cambia nada, deja registro) o de verdad, y marcar lo que Xubio no deja anular
+ * por API (órdenes de pago, cheques) cuando ya lo anuló a mano.
+ */
+function PendientesXubioTab({ empresaId }: { empresaId: string }) {
+  const { tesoreria, empresa, usuario, modo, correrEnviosBancos } = useStore()
+  const t = tesoreria!
+  const [corrida, setCorrida] = useState<ResultadoCorridaBancos | null>(null)
+  const [corriendo, setCorriendo] = useState<'SECO' | 'REAL' | null>(null)
+  const [confirmarReal, setConfirmarReal] = useState(false)
+  const [aMano, setAMano] = useState<PendienteXubio | null>(null)
+  const puedeCorrer = PUEDE_ANULAR_XUBIO_A_MANO.includes(usuario.rol)
+  const lista = t.pendientesXubio.filter((p) => empresaId === 'TODAS' || p.empresaId === empresaId)
+  const cuantos = (f: (p: PendienteXubio) => boolean) => lista.filter(f).length
+  const anulaciones = cuantos((p) => p.tipo.startsWith('ANULAR_'))
+  const errores = cuantos((p) => p.estado === 'ERROR')
+  const manuales = cuantos((p) => p.aMano)
+
+  async function correr(enSeco: boolean) {
+    setCorriendo(enSeco ? 'SECO' : 'REAL')
+    const r = await correrEnviosBancos(enSeco)
+    setCorriendo(null)
+    setConfirmarReal(false)
+    if (r) setCorrida(r)
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <Kpi label="Comprobantes y asientos" value={String(lista.length - anulaciones)} tone={lista.length - anulaciones ? 'dorado' : 'crema'} sub="por subir a Xubio" />
+        <Kpi label="Anulaciones" value={String(anulaciones)} tone={anulaciones ? 'dorado' : 'crema'} sub="anulado acá, vivo en Xubio" />
+        <Kpi label="A mano" value={String(manuales)} tone={manuales ? 'rojo' : 'crema'} sub="Xubio no deja por API" />
+        <Kpi label="Con error" value={String(errores)} tone={errores ? 'rojo' : 'verde'} />
+      </div>
+
+      <Card>
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div className="text-sm text-seco max-w-2xl">
+            <p>
+              El envío automático corre cada 15 minutos en días hábiles (8 a 19:45) cuando el servidor está en real. Desde acá se puede correr ahora: <b className="text-crema">en seco</b> muestra lo que haría
+              sin cambiar nada; <b className="text-crema">enviar</b> sube de verdad (solo si el servidor tiene el envío real prendido).
+            </p>
+            {modo === 'demo' && <p className="mt-1">En la demo el envío es simulado: no se conecta con Xubio.</p>}
+          </div>
+          {puedeCorrer ? (
+            <div className="flex gap-2 shrink-0">
+              <Btn variant="secundario" disabled={corriendo !== null} onClick={() => void correr(true)}>
+                {corriendo === 'SECO' ? 'Probando…' : 'Probar en seco'}
+              </Btn>
+              {confirmarReal ? (
+                <>
+                  <Btn variant="fantasma" onClick={() => setConfirmarReal(false)}>
+                    Cancelar
+                  </Btn>
+                  <Btn disabled={corriendo !== null} onClick={() => void correr(false)}>
+                    {corriendo === 'REAL' ? 'Enviando…' : 'Confirmar envío'}
+                  </Btn>
+                </>
+              ) : (
+                <Btn disabled={corriendo !== null} onClick={() => setConfirmarReal(true)}>
+                  Enviar a Xubio ahora
+                </Btn>
+              )}
+            </div>
+          ) : (
+            <p className="text-xs text-seco">La corrida manual y las anulaciones a mano son de Administración.</p>
+          )}
+        </div>
+        {corrida && (
+          <div className="mt-4 rounded-xl border border-borde p-4 space-y-2 text-sm" data-testid="resultado-corrida">
+            <p className="font-bold">
+              {corrida.omitido ? `No se corrió: ${corrida.omitido}` : corrida.real ? `Envío real · ${corrida.items.length} procesado(s)` : `En seco · ${corrida.items.length} procesado(s), sin cambiar nada`}
+            </p>
+            {!corrida.real && !corrida.envioRealHabilitado && <p className="text-xs text-seco">El servidor está en seco (XUBIO_BANCOS_ENVIO_REAL apagado): aunque pidas enviar, no se manda nada a Xubio.</p>}
+            {corrida.items.length > 0 && (
+              <ul className="space-y-1">
+                {corrida.items.map((i) => (
+                  <li key={`${i.entidad}-${i.id}`} className="flex gap-2 items-start">
+                    <Badge tone={ESTADO_ITEM[i.estado].tone}>{ESTADO_ITEM[i.estado].label}</Badge>
+                    <span className="text-xs">{i.detalle}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </Card>
+
+      {lista.length === 0 ? (
+        <Empty texto="No hay nada bancario pendiente con Xubio." />
+      ) : (
+        <Table head={['Fecha', 'Empresa', 'Qué', 'Detalle', 'Importe', 'Estado', 'Último intento', '']}>
+          {lista.map((p) => (
+            <tr key={`${p.tipo}-${p.id}`} data-pendiente={p.tipo} className={p.estado === 'ERROR' ? 'bg-red-950/10' : ''}>
+              <td className="px-4 py-2 whitespace-nowrap">{fecha(p.fecha)}</td>
+              <td className="px-4 py-2 whitespace-nowrap">{empresa(p.empresaId).corto}</td>
+              <td className="px-4 py-2 whitespace-nowrap text-xs">
+                {QUE_XUBIO[p.tipo]}
+                {p.aMano && (
+                  <span className="block">
+                    <Badge tone="rojo" title="Xubio no lo deja anular por API">
+                      A mano en Xubio
+                    </Badge>
+                  </span>
+                )}
+              </td>
+              <td className="px-4 py-2 max-w-[320px]">
+                <p className="truncate text-xs" title={p.descripcion}>
+                  {p.descripcion}
+                </p>
+                {p.xubioId && <p className="text-[0.6875rem] text-seco">Xubio {p.xubioId}</p>}
+                {p.error && <p className="text-[0.6875rem] text-red-300">{p.error}</p>}
+              </td>
+              <td className="px-4 py-2 text-right tabular whitespace-nowrap">{p.importe !== undefined ? money(p.importe) : '—'}</td>
+              <td className="px-4 py-2">
+                <Badge tone={ESTADO_XUBIO[p.estado].tone}>{ESTADO_XUBIO[p.estado].label}</Badge>
+              </td>
+              <td className="px-4 py-2 text-[0.6875rem] text-seco max-w-[260px]">
+                {p.ultimoIntentoEn && (
+                  <span className="block">
+                    {fechaHora(p.ultimoIntentoEn)}
+                    {p.ultimoIntentoModo === 'PRUEBA' ? ' · en seco' : ''}
+                  </span>
+                )}
+                {p.ultimoIntentoDetalle ? <span className="block truncate" title={p.ultimoIntentoDetalle}>{p.ultimoIntentoDetalle}</span> : !p.ultimoIntentoEn && '—'}
+              </td>
+              <td className="px-4 py-2 text-right">
+                {puedeCorrer && p.tipo.startsWith('ANULAR_') && (
+                  <button className="text-[0.75rem] text-acento underline whitespace-nowrap" onClick={() => setAMano(p)}>
+                    Ya lo anulé en Xubio
+                  </button>
+                )}
+              </td>
+            </tr>
+          ))}
+        </Table>
+      )}
+
+      {aMano && (
+        <ModalAnulacionManual
+          tipo={aMano.tipo === 'ANULAR_PAGO' ? 'PAGO' : aMano.tipo === 'ANULAR_CHEQUE' ? 'CHEQUE' : 'ASIENTO'}
+          id={aMano.id}
+          titulo={`${QUE_XUBIO[aMano.tipo]} · hecho a mano`}
+          detalle={
+            <>
+              {aMano.descripcion}
+              {aMano.importe !== undefined && ` · ${money(aMano.importe)}`}
+              {aMano.xubioId && ` · Xubio ${aMano.xubioId}`}
+            </>
+          }
+          onClose={() => setAMano(null)}
+        />
+      )}
+    </div>
   )
 }

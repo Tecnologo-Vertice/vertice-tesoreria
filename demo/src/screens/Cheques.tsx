@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useStore } from '../store'
 import type { Cheque, TipoCheque } from '../types'
 import { Badge, Btn, Desplegable, Empty, Field, inputCls, Kpi, Modal, Tabs } from '../components/ui'
-import { AvisoTesoreria, CampoMonto, ModalMotivo } from '../components/Tesoreria'
+import { AvisoTesoreria, CampoMonto, ModalAnulacionManual, ModalMotivo, PUEDE_ANULAR_XUBIO_A_MANO } from '../components/Tesoreria'
 import { addDays, fecha, iso, money, parseIso } from '../lib/format'
 import { ESTADO_CHEQUE, parseMonto, sumarHabiles } from '../lib/tesoreria'
 
@@ -17,8 +17,10 @@ export function Cheques() {
   const [emitir, setEmitir] = useState(false)
   const [debitar, setDebitar] = useState<Cheque | null>(null)
   const [anular, setAnular] = useState<Cheque | null>(null)
+  const [aMano, setAMano] = useState<Cheque | null>(null)
   const [q, setQ] = useState('')
   const puede = PUEDE.includes(usuario.rol)
+  const puedeXubio = PUEDE_ANULAR_XUBIO_A_MANO.includes(usuario.rol)
 
   const lista = useMemo(() => {
     if (!tesoreria) return []
@@ -113,6 +115,11 @@ export function Cheques() {
                         <Badge>{TIPOS[c.tipo]}</Badge>
                         {c.origen !== 'PAGO' && <Badge tone="azul">{c.origen === 'FINANCIERA' ? 'Financiera' : 'Manual'}</Badge>}
                         {c.pagos.length > 1 && <Badge tone="azul">Lote de {c.pagos.length} pagos</Badge>}
+                        {(c.anulacionXubio === 'PENDIENTE' || c.anulacionXubio === 'ERROR') && (
+                          <Badge tone={c.anulacionXubio === 'ERROR' ? 'rojo' : 'naranja'} title="La emisión es una orden de pago: Xubio no la borra por API">
+                            Falta anular en Xubio
+                          </Badge>
+                        )}
                       </div>
                       <p className="font-semibold truncate">
                         {c.acreedor ?? c.beneficiario}
@@ -124,6 +131,11 @@ export function Cheques() {
                         {c.proveedorId && !c.acreedor && proveedor(c.proveedorId) && c.beneficiario !== proveedor(c.proveedorId)?.nombre ? ` · ${proveedor(c.proveedorId)?.nombre}` : ''}
                       </p>
                       {c.motivoAnulacion && <p className="text-[0.6875rem] text-seco">Anulado por {c.anuladoPor}: {c.motivoAnulacion}</p>}
+                      {c.anulacionManualPor && (
+                        <p className="text-[0.6875rem] text-seco">
+                          Anulado a mano en Xubio por {c.anulacionManualPor}: {c.anulacionManualNota}
+                        </p>
+                      )}
                       {c.observaciones && !c.motivoAnulacion && <p className="text-[0.6875rem] text-seco">{c.observaciones}</p>}
                     </div>
                     <div className="text-right">
@@ -138,6 +150,11 @@ export function Cheques() {
                           </button>
                         </div>
                       )}
+                      {puedeXubio && (c.anulacionXubio === 'PENDIENTE' || c.anulacionXubio === 'ERROR') && (
+                        <button className="text-acento underline text-[0.75rem] mt-1" onClick={() => setAMano(c)}>
+                          Ya la anulé en Xubio
+                        </button>
+                      )}
                     </div>
                   </div>
                 )
@@ -150,6 +167,19 @@ export function Cheques() {
       {emitir && <ModalEmitir onClose={() => setEmitir(false)} />}
       {debitar && <ModalDebitado cheque={debitar} onClose={() => setDebitar(null)} />}
       {anular && <ModalAnular cheque={anular} onClose={() => setAnular(null)} />}
+      {aMano && (
+        <ModalAnulacionManual
+          tipo="CHEQUE"
+          id={aMano.id}
+          titulo="Anulación del cheque en Xubio"
+          detalle={
+            <>
+              N.º <span className="font-mono">{aMano.numero}</span> a {aMano.beneficiario} por {money(aMano.importe)}. La emisión está en Xubio como orden de pago y Xubio no la deja borrar por API.
+            </>
+          }
+          onClose={() => setAMano(null)}
+        />
+      )}
     </div>
   )
 }

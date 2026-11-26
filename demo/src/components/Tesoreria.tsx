@@ -155,3 +155,43 @@ export function ModalFormaPago({ factura, onClose }: { factura: Factura; onClose
     </Modal>
   )
 }
+
+/** Roles que marcan una anulación como hecha a mano en Xubio (marcar_anulacion_xubio_manual, 0029). */
+export const PUEDE_ANULAR_XUBIO_A_MANO = ['ADMINISTRACION', 'ADMIN']
+
+/**
+ * Xubio no deja borrar por API las órdenes de pago ni la emisión de cheques: Administración lo anula en Xubio
+ * y lo deja asentado acá con una nota (n.º de la anulación, fecha). Queda en la auditoría con su nombre.
+ */
+export function ModalAnulacionManual({ tipo, id, titulo, detalle, onClose }: { tipo: 'PAGO' | 'CHEQUE' | 'ASIENTO'; id: string; titulo: string; detalle: ReactNode; onClose: () => void }) {
+  const { marcarAnulacionXubioManual } = useStore()
+  const [nota, setNota] = useState('')
+  const [enviando, setEnviando] = useState(false)
+  return (
+    <Modal titulo={titulo} onClose={onClose} ancho="max-w-lg">
+      <div className="space-y-4">
+        <div className="text-sm text-seco">{detalle}</div>
+        <p className="text-sm">Primero anulalo en Xubio. Después marcalo acá: deja de figurar como pendiente y el robot no lo vuelve a intentar.</p>
+        <Field label="Nota" hint="Qué hiciste en Xubio: n.º de la anulación y fecha. Queda en la auditoría con tu nombre.">
+          <input className={inputCls} value={nota} onChange={(e) => setNota(e.target.value)} placeholder="Ej.: anulada la OP 0001-00000123 el 26/11" autoFocus aria-label="Nota" />
+        </Field>
+        <div className="flex justify-end gap-2">
+          <Btn variant="secundario" onClick={onClose}>
+            Cancelar
+          </Btn>
+          <Btn
+            disabled={!nota.trim() || enviando}
+            onClick={async () => {
+              setEnviando(true)
+              const ok = await marcarAnulacionXubioManual(tipo, id, nota.trim())
+              setEnviando(false)
+              if (ok) onClose()
+            }}
+          >
+            Ya la anulé en Xubio
+          </Btn>
+        </div>
+      </div>
+    </Modal>
+  )
+}

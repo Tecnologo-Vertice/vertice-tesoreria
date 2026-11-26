@@ -9,7 +9,9 @@ import { MARCA } from './transformar.mjs'
 
 const marca = (k) => `[mig:${k}]`
 
-export async function cargar(db, plan) {
+// correcciones (T-206, por defecto sí): categoría del acreedor, destino de cheques por unidad (si_unidad_id) y cheques
+// DEBITADO. Necesitan la migración 0030; con false se carga como antes (para comparar en el simulacro del paralelo).
+export async function cargar(db, plan, { correcciones = true } = {}) {
   const q = async (sql, p = []) => {
     try { return (await db.query(sql, p)).rows }
     catch (e) { e.message = `${e.message} · en: ${sql.replace(/\s+/g, ' ').slice(0, 140)}`; throw e }
@@ -133,6 +135,11 @@ export async function cargar(db, plan) {
                  values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, '${MARCA}')`, vals)
         r(T).altas++
       }
+      if (correcciones && x.si_unidad) {
+        const su = unidad(x.empresa, x.si_unidad)
+        const c = await q(`update flujo_reglas set si_unidad_id = $2 where nota like '%' || $1 and si_unidad_id is distinct from $2 returning id`, [marca(x.clave), su])
+        if (c.length && ya) r(T).cambios++
+      }
     }
 
     // ---------------------------------------------------------- proyecciones
@@ -176,8 +183,14 @@ export async function cargar(db, plan) {
     for (const a of plan.acreedores) {
       const T = 'acreedores'
       const ya = await uno(`select id from acreedores where organizacion_id = $1 and texto_banco(nombre) = texto_banco($2)`, [org, a.nombre])
-      if (ya) { r(T).iguales++; continue }
-      await q(`insert into acreedores (organizacion_id, nombre, tipo) values ($1, $2, $3)`, [org, a.nombre, a.tipo])
+      const cat = a.categoria ? String(a.categoria).trim().toUpperCase() : null
+      if (ya) {
+        // La categoría del Cash Flow se completa si falta; no se pisa la que puso una persona.
+        const c = correcciones && cat ? await q(`update acreedores set categoria = $2 where id = $1 and categoria is null returning id`, [ya.id, cat]) : []
+        contar(T, c.length ? 'cambios' : 'iguales'); continue
+      }
+      if (correcciones) await q(`insert into acreedores (organizacion_id, nombre, tipo, categoria) values ($1, $2, $3, $4)`, [org, a.nombre, a.tipo, cat])
+      else await q(`insert into acreedores (organizacion_id, nombre, tipo) values ($1, $2, $3)`, [org, a.nombre, a.tipo])
       r(T).altas++
     }
 
@@ -186,15 +199,21 @@ export async function cargar(db, plan) {
       const T = 'cheques', cid = cuenta(c.empresa, c.cuenta), ref = `${c.empresa} ${c.cuenta} ${c.tipo} ${c.numero}`
       if (!cid) { omitir(T, ref, 'sin cuenta en la base'); continue }
       const acr = c.acreedor ? (await uno(`select id from acreedores where organizacion_id = $1 and texto_banco(nombre) = texto_banco($2)`, [org, c.acreedor]))?.id ?? null : null
-      const x = await uno(`insert into cheques (empresa_id, cuenta_origen_id, tipo, numero, acreedor_id, beneficiario, importe, fecha_emision, fecha_pago, origen, observaciones, creado_por)
-                           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, '${MARCA}')
+      // Un cheque que el Cash Flow da por pagado entra DEBITADO (o pasa a DEBITADO si estaba emitido); uno debitado
+      // nunca vuelve atrás.
+      const deb = correcciones && c.estado === 'DEBITADO'
+      const x = await uno(`insert into cheques (empresa_id, cuenta_origen_id, tipo, numero, acreedor_id, beneficiario, importe, fecha_emision, fecha_pago, origen, observaciones, creado_por,
+                             estado, debitado_en, marcado_por, marcado_en)
+                           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, '${MARCA}', $12, $13, case when $12 = 'DEBITADO' then '${MARCA}' end, case when $12 = 'DEBITADO' then now() end)
                            on conflict (cuenta_origen_id, tipo, numero) do update set acreedor_id = excluded.acreedor_id, beneficiario = excluded.beneficiario,
-                             importe = excluded.importe, fecha_emision = excluded.fecha_emision, fecha_pago = excluded.fecha_pago, observaciones = excluded.observaciones
+                             importe = excluded.importe, fecha_emision = excluded.fecha_emision, fecha_pago = excluded.fecha_pago, observaciones = excluded.observaciones,
+                             estado = excluded.estado, debitado_en = excluded.debitado_en, marcado_por = excluded.marcado_por, marcado_en = excluded.marcado_en
                            where cheques.estado in ('EMITIDO', 'ENTREGADO')
-                             and (cheques.acreedor_id, cheques.beneficiario, cheques.importe, cheques.fecha_emision, cheques.fecha_pago, cheques.observaciones)
-                               is distinct from (excluded.acreedor_id, excluded.beneficiario, excluded.importe, excluded.fecha_emision, excluded.fecha_pago, excluded.observaciones)
+                             and (cheques.acreedor_id, cheques.beneficiario, cheques.importe, cheques.fecha_emision, cheques.fecha_pago, cheques.observaciones, cheques.estado)
+                               is distinct from (excluded.acreedor_id, excluded.beneficiario, excluded.importe, excluded.fecha_emision, excluded.fecha_pago, excluded.observaciones, excluded.estado)
                            returning (xmax = 0) as alta`,
-        [c.empresa, cid, c.tipo, c.numero, acr, c.beneficiario, pesos(c.importe), c.fecha_emision, c.fecha_pago, c.origen, c.observaciones])
+        [c.empresa, cid, c.tipo, c.numero, acr, c.beneficiario, pesos(c.importe), c.fecha_emision, c.fecha_pago, c.origen, c.observaciones,
+         deb ? 'DEBITADO' : 'EMITIDO', deb ? c.debitado_en : null])
       contar(T, !x ? 'iguales' : x.alta ? 'altas' : 'cambios')
     }
 

@@ -31,6 +31,24 @@ const sinCodigo = (s) => String(s ?? '').replace(/^\s*\d{6,}\s+/, '').trim()
 const conCodigo = (b, c) => [/^\d{6,}$/.test(String(b).trim()) ? String(b).trim() : '', c].filter(Boolean).join(' ').trim()
 const SIGNO_POSITIVO = new Set(['INGRESOS_OPERATIVOS', 'INGRESOS_FINANCIEROS', 'TOMA_DEUDA'])
 
+// T-206 · Fila de cheques de cada pestaña v2 para una categoría del Cash Flow (pestaña Categoría):
+//   · P (proveedores) → la fila de cheques a proveedores de la pestaña ("Cheques ... insumos/proveedores", "E-checks emitidos").
+//   · F… (financieras) → la fila "Cheques Financieras <X>" o "Pagaré <X>" cuyo <X> está en el nombre de algún acreedor
+//     de esa categoría. Si la categoría es de pagarés (FP…) y hay fila de pagaré, gana esa. Sin nombres escritos acá:
+//     sale de las planillas.
+export const FILA_CHEQUES_PROVEEDORES = /^CHEQUES (INSUMOS|PROVEEDORES)|^E-CHECKS EMITIDOS|CHEQUES A PROVEEDORES/
+export function filaDeCheques(cat, acreedoresDeCat, filas) {
+  if (cat === 'P') return filas.find((x) => FILA_CHEQUES_PROVEEDORES.test(norm(x.etiqueta))) ?? null
+  const cand = filas.map((x) => {
+    const m = /^(CHEQUES FINANCIERAS|PAGARE)\s+(.+)$/.exec(norm(x.etiqueta))
+    return m ? { fila: x, pagare: m[1] === 'PAGARE', clave: m[2].trim() } : null
+  }).filter((x) => x && acreedoresDeCat.some((a) => norm(a).includes(x.clave)))
+  if (!cand.length) return null
+  const pag = /^FP/.test(cat) ? cand.filter((x) => x.pagare) : cand.filter((x) => !x.pagare)
+  const lista = pag.length ? pag : cand
+  return lista.length === 1 ? lista[0].fila : null
+}
+
 export function seccionDe(t) {
   const s = norm(t).replace(/^\d+\.\s*/, '')
   if (/^INGRESOS OPERATIVOS/.test(s)) return 'INGRESOS_OPERATIVOS'
@@ -336,6 +354,29 @@ export function transformar(planillas, op) {
       for (let j = 0; j < r.refs.length; j++) ctl.cargar(T, r.empresa)
     }
     ctl.aviso(T, `Llave Flujo v2 → ${[...reglasLlave.values()].filter((r) => !r.conflicto).length} reglas (proveedor + cuenta → fila); la cuenta "a cargar" de arriba cuenta filas de la Llave, no reglas`)
+
+    // T-206 · Destino de los cheques por categoría del acreedor (Cash Flow › Categoría) y unidad: las filas
+    // "(circuito de cheques)" de cada pestaña v2. Sin esto, un cheque sin pago vinculado cae en "Sin clasificar".
+    if (op.correcciones !== false) {
+      ctl.fuente(T, 'Cash Flow › Categoría (categorías de cheques) × filas "(circuito de cheques)" de las v2')
+      const porCat = new Map() // categoría → nombres de acreedores
+      hoja(C, 'Categoría', 'Cash Flow').slice(2).forEach((f) => {
+        const nombre = texto(f, 2), cat = norm(texto(f, 3))
+        if (nombre && /^(P|F[A-Z]*)$/.test(cat)) (porCat.get(cat) ?? porCat.set(cat, []).get(cat)).push(nombre)
+      })
+      for (const [pest, { empresa, unidad }] of Object.entries(PESTANAS)) {
+        const lista = (filasPorUnidad[unidad] ?? []).filter((x) => x.tipo !== 'SECCION')
+        for (const [cat, nombres] of porCat) {
+          ctl.planilla(T, empresa)
+          const fila = filaDeCheques(cat, nombres, lista)
+          const ref = `cheques ${cat} · ${pest}`
+          if (!fila) { if (cat === 'P') ctl.noMapeada(T, empresa, 0n, ref, `[FALTA] ${pest} v2 no tiene fila de cheques a proveedores`); else ctl.cubierta(T, empresa, 0n, 'la pestaña no tiene una fila única para esa categoría de cheques'); continue }
+          plan.flujo_reglas.push({ clave: clave('CHEQUE', unidad, cat), empresa, prioridad: 50, si_origen: 'CHEQUE', si_cuenta_contable: null, si_texto: null,
+            si_categoria: cat, si_unidad: unidad, unidad, fila: fila.etiqueta, excluir: false, nota: `Cheques categoría ${cat} · ${pest} → ${fila.etiqueta}` })
+          ctl.cargar(T, empresa)
+        }
+      }
+    }
   }
 
   // ============================================================ proyecciones (Gastos Fijos, Proyecciones, Flujo original)
@@ -492,7 +533,7 @@ export function transformar(planillas, op) {
   // ============================================================ acreedores + cheques (Cash Flow)
   {
     const TA = 'acreedores', TC = 'cheques'
-    ctl.fuente(TA, 'Cash Flow › Categoría'); ctl.fuente(TC, 'Cash Flow › CHEQUES EMITIDOS (ESTADO = Pendiente)')
+    ctl.fuente(TA, 'Cash Flow › Categoría'); ctl.fuente(TC, op.correcciones !== false ? `Cash Flow › CHEQUES EMITIDOS (ESTADO = Pendiente; Pagado cobrado desde el ${op.desde} → DEBITADO)` : 'Cash Flow › CHEQUES EMITIDOS (ESTADO = Pendiente)')
     const tipoAcreedor = (cat) => (/^P$/i.test(cat) ? 'PROVEEDOR' : /^F/i.test(cat) ? 'FINANCIERA' : 'OTRO')
     const acreedores = new Map()
     hoja(C, 'Categoría', 'Cash Flow').slice(2).forEach((f) => {
@@ -508,12 +549,19 @@ export function transformar(planillas, op) {
     hoja(C, 'CHEQUES EMITIDOS', 'Cash Flow').slice(1).forEach((f, i) => {
       const estado = norm(texto(f, 11))
       if (!estado && vacia(f)) return
-      if (!['PENDIENTE', 'VENCIDO', 'ROLL'].includes(estado)) { ctl.fuera(TC, `estado "${texto(f, 11) || 'vacío'}"`); return }
+      // T-206: un cheque "Pagado" que se cobró desde el inicio de la carga entra DEBITADO (si no, el débito del banco
+      // queda sin documento y el Flujo no lo puede clasificar). Los pagados antes quedan fuera, como siempre.
+      const pagado = op.correcciones !== false && estado === 'PAGADO'
+      if (pagado) {
+        const cobro = fecha(celda(f, 2)) ?? fecha(celda(f, 1))
+        if (!cobro || cobro < op.desde || cobro > op.hoy) { ctl.fuera(TC, 'estado "Pagado" cobrado fuera del período'); return }
+      }
+      if (!pagado && !['PENDIENTE', 'VENCIDO', 'ROLL'].includes(estado)) { ctl.fuera(TC, `estado "${texto(f, 11) || 'vacío'}"`); return }
       const emp = empresaDe(texto(f, 3)), imp = centavos(celda(f, 9))
       ctl.planilla(TC, emp, imp)
       const numero = texto(f, 5).replace(/^0+(?=\d)/, ''), banco = texto(f, 4), tipoTxt = norm(texto(f, 6))
       const ref = `CHEQUES EMITIDOS fila ${i + 2} · ${texto(f, 3)} ${banco} ${numero} · ${texto(f, 8)}`
-      if (estado !== 'PENDIENTE') return ctl.noMapeada(TC, emp, imp, ref, `[FALTA] estado "${texto(f, 11)}": ¿se debitó o sigue pendiente?`)
+      if (!pagado && estado !== 'PENDIENTE') return ctl.noMapeada(TC, emp, imp, ref, `[FALTA] estado "${texto(f, 11)}": ¿se debitó o sigue pendiente?`)
       if (!emp) return ctl.noMapeada(TC, emp, imp, ref, `empresa "${texto(f, 3)}" desconocida`)
       if (!imp || imp <= 0n) return ctl.noMapeada(TC, emp, imp, ref, 'sin importe')
       if (!numero || !banco) return ctl.noMapeada(TC, emp, imp, ref, 'sin número o sin banco')
@@ -531,7 +579,7 @@ export function transformar(planillas, op) {
         acreedores.set(norm(benef), { nombre: benef, tipo: tipoAcreedor(cat), categoria: cat, alias: [], desdeCheque: true })
         ctl.planilla(TA, null); ctl.cargar(TA, null)
       }
-      plan.cheques.push({ empresa: emp, cuenta: cuenta.nombre, tipo, numero, beneficiario: benef || '(sin beneficiario)', acreedor: benef || null,
+      plan.cheques.push({ estado: pagado ? 'DEBITADO' : 'EMITIDO', debitado_en: pagado ? pago : null, empresa: emp, cuenta: cuenta.nombre, tipo, numero, beneficiario: benef || '(sin beneficiario)', acreedor: benef || null,
         importe: imp, fecha_emision: emision, fecha_pago: pago, origen: /^F/i.test(cat) ? 'FINANCIERA' : 'MANUAL',
         observaciones: [texto(f, 12), cat ? `Categoría Cash Flow: ${cat}` : ''].filter(Boolean).join(' · ') || null })
       ctl.cargar(TC, emp, imp)
@@ -572,12 +620,19 @@ export function transformar(planillas, op) {
         ctl.t(T).cargar[emp].filas--; ctl.t(T).cargar[emp].suma -= prev.saldo
         plan.saldos_bancarios.splice(plan.saldos_bancarios.indexOf(prev), 1)
       }
-      const s = { empresa: emp, cuenta: c.nombre, fecha: d, saldo, origen, cargado_por: `${MARCA} (Conciliacion_Diaria)` }
+      const s = { empresa: emp, cuenta: c.nombre, fecha: d, saldo, origen, cargado_por: `${MARCA} (Conciliacion_Diaria)`, ref: `Conciliacion_Diaria fila ${i + 2}` }
       porClave.set(k, s); plan.saldos_bancarios.push(s); ctl.cargar(T, emp, saldo)
     })
     // Flujo original: saldo por banco cargado a mano en los días que la conciliación no tiene.
+    const vbiPorClave = new Map() // empresa|cuenta|fecha → fila de Conciliacion_Diaria (estado y saldo calculado)
+    hoja(V, 'Conciliacion_Diaria', 'VBI+').slice(1).forEach((f, i) => {
+      const s = plan.saldos_bancarios.find((x) => x.ref === `Conciliacion_Diaria fila ${i + 2}`)
+      if (s) vbiPorClave.set(`${s.empresa}|${s.cuenta}|${s.fecha}`, { estado: norm(texto(f, 14)), calculado: centavos(celda(f, 6)) })
+    })
     for (const s of leerOriginal(O).saldos) {
       if (s.fecha < op.desde || s.fecha >= op.hoy) continue
+      // Sin correcciones (como antes de T-206) los saldos que son fórmula no se cargaban.
+      if (s.formula && op.correcciones === false) continue
       ctl.planilla(T, s.empresa, s.saldo)
       const ref = `Flujo original ${s.pestana} fila ${s.fila} · ${s.etiqueta} · ${s.fecha}`
       const c = cuentaDe(s.empresa, s.etiqueta, { estricto: true }) ?? cuentaDe(s.empresa, sinCodigo(s.etiqueta), { estricto: true })
@@ -586,6 +641,19 @@ export function transformar(planillas, op) {
       const ya = porClave.get(k)
       if (ya) {
         const dif = ya.saldo - s.saldo
+        const v = vbiPorClave.get(k)
+        const dc = v?.calculado == null ? null : v.calculado - s.saldo
+        // T-206: si VBI+ marcó DIFERENCIA y el saldo del Flujo es justo el que explican los movimientos, el extracto
+        // tomó mal el saldo de cierre (p. ej. tomó el saldo de un movimiento intermedio). Vale el del Flujo.
+        if (op.correcciones !== false && (dif > 100n || dif < -100n) && v?.estado === 'DIFERENCIA' && dc !== null && dc <= 100n && dc >= -100n) {
+          ctl.aviso(T, `${c.nombre} ${s.fecha}: Conciliacion_Diaria dice ${ya.saldo / 100n} (DIFERENCIA) y el Flujo original ${s.saldo / 100n}, que es el saldo calculado por los movimientos → queda el del Flujo`)
+          ctl.cubierta(T, ya.empresa, ya.saldo, 'Conciliacion_Diaria con saldo de cierre mal tomado: lo reemplaza el del Flujo original')
+          ctl.t(T).cargar[ya.empresa].filas--; ctl.t(T).cargar[ya.empresa].suma -= ya.saldo
+          plan.saldos_bancarios.splice(plan.saldos_bancarios.indexOf(ya), 1)
+          const r = { empresa: s.empresa, cuenta: c.nombre, fecha: s.fecha, saldo: s.saldo, origen: 'MANUAL', cargado_por: `${MARCA} (Flujo original)`, ref: ya.ref, reemplaza: true }
+          porClave.set(k, r); plan.saldos_bancarios.push(r); ctl.cargar(T, s.empresa, s.saldo)
+          continue
+        }
         if (dif > 100n || dif < -100n) ctl.aviso(T, `${c.nombre} ${s.fecha}: Flujo original ${s.saldo / 100n} vs Conciliacion_Diaria ${ya.saldo / 100n} (queda la conciliación)`)
         ctl.cubierta(T, s.empresa, s.saldo, 'ese día ya está en Conciliacion_Diaria')
         continue
@@ -601,7 +669,37 @@ export function transformar(planillas, op) {
     ctl.fuente(T, `VBI+ › Extractos_Movimientos (desde ${op.desde})`); ctl.fuente(T, 'Motor › Bancos Movimientos (solo lo que no está en Extractos_Movimientos)')
     const CATS = new Set(['SIN_CLASIFICAR', 'PAGO', 'COBRO', 'IMPUESTO', 'GASTO_BANCARIO', 'FCI', 'FCI_RENDIMIENTO', 'TRANSFERENCIA_PROPIA', 'CHEQUE_PAGADO', 'INTERESES', 'PRESTAMO', 'INFORMATIVO'])
     const yaEstan = new Map() // empresa|cuenta|fecha|importe → cantidad
-    hoja(V, 'Extractos_Movimientos', 'VBI+').slice(1).forEach((f, i) => {
+    const em = hoja(V, 'Extractos_Movimientos', 'VBI+')
+    // T-206 · Archivo superpuesto: el mismo día de la misma cuenta subido en dos archivos (p. ej. el CSV
+    // del home banking y el PDF, con descripciones en mayúsculas y minúsculas). Como hace importar_extracto en la base,
+    // el archivo que se importó después solo agrega lo nuevo: sus movimientos con un importe que ya trajo el anterior
+    // (contando repetidos) son duplicados.
+    const duplicados = new Set()
+    if (op.correcciones !== false) {
+      const grupos = new Map() // empresa|banco|fecha → archivo → [{i, imp}]
+      em.slice(1).forEach((f, i) => {
+        if (vacia(f) || !texto(f, 16)) return
+        const k = `${norm(texto(f, 2))}|${norm(texto(f, 3))}|${texto(f, 1)}`
+        const g = grupos.get(k) ?? new Map(); grupos.set(k, g)
+        const a = g.get(texto(f, 16)) ?? { desde: `${texto(f, 17)}|${String(i).padStart(6, '0')}`, filas: [] }; g.set(texto(f, 16), a)
+        a.filas.push({ i, imp: (centavos(celda(f, 7)) ?? 0n) - (centavos(celda(f, 6)) ?? 0n) })
+      })
+      for (const g of grupos.values()) {
+        if (g.size < 2) continue
+        const archivos = [...g.values()].sort((a, b) => (a.desde < b.desde ? -1 : 1))
+        const vistos = new Map() // importe → cuántos trajeron los archivos anteriores
+        for (const [n, a] of archivos.entries()) {
+          const propios = new Map()
+          for (const x of a.filas) {
+            const k = String(x.imp), antes = vistos.get(k) ?? 0, usados = propios.get(k) ?? 0
+            if (n > 0 && usados < antes) duplicados.add(x.i)
+            propios.set(k, usados + 1)
+          }
+          for (const [k, v] of propios) vistos.set(k, Math.max(vistos.get(k) ?? 0, v))
+        }
+      }
+    }
+    em.slice(1).forEach((f, i) => {
       if (vacia(f)) return
       const d = fecha(celda(f, 1))
       if (!d || d < op.desde) { ctl.fuera(T, `Extractos_Movimientos antes del ${op.desde}`); return }
@@ -609,6 +707,10 @@ export function transformar(planillas, op) {
       const deb = centavos(celda(f, 6)) ?? 0n, cred = centavos(celda(f, 7)) ?? 0n, imp = cred - deb
       ctl.planilla(T, emp, imp)
       const ref = `Extractos_Movimientos fila ${i + 2} · ${texto(f, 0)}`
+      if (duplicados.has(i)) {
+        ctl.aviso(T, `${ref}: ${texto(f, 3)} ${d} ${texto(f, 4)} ya vino en otro archivo del mismo día (archivo superpuesto "${texto(f, 16)}") → no se carga`)
+        return ctl.cubierta(T, emp, imp, 'archivo superpuesto: el mismo movimiento ya vino en otro archivo del mismo día y cuenta')
+      }
       const c = cuentaDe(emp, texto(f, 3))
       if (!c) return ctl.noMapeada(T, emp, imp, ref, `cuenta "${texto(f, 2)} · ${texto(f, 3)}" no reconocida`)
       if (!texto(f, 0)) return ctl.noMapeada(T, emp, imp, ref, 'sin ID (no se puede asegurar que no se duplique)')
@@ -762,10 +864,11 @@ function leerOriginal(O) {
       } else if (zona === 'SALDOS' && et) {
         for (const [j, d] of cols) {
           const c = f[j]
-          if (!c || c.f) continue
+          if (!c) continue
           const v = centavos(c)
           if (v === null) continue
-          saldos.push({ pestana: pest, empresa, unidad, fila: i + 1, etiqueta: et, fecha: d, saldo: v })
+          // formula: el saldo de ese día es una fórmula (p. ej. repite el anterior o suma un rescate). Es el que usa el Flujo.
+          saldos.push({ pestana: pest, empresa, unidad, fila: i + 1, etiqueta: et, fecha: d, saldo: v, formula: c.f })
         }
       }
     })

@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { Auditoria, ComprobanteEjemplo, Documento, Empresa, EstadoEspejo, Factura, LecturaComprobante, Pago, Proveedor, Usuario } from './types'
-import type { Bucket, CambioLinea, Catalogos, DatosAprobacion, DatosContabilizacion, DatosEdicion, DatosLiberacion, DatosTesoreria, DatosYaPagada, Fuente, NuevaProyeccion, NuevoCheque, NuevoPago, ResultadoExtracto } from './data/fuente'
+import type { Bucket, CambioLinea, Catalogos, DatosAprobacion, DatosContabilizacion, DatosEdicion, DatosLiberacion, DatosTesoreria, DatosYaPagada, Fuente, NuevaProyeccion, NuevoCheque, NuevoPago, OpcionesExtracto, ResultadoCorridaBancos, ResultadoExtracto } from './data/fuente'
 import type { CategoriaMovimiento, OrigenSaldo, RefLinea, TipoPagoFactura } from './types'
 import { fecha as fmtFecha, money } from './lib/format'
 
@@ -46,7 +46,7 @@ interface Store {
   recargar: () => Promise<void>
   /** Bancos, cheques y Flujo (0023 a 0027). Null mientras carga. */
   tesoreria: DatosTesoreria | null
-  subirExtracto: (archivo: File, cuentaId: string) => Promise<ResultadoExtracto | null>
+  subirExtracto: (archivo: File, cuentaId: string, opciones?: OpcionesExtracto) => Promise<ResultadoExtracto | null>
   reclasificarMovimiento: (id: string, categoria: CategoriaMovimiento, cuenta: string | null, aprender: string | null) => Promise<boolean>
   marcarSinMovimientos: (cuentaId: string, fecha: string, confirmo: boolean) => Promise<boolean>
   registrarSaldo: (cuentaId: string, fecha: string, saldo: number, origen: Extract<OrigenSaldo, 'TENENCIA' | 'MANUAL'>) => Promise<boolean>
@@ -55,6 +55,8 @@ interface Store {
   emitirCheque: (c: NuevoCheque) => Promise<boolean>
   marcarChequeDebitado: (id: string, numero: string, fecha: string) => Promise<boolean>
   anularCheque: (id: string, motivo: string) => Promise<boolean>
+  marcarAnulacionXubioManual: (tipo: 'PAGO' | 'CHEQUE' | 'ASIENTO', id: string, nota: string) => Promise<boolean>
+  correrEnviosBancos: (enSeco: boolean) => Promise<ResultadoCorridaBancos | null>
   ajustarLineaFlujo: (ref: RefLinea, cambio: CambioLinea, motivo: string) => Promise<boolean>
   restaurarLineaFlujo: (ref: RefLinea) => Promise<boolean>
   crearProyeccion: (p: NuevaProyeccion) => Promise<boolean>
@@ -274,13 +276,15 @@ export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fu
       },
       recargar,
       tesoreria,
-      subirExtracto: (a, c) =>
+      subirExtracto: (a, c, o) =>
         accion(
-          () => fuente.subirExtracto(a, c, usuario),
+          () => fuente.subirExtracto(a, c, usuario, o),
           (r) =>
             r.repetido
               ? 'Ese archivo ya estaba importado: no se agregó nada'
-              : `Extracto importado: ${r.nuevos} movimiento(s) nuevo(s)${r.movimientos !== undefined ? ` de ${r.movimientos}` : ''}${r.aRevisar ? ` · ${r.aRevisar} a revisar` : ''}`,
+              : r.tenencia
+                ? 'Tenencia importada: el rendimiento sale solo de la conciliación'
+                : `Extracto importado: ${r.nuevos} movimiento(s) nuevo(s)${r.movimientos !== undefined ? ` de ${r.movimientos}` : ''}${(r.cuentas?.length ?? 0) > 1 ? ` en ${r.cuentas!.length} cuentas` : ''}${r.aRevisar ? ` · ${r.aRevisar} a revisar` : ''}`,
         ),
       reclasificarMovimiento: async (id, cat, cta, apr) =>
         (await accion(() => fuente.reclasificarMovimiento(id, cat, cta, apr, usuario).then(() => true), apr ? 'Reclasificado. Regla aprendida: la próxima vez entra sola' : 'Reclasificado')) === true,
@@ -298,6 +302,16 @@ export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fu
       marcarChequeDebitado: async (id, nro, f) =>
         (await accion(() => fuente.marcarChequeDebitado(id, nro, f, usuario).then(() => true), `Cheque marcado debitado el ${fmtFecha(f)}: pasa a real en el Flujo`)) === true,
       anularCheque: async (id, m) => (await accion(() => fuente.anularCheque(id, m, usuario).then(() => true), 'Cheque anulado; queda registrado quién y por qué')) === true,
+      marcarAnulacionXubioManual: async (t, id, nota) =>
+        (await accion(() => fuente.marcarAnulacionXubioManual(t, id, nota, usuario).then(() => true), 'Anulación en Xubio marcada como hecha a mano, con tu nombre y la nota')) === true,
+      correrEnviosBancos: (enSeco) =>
+        accion(
+          () => fuente.correrEnviosBancos(enSeco, usuario),
+          (r) =>
+            r.omitido
+              ? `No se corrió: ${r.omitido}`
+              : `${r.real ? 'Envío a Xubio' : 'Prueba en seco'}: ${r.items.length} procesado(s)${r.items.some((i) => i.estado === 'ERROR') ? ` · ${r.items.filter((i) => i.estado === 'ERROR').length} con error` : ''}`,
+        ),
       ajustarLineaFlujo: async (ref, c, m) =>
         (await accion(() => fuente.ajustarLineaFlujo(ref, c, m, usuario).then(() => true), c.eliminar ? 'Línea eliminada del Flujo (se puede restaurar)' : c.fecha ? `Línea movida al ${fmtFecha(c.fecha)}` : 'Importe cambiado')) === true,
       restaurarLineaFlujo: async (ref) => (await accion(() => fuente.restaurarLineaFlujo(ref, usuario).then(() => true), 'Línea restaurada: vuelve a como la calcula el sistema')) === true,

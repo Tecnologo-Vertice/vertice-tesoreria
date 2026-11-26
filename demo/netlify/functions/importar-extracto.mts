@@ -1,12 +1,19 @@
 // POST /api/bancos/extracto
 // Tesorería sube el archivo tal como lo baja del banco y el sistema lo lee, lo guarda y lo importa.
 //   · multipart/form-data: campos cuentaOrigenId, archivo (el archivo), y opcionales cuentaRemuneradaId, fechaTenencia
-//   · JSON: { cuentaOrigenId, nombre, data (base64), cuentaRemuneradaId?, fechaTenencia? }
+//   · JSON: { cuentaOrigenId, nombre, data (base64), mimeType?, cuentaRemuneradaId?, fechaTenencia? }
+//     (es lo que manda la pantalla Bancos; mimeType es informativo: el formato se detecta por el contenido)
+// Respuesta (contrato con src/data/resultadoExtracto.ts):
+//   { ok, repetido, movimientos, nuevos, a_revisar, formato, banco, tenencia, detalle, avisos, archivo,
+//     cuentas: [{ cuenta_origen_id, cuenta, parte, repetido, movimientos, nuevos, a_revisar, origen_saldos,
+//                 filas, debitos, creditos, desde, hasta, saldo_final, saldos, resultado }] }
+//   repetido = el archivo ya estaba importado en TODAS sus cuentas; los totales suman las cuentas.
 // Pasos: lee el archivo (detecta banco y formato por el contenido) → controla que sea de la cuenta elegida
 // (mismo banco; tenencia de FCI solo a una cuenta FCI/remunerada) → si ya se importó, no hace nada → guarda
 // el archivo en <organización>/<empresa>/extractos/… → llama a importar_extracto (una vez por cuenta).
 // Brubank trae la CC y la remunerada en el mismo Excel: cada parte va a su cuenta (la remunerada es la que
 // tiene como cuenta madre a la CC, o la que se indique en cuentaRemuneradaId).
+// Una tenencia de FCI (informe del fondo) guarda sus saldos con origen TENENCIA (0029); lo demás, EXTRACTO.
 
 import type { Config } from '@netlify/functions'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -148,6 +155,43 @@ async function guardarArchivo(db: SupabaseClient, organizacion: string, empresa:
   return path
 }
 
+/** Lo que entró en cada cuenta del archivo (contrato con la pantalla: src/data/resultadoExtracto.ts). */
+interface CuentaImportada {
+  cuenta_origen_id: string
+  cuenta: string
+  parte: string
+  repetido: boolean
+  movimientos: number
+  nuevos: number
+  a_revisar: number
+  origen_saldos: string
+  filas: number
+  debitos: number
+  creditos: number
+  desde: string | null
+  hasta: string | null
+  saldo_final: number | null
+  saldos: { fecha: string; saldo: number }[]
+  resultado: unknown
+}
+
+const pesos = (n: number) => new Intl.NumberFormat('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)
+const ddmm = (iso: string | null) => (iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}` : '')
+
+/** Una línea para la pantalla: qué entró en cada cuenta (Brubank son dos) o el saldo de la tenencia. */
+function detalleImportacion(
+  tenencia: boolean,
+  cuentas: CuentaImportada[],
+  avisos: string[],
+): string {
+  const partes = cuentas.map((c) => {
+    if (c.repetido) return `${c.cuenta}: ya estaba importado`
+    if (tenencia) return `${c.cuenta}: tenencia al ${ddmm(c.hasta)}${c.saldo_final != null ? ` $ ${pesos(c.saldo_final)}` : ''} (el rendimiento sale de la conciliación)`
+    return `${c.cuenta}: ${c.nuevos} nuevo(s) de ${c.movimientos}`
+  })
+  return [...partes, ...avisos].join(' · ')
+}
+
 export default manejar(async (req) => {
   const u = await usuarioDesde(req)
   exigirRol(u, 'TESORERIA', 'ADMINISTRACION', 'ADMIN')
@@ -173,7 +217,8 @@ export default manejar(async (req) => {
   const importadas = new Set(((ya ?? []) as { cuenta_origen_id: string }[]).map((x) => x.cuenta_origen_id))
   const path = lista.every((d) => importadas.has(d.cuenta.id)) ? null : await guardarArchivo(db, u.organizacionId, elegida.empresa_id, p.nombre, p.bytes, l.tipoArchivo)
 
-  const cuentas = []
+  const origenSaldos = l.tenencia ? 'TENENCIA' : 'EXTRACTO'
+  const cuentas: CuentaImportada[] = []
   for (const d of lista) {
     const movs = d.parte.movimientos
     const { data, error } = await db.rpc('importar_extracto', {
@@ -183,6 +228,7 @@ export default manejar(async (req) => {
         archivo: { nombre: p.nombre, path, hash: l.hash, formato: l.formato },
         movimientos: movs,
         saldos: d.parte.saldos,
+        origen_saldos: origenSaldos,
       },
     })
     if (error) {
@@ -191,10 +237,17 @@ export default manejar(async (req) => {
     }
     const t = totales(movs)
     const saldoFinal = d.parte.saldos.length ? d.parte.saldos[d.parte.saldos.length - 1].saldo : (movs[movs.length - 1]?.saldo ?? null)
+    const res = (data ?? {}) as { repetido?: boolean; movimientos?: number; nuevos?: number; a_revisar?: number; origen_saldos?: string }
     cuentas.push({
       cuenta_origen_id: d.cuenta.id,
       cuenta: d.cuenta.nombre,
       parte: d.parte.parte,
+      repetido: res.repetido === true,
+      movimientos: res.repetido ? 0 : Number(res.movimientos ?? movs.length),
+      nuevos: Number(res.nuevos ?? 0),
+      // Sin 0029 la base no informa a_revisar: 0 (la pantalla igual muestra la pestaña "A revisar").
+      a_revisar: Number(res.a_revisar ?? 0),
+      origen_saldos: res.origen_saldos ?? origenSaldos,
       filas: t.filas,
       debitos: t.debitos,
       creditos: t.creditos,
@@ -205,7 +258,22 @@ export default manejar(async (req) => {
       resultado: data,
     })
   }
-  return json({ ok: true, formato: l.formato, banco: l.banco, tenencia: l.tenencia, archivo: { nombre: p.nombre, hash: l.hash, path }, cuentas, avisos: l.avisos })
+  const suma = (k: 'movimientos' | 'nuevos' | 'a_revisar') => cuentas.reduce((a, c) => a + c[k], 0)
+  const repetido = cuentas.every((c) => c.repetido)
+  return json({
+    ok: true,
+    repetido,
+    movimientos: suma('movimientos'),
+    nuevos: suma('nuevos'),
+    a_revisar: suma('a_revisar'),
+    formato: l.formato,
+    banco: l.banco,
+    tenencia: l.tenencia,
+    detalle: detalleImportacion(l.tenencia, cuentas, l.avisos),
+    archivo: { nombre: p.nombre, hash: l.hash, path },
+    cuentas,
+    avisos: l.avisos,
+  })
 })
 
 export const config: Config = { path: '/api/bancos/extracto' }
