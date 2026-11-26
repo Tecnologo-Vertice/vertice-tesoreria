@@ -32,7 +32,7 @@ returns trigger language plpgsql security definer set search_path = public as $$
 begin
   if not exists (select 1 from usuarios u join organizaciones o on o.id = u.organizacion_id
                  where u.email = lower(new.email) and u.activo and o.estado = 'ACTIVA') then
-    raise exception 'La cuenta % no está habilitada en Vértice Tesorería', new.email;
+    raise exception 'La cuenta % no está habilitada en el sistema', new.email;
   end if;
   return new;
 end $$;

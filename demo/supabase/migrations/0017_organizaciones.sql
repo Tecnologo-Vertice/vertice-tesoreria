@@ -88,12 +88,17 @@ create index on documentos (organizacion_id, estado, recibido_en);
 alter table auditoria add column organizacion_id uuid references organizaciones;
 alter table auditoria add column empresa_id text references empresas;
 alter table auditoria disable trigger trg_auditoria_inmutable;
+-- En una sola pasada, cruzando con facturas y pagos (una búsqueda por renglón tarda como facturas × auditoría).
 update auditoria a set
   organizacion_id = (select id from organizaciones where slug = 'vertice'),
-  empresa_id = case
-    when a.entidad = 'FACTURA' then (select f.empresa_id from facturas f where f.id::text = a.entidad_id)
-    when a.entidad = 'PAGO' then (select p.empresa_id from pagos p where p.id::text = a.entidad_id)
-  end;
+  empresa_id = x.empresa_id
+from (
+  select a2.id, coalesce(f.empresa_id, p.empresa_id) as empresa_id
+  from auditoria a2
+  left join facturas f on a2.entidad = 'FACTURA' and f.id::text = a2.entidad_id
+  left join pagos p on a2.entidad = 'PAGO' and p.id::text = a2.entidad_id
+) x
+where x.id = a.id;
 alter table auditoria enable trigger trg_auditoria_inmutable;
 alter table auditoria alter column organizacion_id set not null;
 create index on auditoria (organizacion_id, empresa_id);

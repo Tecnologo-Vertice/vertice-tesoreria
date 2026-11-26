@@ -883,6 +883,8 @@ await db.exec(`reset role`)
 await como('')
 const fB2 = (await val(`select ingresar_factura($1) id`, [factura({ empresa_id: 'otra-uno', proveedor: 'Laboratorio (ficha de Otra)', numero: 1002, total: 1000, neto: 1000, iva: 0 })])).id
 const fBdos = (await val(`select ingresar_factura($1) id`, [factura({ empresa_id: 'otra-dos', cuit_proveedor: '30-70000001-9', proveedor: 'Proveedor de Otra Dos', numero: 3001, total: 500, neto: 500, iva: 0 })])).id
+// Queda pendiente (nadie la aprueba): sirve para probar el control de acceso dentro de Otra.
+const fBdosPend = (await val(`select ingresar_factura($1) id`, [factura({ empresa_id: 'otra-dos', cuit_proveedor: '30-70000001-9', proveedor: 'Proveedor de Otra Dos', numero: 3002, total: 500, neto: 500, iva: 0 })])).id
 await db.query(`insert into cuentas_origen (empresa_id, nombre) values ('otra-uno', 'Banco de Otra CC')`)
 await db.query(`insert into productos_xubio (organizacion_id, nombre, codigo) values ($1, 'Producto de Otra', 'PROD_OTRA')`, [orgB])
 await db.query(`insert into espejo_estado (organizacion_id, hoja, filas) values ($1, 'Facturas', 3), ($2, 'Facturas', 7) on conflict do nothing`, [orgV, orgB])
@@ -945,6 +947,39 @@ check('Otra: de la tabla de organizaciones ve solo la suya', (await db.query(`se
 check('Otra: puede_ver_empresa de una empresa de Vértice da falso', (await val(`select puede_ver_empresa('beratung') a, puede_ver_empresa('otra-uno') b`)).a === false
   && (await val(`select puede_ver_empresa('otra-uno') b`)).b === true)
 // Tocar: cada acción de negocio sobre algo de Vértice.
+// Cuatro registros de Vértice en el estado justo en que cada acción actuaría: si no, la acción rechaza
+// antes por el estado y nunca llega al control de acceso.
+await db.exec(`reset role`)
+const fErrV = (await val(`select ingresar_factura($1) id`, [factura({ empresa_id: 'india', numero: 9401, total: 100, neto: 100, iva: 0, estado: 'ERROR' })])).id
+const fRalV = (await val(`select ingresar_factura($1) id`, [factura({ empresa_id: 'robles', numero: 9402, total: 100, neto: 100, iva: 0, estado: 'PARA_PAGAR', estado_xubio: 'PENDIENTE_RALPHARMA' })])).id
+const fTrabV = (await val(`select ingresar_factura($1) id`, [factura({ empresa_id: 'india', numero: 9403, total: 100, neto: 100, iva: 0, estado: 'PARA_PAGAR' })])).id
+await db.query(`update facturas set xubio_envio_en = now() where id = $1`, [fTrabV])
+const pRalV = (await val(`insert into pagos (empresa_id, fecha, importe, medio, cargado_por, estado) values ('robles', '2026-11-01', 77, 'TRANSFERENCIA', 'Vivi', 'PENDIENTE_RALPHARMA') returning id`)).id
+const estadoDeLosCuatro = async () => JSON.stringify(await val(`select (select estado::text from facturas where id = $1) a, (select estado_xubio::text from facturas where id = $2) b,
+  (select xubio_envio_en is not null from facturas where id = $3) c, (select estado::text from pagos where id = $4) d`, [fErrV, fRalV, fTrabV, pRalV]))
+const antesDeTocar = await estadoDeLosCuatro()
+check('los cuatro están en el estado en que la acción actuaría', antesDeTocar === '{"a":"ERROR","b":"PENDIENTE_RALPHARMA","c":true,"d":"PENDIENTE_RALPHARMA"}', antesDeTocar)
+await db.exec(`set role authenticated`)
+await como('admin@otra.com')
+await falla('Otra no corrige una factura en excepciones de Vértice', `select corregir_factura($1)`, [fErrV], /acceso a la empresa india/)
+await falla('Otra no libera una factura de Vértice trabada en Xubio', `select liberar_factura_xubio($1, '')`, [fTrabV], /acceso a la empresa india/)
+await falla('…ni la marca como ya subida', `select liberar_factura_xubio($1, '123')`, [fTrabV], /acceso a la empresa india/)
+await falla('Otra no confirma la carga en Ralpharma de una factura de Vértice', `select marcar_factura_ralpharma($1)`, [fRalV], /acceso a la empresa robles/)
+await falla('Otra no confirma la carga en Ralpharma de un pago de Vértice', `select marcar_ralpharma($1)`, [pRalV], /acceso a la empresa robles/)
+await db.exec(`reset role`)
+check('…y los cuatro siguen igual', (await estadoDeLosCuatro()) === antesDeTocar)
+// Control: las mismas cuatro acciones, hechas por Administración de Vértice, sí actúan (el estado era el correcto).
+await db.exec(`set role authenticated`)
+await como('administracion@verticebi.com')
+await db.query(`select corregir_factura($1)`, [fErrV])
+await db.query(`select liberar_factura_xubio($1, '')`, [fTrabV])
+await db.query(`select marcar_factura_ralpharma($1)`, [fRalV])
+await db.query(`select marcar_ralpharma($1)`, [pRalV])
+await db.exec(`reset role`)
+r = await estadoDeLosCuatro()
+check('…y hechas por Vértice sí actúan', r === '{"a":"PENDIENTE_APROBACION","b":"CARGADA_RALPHARMA","c":false,"d":"CONTABILIZADO"}', r)
+await db.exec(`set role authenticated`)
+await como('admin@otra.com')
 await falla('Otra no aprueba una factura de Vértice', `select aprobar_factura($1, 'SEGUROS', 'TRANSFERENCIA')`, [fBer], /acceso a la empresa beratung/)
 await falla('Otra no rechaza una factura de Vértice', `select rechazar_factura($1, 'no')`, [fBer], /acceso a la empresa beratung/)
 await falla('Otra no edita una factura de Vértice', `select editar_factura($1, $2)`, [fBer, JSON.stringify(datosEd({ numero: 9102 }))], /acceso a la empresa/)
@@ -958,7 +993,7 @@ await falla('Otra no libera pagos de Vértice', `select liberar_pago_xubio($1, '
 await falla('Otra no guarda el mail de un proveedor de Vértice', `select guardar_email_proveedor($1, 'x@otra.com')`, [provV.id], /Proveedor inexistente/)
 await como('teso@otra.com')
 await falla('Otra no carga pagos en una empresa de Vértice', `select registrar_pago($1)`, [pago({ importe: 10 })], /acceso a la empresa beratung/)
-await falla('Otra no paga una factura de Vértice desde una empresa suya', `select registrar_pago($1)`, [pago({ empresa_id: 'otra-uno', importe: 10, factura_ids: [fYa4] })], /otra empresa|no está para pagar/)
+await falla('Otra no paga una factura de Vértice desde una empresa suya', `select registrar_pago($1)`, [pago({ empresa_id: 'otra-uno', importe: 10, factura_ids: [fYa4] })], /La factura \d+ es de otra empresa/)
 await falla('Otra no carga un pago al proveedor de Vértice', `select registrar_pago($1)`, [pago({ empresa_id: 'otra-uno', importe: 10, proveedor_id: provV.id })], /proveedor es de otra organización/)
 await falla('Otra no anula pagos de Vértice', `select anular_pago($1, 'x')`, [pCont], /acceso a la empresa ysd/)
 await db.exec(`reset role`)
@@ -998,11 +1033,16 @@ await db.exec(`set role authenticated`)
 await como('aprob.uno@otra.com')
 r = await val(`select (select string_agg(id, ',') from empresas) e, (select count(*) from facturas where empresa_id <> 'otra-uno')::int f, (select count(*) from facturas)::int n, (select count(*) from usuarios)::int u`)
 check('en Otra, quien tiene una sola empresa ve solo esa (y solo su usuario)', r.e === 'otra-uno' && r.f === 0 && r.n > 0 && r.u === 1, JSON.stringify(r))
-await falla('…y no aprueba facturas de la otra empresa de su organización', `select aprobar_factura($1, 'x', 'TRANSFERENCIA')`, [fBdos], /acceso a la empresa otra-dos|no está pendiente/)
+await falla('…y no aprueba una factura pendiente de la otra empresa de su organización', `select aprobar_factura($1, 'x', 'TRANSFERENCIA')`, [fBdosPend], /acceso a la empresa otra-dos/)
+await db.exec(`reset role`)
+check('…que sigue pendiente', (await val(`select estado from facturas where id = $1`, [fBdosPend])).estado === 'PENDIENTE_APROBACION')
 await db.exec(`reset role`)
 
 // Una organización suspendida no deja entrar a su gente; la otra sigue igual.
 await db.query(`update organizaciones set estado = 'SUSPENDIDA' where id = $1`, [orgB])
+await falla('organización suspendida: su gente no puede crear la cuenta de acceso', `insert into auth.users (email) values ('admin@otra.com')`, [], /La cuenta admin@otra\.com no está habilitada en el sistema$/)
+await db.exec(`insert into auth.users (email) values ('tesoreria@verticebi.com')`)
+check('…y la de la otra organización sí', (await val(`select count(*)::int n from auth.users where email = 'tesoreria@verticebi.com'`)).n >= 1)
 check('organización suspendida: el servidor ya no le reconoce ninguna empresa', (await val(`select usuario_ve_empresa('admin@otra.com', 'otra-uno') v`)).v === false
   && (await val(`select empresas_visibles_de('admin@otra.com') e`)).e.length === 0)
 await db.exec(`set role authenticated`)
@@ -1110,7 +1150,11 @@ await falla('…no a la carpeta de Beratung', `insert into storage.objects (buck
 await falla('…ni a la de la otra organización', `insert into storage.objects (bucket_id, name) values ('comprobantes', $1)`, [rutaComprobante(orgB, 'otra-uno', 'x.pdf', ahora)], /row-level security/)
 await falla('…ni con su empresa bajo la carpeta de la otra organización', `insert into storage.objects (bucket_id, name) values ('comprobantes', $1)`, [rutaComprobante(orgB, 'india', 'x.pdf', ahora)], /row-level security/)
 await db.query(`insert into storage.objects (bucket_id, name) values ('comprobantes', '2026/1700000000008_pantalla-vieja.pdf')`)
-check('una pantalla vieja (ruta sin carpetas) todavía puede subir', true)
+check('una pantalla vieja de Vértice sube con la ruta sin carpetas; no la lee hasta que un pago apunte a ella', (await val(`select count(*)::int n from storage.objects where bucket_id = 'comprobantes' and name = '2026/1700000000008_pantalla-vieja.pdf'`)).n === 0)
+await db.exec(`reset role`)
+check('…y el archivo quedó guardado', (await val(`select count(*)::int n from storage.objects where bucket_id = 'comprobantes' and name = '2026/1700000000008_pantalla-vieja.pdf'`)).n === 1)
+await db.exec(`set role authenticated`)
+await como('teso.india@verticebi.com')
 await falla('las personas no suben al depósito de facturas (solo el servidor)', `insert into storage.objects (bucket_id, name) values ('facturas', $1)`, [pdfVInd + 'x'], /row-level security/)
 
 // registrar_pago rechaza una ruta que no sea de la carpeta de la empresa del pago.
@@ -1135,6 +1179,63 @@ check('…y después de intentarlo, Otra sigue sin leer nada de Vértice', !av.h
 av = await archivosDe('teso.india@verticebi.com')
 check('…e India sigue sin leer los comprobantes de Beratung', !av.has(rVBer) && !av.has(viejoBer) && av.has(rVInd))
 check('las personas no ejecutan el control de rutas por su cuenta', !(await val(`select has_function_privilege('authenticated', 'exigir_ruta_de_empresa(text,text)', 'execute') p`)).p)
+
+// Un nombre de archivo con dos o tres puntos seguidos es válido: lo que no se acepta es una CARPETA ".." o ".".
+await db.exec(`set role authenticated`)
+await como('teso.india@verticebi.com')
+for (const nombre of ['Transferencia 12.11..pdf', 'comprobante...pdf', '..pdf']) {
+  const ruta = rutaComprobante(orgV, 'india', nombre, ahora)
+  await db.query(`insert into storage.objects (bucket_id, name) values ('comprobantes', $1)`, [ruta])
+  const id = (await val(`select registrar_pago($1) id`, [pago({ empresa_id: 'india', importe: 10, comprobante_path: ruta })])).id
+  check(`comprobante "${nombre}": se sube, se registra el pago y se lee`, (await val(`select comprobante_path c from pagos where id = $1`, [id])).c === ruta
+    && (await val(`select count(*)::int n from storage.objects where name = $1`, [ruta])).n === 1, ruta.split('/').pop())
+}
+await db.query(`select registrar_pago($1)`, [pago({ empresa_id: 'india', importe: 10, comprobante_path: '2026/1700000000500_Transferencia_12.11..pdf' })])
+check('…y también con la ruta de una pantalla vieja', (await val(`select count(*)::int n from pagos where comprobante_path = '2026/1700000000500_Transferencia_12.11..pdf'`)).n === 1)
+await falla('una carpeta "." en la ruta: rechazada', `select registrar_pago($1)`, [pago({ empresa_id: 'india', importe: 10, comprobante_path: `${orgV}/india/./x.pdf` })], /no es válida/)
+await falla('una carpeta ".." al final: rechazada', `select registrar_pago($1)`, [pago({ empresa_id: 'india', importe: 10, comprobante_path: `${orgV}/india/..` })], /no es válida/)
+await falla('ruta vieja con carpeta "..": rechazada', `select registrar_pago($1)`, [pago({ empresa_id: 'india', importe: 10, comprobante_path: '2026/../x.pdf' })], /no es válida/)
+await db.exec(`reset role`)
+
+// Las rutas viejas tienen dueño: la organización que ya existía (la que da el servicio). Otra organización
+// no las usa, no las sube y no las lee, aunque conozca la ruta exacta de un archivo al que no apunta ningún pago.
+const sueltoV = '2026/1700000000999_transferencia-de-vertice.pdf'   // alguien de Vértice lo subió y cerró el formulario sin confirmar
+await db.query(`insert into storage.objects (bucket_id, name) values ('comprobantes', $1)`, [sueltoV])
+check('las rutas viejas son de la organización que da el servicio', (await val(`select acepta_rutas_viejas() a`)).a === true
+  && (await val(`select es_proveedor p from organizaciones where id = $1`, [orgV])).p === true && (await val(`select es_proveedor p from organizaciones where id = $1`, [orgB])).p === false)
+await db.exec(`set role authenticated`)
+await como('teso@otra.com')
+check('Otra: las rutas viejas no son suyas', (await val(`select rutas_viejas_son_mias() m`)).m === false)
+await falla('Otra no registra un pago con un comprobante viejo de Vértice que no está en ningún pago', `select registrar_pago($1)`, [pago({ empresa_id: 'otra-uno', importe: 10, cuenta_origen: 'Banco de Otra CC', comprobante_path: sueltoV })], /no es de esta empresa/)
+await falla('…ni con una ruta vieja inventada', `select registrar_pago($1)`, [pago({ empresa_id: 'otra-uno', importe: 10, cuenta_origen: 'Banco de Otra CC', comprobante_path: '2026/1700000000998_cualquiera.pdf' })], /no es de esta empresa/)
+await falla('Otra no sube archivos con ruta vieja', `insert into storage.objects (bucket_id, name) values ('comprobantes', '2026/1700000000997_de-otra.pdf')`, [], /row-level security/)
+await db.exec(`reset role`)
+// Aunque un pago de Otra llegara a apuntar a una ruta vieja (acá, puesto a mano por el servidor), no la lee.
+await db.query(`insert into pagos (empresa_id, fecha, importe, medio, cargado_por, comprobante_path) values ('otra-uno', '2026-11-01', 5, 'TRANSFERENCIA', 'x', '2026/1700000000996_forzado.pdf')`)
+await db.query(`insert into storage.objects (bucket_id, name) values ('comprobantes', '2026/1700000000996_forzado.pdf')`)
+av = await archivosDe('teso@otra.com')
+check('…y no lee ningún archivo de ruta vieja, ni el suelto ni uno al que apunte un pago suyo', !av.has(sueltoV) && !av.has('2026/1700000000996_forzado.pdf') && ![...av].some((x) => !x.startsWith(orgB)), [...av].join())
+await db.exec(`set role authenticated`)
+await como('tesoreria@verticebi.com')
+const pSuelto = (await val(`select registrar_pago($1) id`, [pago({ importe: 10, comprobante_path: sueltoV })])).id
+check('…y Vértice sí usa su comprobante viejo: el intento de Otra no lo dejó bloqueado', !!pSuelto && (await val(`select count(*)::int n from storage.objects where name = $1`, [sueltoV])).n === 1)
+check('Vértice: las rutas viejas son suyas', (await val(`select rutas_viejas_son_mias() m`)).m === true)
+await db.exec(`reset role`)
+
+// El interruptor: cuando ya no quedan pantallas viejas, se dejan de aceptar rutas viejas en pagos y subidas nuevos.
+await db.exec(`create or replace function acepta_rutas_viejas() returns boolean language sql stable as $f$ select false $f$`)
+await db.exec(`set role authenticated`)
+await como('teso.india@verticebi.com')
+await falla('rutas viejas cerradas: Vértice ya no registra un pago con una ruta vieja', `select registrar_pago($1)`, [pago({ empresa_id: 'india', importe: 10, comprobante_path: '2026/1700000000995_despues-del-cierre.pdf' })], /versión anterior de la pantalla/)
+await falla('…ni repite una que ya usó', `select registrar_pago($1)`, [pago({ empresa_id: 'india', importe: 10, comprobante_path: viejoInd })], /versión anterior de la pantalla/)
+await falla('…ni sube con ruta vieja', `insert into storage.objects (bucket_id, name) values ('comprobantes', '2026/1700000000995_despues-del-cierre.pdf')`, [], /row-level security/)
+r = await val(`select count(*)::int n from storage.objects where name in ($1, 'aisl/ind.pdf')`, [viejoInd])
+check('…pero los archivos viejos que ya tienen su pago o su factura se siguen leyendo', r.n === 2)
+const pCerrado = (await val(`select registrar_pago($1) id`, [pago({ empresa_id: 'india', importe: 10, comprobante_path: rutaComprobante(orgV, 'india', 'otro.pdf', ahora) })])).id
+check('…y las rutas nuevas siguen andando', !!pCerrado)
+await db.exec(`reset role`)
+await db.exec(`create or replace function acepta_rutas_viejas() returns boolean language sql stable as $f$ select true $f$`)
+check('el interruptor no cambia los permisos de la función', (await val(`select has_function_privilege('authenticated', 'acepta_rutas_viejas()', 'execute') a, has_function_privilege('anon', 'acepta_rutas_viejas()', 'execute') b`)).a === true)
 
 // ================================================================ Alias de empresas como datos (0020)
 await db.exec(`reset role`)

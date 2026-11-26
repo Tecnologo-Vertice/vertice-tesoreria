@@ -2341,12 +2341,17 @@ create index on documentos (organizacion_id, estado, recibido_en);
 alter table auditoria add column organizacion_id uuid references organizaciones;
 alter table auditoria add column empresa_id text references empresas;
 alter table auditoria disable trigger trg_auditoria_inmutable;
+-- En una sola pasada, cruzando con facturas y pagos (una búsqueda por renglón tarda como facturas × auditoría).
 update auditoria a set
   organizacion_id = (select id from organizaciones where slug = 'vertice'),
-  empresa_id = case
-    when a.entidad = 'FACTURA' then (select f.empresa_id from facturas f where f.id::text = a.entidad_id)
-    when a.entidad = 'PAGO' then (select p.empresa_id from pagos p where p.id::text = a.entidad_id)
-  end;
+  empresa_id = x.empresa_id
+from (
+  select a2.id, coalesce(f.empresa_id, p.empresa_id) as empresa_id
+  from auditoria a2
+  left join facturas f on a2.entidad = 'FACTURA' and f.id::text = a2.entidad_id
+  left join pagos p on a2.entidad = 'PAGO' and p.id::text = a2.entidad_id
+) x
+where x.id = a.id;
 alter table auditoria enable trigger trg_auditoria_inmutable;
 alter table auditoria alter column organizacion_id set not null;
 create index on auditoria (organizacion_id, empresa_id);
@@ -2986,7 +2991,7 @@ returns trigger language plpgsql security definer set search_path = public as $$
 begin
   if not exists (select 1 from usuarios u join organizaciones o on o.id = u.organizacion_id
                  where u.email = lower(new.email) and u.activo and o.estado = 'ACTIVA') then
-    raise exception 'La cuenta % no está habilitada en Vértice Tesorería', new.email;
+    raise exception 'La cuenta % no está habilitada en el sistema', new.email;
   end if;
   return new;
 end $$;
@@ -3222,6 +3227,10 @@ grant execute on function tomar_documentos(integer, uuid) to service_role;
 --   · Los archivos que ya estaban (rutas sin carpeta de organización) se siguen leyendo como antes: si se
 --     ve el pago, la factura o el documento que apunta a ellos. Un comprobante viejo que ya está en un
 --     pago de otra empresa no se puede volver a usar.
+--   · Las rutas viejas tienen dueño: son de la organización que ya existía cuando no había carpetas (la
+--     que da el servicio, es_proveedor). Nadie de otra organización las lee, las sube ni las usa en un
+--     pago, aunque conozca la ruta exacta. Y hay un interruptor (acepta_rutas_viejas) para dejar de
+--     aceptarlas en pagos y subidas nuevas cuando ya no queden pantallas abiertas con el código anterior.
 -- Un cambio para quien ve todas las empresas: antes leía cualquier archivo del depósito, aunque nada
 -- apuntara a él. Ahora lee todos los de los pagos, facturas y documentos de su organización (que son
 -- todos los que muestra la pantalla); un archivo suelto, sin registro, solo lo ve el servidor.
@@ -3235,22 +3244,51 @@ returns uuid language sql immutable as $$
               then split_part(p_ruta, '/', 1)::uuid end
 $$;
 
+-- ¿Se siguen aceptando rutas viejas (sin carpeta de organización) en pagos y subidas NUEVOS? Hace falta
+-- mientras haya pantallas abiertas con el código anterior, que suben el comprobante como "año/archivo":
+-- entre aplicar esta migración y publicar el código nuevo, y un tiempo después. Para cerrarlo, cuando el
+-- código nuevo esté publicado y el equipo haya recargado la pantalla, alcanza con correr:
+--   create or replace function acepta_rutas_viejas() returns boolean language sql stable as $f$ select false $f$;
+-- Los archivos viejos que ya están en un pago se siguen leyendo igual: esto solo corta los usos nuevos.
+create or replace function acepta_rutas_viejas()
+returns boolean language sql stable as $$ select true $$;
+
+-- ¿La persona de la sesión es de la organización dueña de los archivos viejos? Todo lo que se guardó sin
+-- carpeta de organización es de la organización que ya existía entonces: la que da el servicio.
+create or replace function rutas_viejas_son_mias()
+returns boolean language sql stable security definer set search_path = public as $$
+  select coalesce((select o.es_proveedor from organizaciones o where o.id = organizacion_actual()), false)
+$$;
+
 -- Controla la ruta del comprobante de un pago de la empresa p_empresa. Devuelve la ruta limpia (o null).
 --   · ruta nueva: tiene que empezar con <organización de la empresa>/<empresa>/;
---   · ruta vieja (la manda una pantalla que quedó abierta desde antes de esta migración): se acepta
---     mientras no esté ya en un pago de otra empresa. Cuando no queden pantallas viejas se puede rechazar.
+--   · ruta vieja (la manda una pantalla que quedó abierta desde antes de esta migración): se acepta solo
+--     si acepta_rutas_viejas() sigue en verdadero, la empresa es de la organización dueña de los archivos
+--     viejos y la ruta no está ya en un pago de otra empresa.
+-- Una carpeta ".." o "." no se acepta. Dos puntos seguidos dentro del nombre del archivo sí
+-- ("Transferencia 12.11..pdf" es un nombre válido y la pantalla lo deja así).
 create or replace function exigir_ruta_de_empresa(p_ruta text, p_empresa text)
 returns text language plpgsql stable security definer set search_path = public as $$
 declare v text := nullif(trim(coalesce(p_ruta, '')), ''); v_carpeta text;
 begin
   if v is null then return null; end if;
-  if v like '%..%' or left(v, 1) = '/' or v like '%//%' then raise exception 'La ruta del comprobante no es válida'; end if;
+  if left(v, 1) = '/' or v like '%//%' or string_to_array(v, '/') && array['..', '.'] then
+    raise exception 'La ruta del comprobante no es válida';
+  end if;
   if organizacion_de_ruta(v) is not null then
     select organizacion_id::text || '/' || id || '/' into v_carpeta from empresas where id = p_empresa;
     if v_carpeta is null or left(v, length(v_carpeta)) <> v_carpeta then
       raise exception 'El comprobante está guardado en la carpeta de otra empresa: no se puede usar en un pago de %. Volvé a subirlo.', p_empresa;
     end if;
     return v;
+  end if;
+  -- Ruta vieja.
+  if not acepta_rutas_viejas() then
+    raise exception 'El comprobante se subió con una versión anterior de la pantalla. Recargá la página y volvé a subirlo.';
+  end if;
+  -- El mismo mensaje para los dos rechazos: no dice si la ruta existe ni de quién es.
+  if not coalesce((select o.es_proveedor from empresas e join organizaciones o on o.id = e.organizacion_id where e.id = p_empresa), false) then
+    raise exception 'El comprobante no es de esta empresa: no se puede usar en un pago de %. Volvé a subirlo.', p_empresa;
   end if;
   if exists (select 1 from pagos where comprobante_path = v and empresa_id <> p_empresa) then
     raise exception 'El comprobante no es de esta empresa: no se puede usar en un pago de %. Volvé a subirlo.', p_empresa;
@@ -3265,23 +3303,25 @@ create policy comprobantes_leer on storage.objects for select to authenticated
   using (bucket_id = 'comprobantes' and (usuario_actual()).email is not null
          and case when organizacion_de_ruta(name) is not null
                   then organizacion_de_ruta(name) = organizacion_actual() and puede_ver_empresa(split_part(name, '/', 2))
-                  else exists (select 1 from pagos p where p.comprobante_path = name) end);
+                  else rutas_viejas_son_mias() and exists (select 1 from pagos p where p.comprobante_path = name) end);
 
--- Subir: a la carpeta de una empresa que veo. Las rutas viejas se siguen aceptando por las pantallas
--- que quedaron abiertas; no dan acceso a nada (se leen solo a través de un pago visible).
+-- Subir: a la carpeta de una empresa que veo. Las rutas viejas se aceptan solo de la organización dueña
+-- de los archivos viejos y mientras acepta_rutas_viejas() esté en verdadero (por las pantallas que
+-- quedaron abiertas). No dan acceso a nada: se leen solo a través de un pago visible.
 drop policy comprobantes_subir on storage.objects;
 create policy comprobantes_subir on storage.objects for insert to authenticated
   with check (bucket_id = 'comprobantes' and (usuario_actual()).email is not null
               and case when organizacion_de_ruta(name) is not null
                        then organizacion_de_ruta(name) = organizacion_actual() and puede_ver_empresa(split_part(name, '/', 2))
-                       else true end);
+                       else acepta_rutas_viejas() and rutas_viejas_son_mias() end);
 
 -- Facturas (las sube solo el servidor): de mi organización si la ruta lo dice, y siempre a través de una
 -- factura o un documento que veo. Los subselects pasan por las reglas de facturas y documentos (0018).
 drop policy facturas_leer on storage.objects;
 create policy facturas_leer on storage.objects for select to authenticated
   using (bucket_id = 'facturas' and (usuario_actual()).email is not null
-         and (organizacion_de_ruta(name) is null or organizacion_de_ruta(name) = organizacion_actual())
+         and case when organizacion_de_ruta(name) is not null then organizacion_de_ruta(name) = organizacion_actual()
+                  else rutas_viejas_son_mias() end
          and (exists (select 1 from facturas f where f.pdf_path = name)
               or exists (select 1 from documentos d where d.storage_path = name)));
 
@@ -3366,8 +3406,9 @@ end $$;
 revoke execute on function exigir_ruta_de_empresa(text, text) from public, anon, authenticated;
 grant execute on function exigir_ruta_de_empresa(text, text) to service_role;
 -- organizacion_de_ruta la usan las reglas de los archivos con la sesión de la persona: solo mira el texto de la ruta.
-revoke execute on function organizacion_de_ruta(text) from public, anon;
-grant execute on function organizacion_de_ruta(text) to authenticated, service_role;
+-- Las otras dos también las usan las reglas: una dice verdadero o falso para todos, la otra solo habla de la propia organización.
+revoke execute on function organizacion_de_ruta(text), acepta_rutas_viejas(), rutas_viejas_son_mias() from public, anon;
+grant execute on function organizacion_de_ruta(text), acepta_rutas_viejas(), rutas_viejas_son_mias() to authenticated, service_role;
 
 
 -- ======================================== 0020_alias_empresas.sql

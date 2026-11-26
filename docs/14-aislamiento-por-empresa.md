@@ -39,12 +39,13 @@ Por encima de las empresas está la organización: el cliente. Vértice es la pr
 | Ruta de lo nuevo | `<organización>/<empresa>/…`. La organización es su identificador. En las facturas, que se suben antes de saber de qué empresa son, la segunda carpeta es la empresa elegida o `sin-empresa`. |
 | Comprobantes de pago | Se suben y se leen por carpeta: hay que ser de esa organización y ver esa empresa. `registrar_pago` rechaza un comprobante que no esté en la carpeta de la empresa del pago. Si en el formulario se cambia la empresa después de subirlo, la pantalla lo guarda de nuevo en la carpeta correcta al confirmar. |
 | PDF de facturas | Los sube solo el servidor. Se leen si la carpeta es de mi organización y, además, veo el documento o la factura que apunta al archivo. |
-| Archivos de antes | Sus rutas no tienen carpeta de organización (`año/mes/…`). Se siguen leyendo como antes: a través del pago, la factura o el documento que apunta a ellos. Un comprobante viejo que ya está en un pago de otra empresa no se puede volver a usar. |
+| Archivos de antes | Sus rutas no tienen carpeta de organización (`año/mes/…`). Son de la organización que ya existía entonces (la que da el servicio): nadie de otra organización los lee, los sube ni los usa en un pago. Dentro de ella se siguen leyendo como antes: a través del pago, la factura o el documento que apunta a ellos. Un comprobante viejo que ya está en un pago de otra empresa no se puede volver a usar. |
+| Pantallas con el código anterior | Siguen subiendo el comprobante con la ruta vieja y la base lo acepta mientras `acepta_rutas_viejas()` devuelva verdadero. Cuando el código nuevo esté publicado y el equipo haya recargado, se cierra con una línea (está en `TANDA_B.md`): desde ahí ningún pago ni subida nuevos usan rutas viejas. |
 | Archivo suelto | Un archivo viejo al que no apunta ningún registro ya no lo lee nadie desde la pantalla (antes lo leía quien veía todas las empresas). |
 
 ### Nombres de empresas como datos (migración 0020)
 
-El código ya no tiene escritos los nombres de las empresas. Para reconocer de qué empresa es una factura o una fila de la hoja, compara contra las empresas de la organización del documento, y ninguna más:
+La lectura de facturas (`lib/factura.ts`) y la copia de la hoja (`lib/espejo.ts`) ya no tienen escritos los nombres de las empresas. Para reconocer de qué empresa es una factura o una fila de la hoja, comparan contra las empresas de la organización del documento, y ninguna más:
 
 | Columna de `empresas` | Para qué |
 |---|---|
@@ -60,6 +61,13 @@ update empresas set alias = alias || '{"beratung consultora"}' where id = 'berat
 ```
 
 La IA recibe en el pedido solo los nombres y CUIT de las empresas de la organización del documento.
+
+**Pendiente: todavía hay nombres de Vértice escritos en la pantalla.** Hay que pasarlos a datos antes de dar el sistema a otra organización:
+
+| Dónde | Qué tiene escrito |
+|---|---|
+| `demo/src/lib/mails.ts` | Los nombres de las 8 empresas y las casillas de Tesorería. Para otra organización, el mail a un proveedor saldría con el remitente de Vértice |
+| `demo/src/screens/Ralpharma.tsx` | El texto de la bandeja nombra a Droguería Robles, Héctor Robles y Farma Control |
 
 La prueba fija está en `npm run test:sql`, sección "Dos organizaciones que no se ven ni se tocan": una segunda organización de mentira con sus empresas, usuarios, proveedores, facturas, pagos, documentos y auditoría. Compara, tabla por tabla, lo que ve cada una con lo que es suyo, y prueba cada acción de negocio contra los datos de la otra. `npm run test:organizaciones` hace lo mismo con las funciones de Netlify.
 
