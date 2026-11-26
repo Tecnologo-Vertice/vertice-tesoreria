@@ -171,8 +171,10 @@ export default manejar(async (req) => {
 
   // No se sabe si Xubio creó el comprobante: la reserva queda puesta para que nadie reintente a ciegas, y en el
   // pago queda con qué cuenta y forma se envió, para que Administración lo resuelva desde la tarjeta.
+  // El pago pasa a gestión del sistema aunque viniera de la hoja: puede haber un comprobante en Xubio creado
+  // desde acá, y sin eso la próxima copia de la hoja borraba el aviso, la cuenta y la forma.
   const sinConfirmar = async (motivo: string): Promise<ErrorHttp> => {
-    await db.from('pagos').update({ cuenta_contable: b.cuentaContable, forma_carga_xubio: b.formaCargaXubio, ...origenNuevo, detalle_contabilizacion: `Envío a Xubio sin confirmar: ${motivo}` }).eq('id', pago.id)
+    await db.from('pagos').update({ cuenta_contable: b.cuentaContable, forma_carga_xubio: b.formaCargaXubio, ...origenNuevo, gestion: 'SISTEMA', detalle_contabilizacion: `Envío a Xubio sin confirmar: ${motivo}` }).eq('id', pago.id)
     return new ErrorHttp(502, `${motivo} El pago queda trabado: buscá el comprobante en Xubio (${pago.empresas.nombre}) y resolvelo desde la tarjeta del pago.`)
   }
 

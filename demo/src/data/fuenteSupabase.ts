@@ -134,7 +134,7 @@ export class FuenteSupabase implements Fuente {
   }
 
   async cargar(): Promise<Datos> {
-    const [empresas, proveedores, cuentasOrigen, plan, facturas, pagosRaw, vinculos, auditoria, documentos, espejo, productos, ncs] = await Promise.all([
+    const [empresas, proveedores, cuentasOrigen, plan, facturas, pagosRaw, vinculos, auditoria, documentos, espejo, productos, ncs, plazoEnvioXubioSeg] = await Promise.all([
       this.lista<Empresa>('empresas', (r) => ({ id: String(r.id), nombre: String(r.nombre), corto: String(r.nombre_corto), cuit: String(r.cuit), erp: String(r.erp) as Empresa['erp'] })),
       this.lista<Proveedor>('proveedores', (r) => ({
         id: String(r.id),
@@ -210,6 +210,8 @@ export class FuenteSupabase implements Fuente {
       this.lista<{ nombre: string; codigo: string }>('productos_xubio', (r) => ({ nombre: String(r.nombre), codigo: String(r.codigo) }), [['nombre', 'asc']]).catch(() => [] as { nombre: string; codigo: string }[]),
       // NC aplicadas a cada factura (0011). Sin la migración, vacío.
       this.lista<{ factura: string; nc: string; importe: number }>('notas_credito_aplicadas', (r) => ({ factura: String(r.factura_id), nc: String(r.nc_id), importe: n(r.importe) })).catch(() => [] as { factura: string; nc: string; importe: number }[]),
+      // Plazo para dar por cortado un envío a Xubio (0016). Sin la migración, sin dato: la pantalla no ofrece liberar.
+      this.rpc<number>('plazo_envio_xubio_segundos', {}).then((v) => (typeof v === 'number' && v > 0 ? v : undefined)).catch(() => undefined),
     ])
     for (const f of facturas) {
       const a = ncs.filter((x) => x.factura === f.id)
@@ -222,7 +224,7 @@ export class FuenteSupabase implements Fuente {
     const facturasDePago = new Map<string, string[]>()
     for (const v of vinculos) facturasDePago.set(v.pago, [...(facturasDePago.get(v.pago) ?? []), v.factura])
     const pagos = pagosRaw.map((r) => mapPago(r, facturasDePago.get(String(r.id)) ?? []))
-    return { facturas, pagos, documentos, auditoria: auditoria.sort((a, b) => a.fecha.localeCompare(b.fecha)), catalogos: { empresas, proveedores, cuentasOrigen, planCuentas: [...new Set(comunes)].sort(), planPorEmpresa, productos: productos.map((p) => p.nombre), codigosProducto: Object.fromEntries(productos.map((p) => [p.nombre, p.codigo])) }, espejo }
+    return { facturas, pagos, documentos, auditoria: auditoria.sort((a, b) => a.fecha.localeCompare(b.fecha)), catalogos: { empresas, proveedores, cuentasOrigen, planCuentas: [...new Set(comunes)].sort(), planPorEmpresa, productos: productos.map((p) => p.nombre), codigosProducto: Object.fromEntries(productos.map((p) => [p.nombre, p.codigo])), plazoEnvioXubioSeg }, espejo }
   }
 
   private async rpc<T = unknown>(fn: string, args: Record<string, unknown>): Promise<T> {

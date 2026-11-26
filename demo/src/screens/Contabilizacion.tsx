@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useStore } from '../store'
 import { Badge, Btn, Card, Desplegable, Empty, Field, inputCls, Kpi, SelectorCuenta, TablaDatos, Tabs } from '../components/ui'
 import { cuentasOrigenDe, cuentasPara, enLista, sugerirCuentaOrigen } from '../lib/cuentas'
@@ -93,7 +93,19 @@ function TarjetaPago({ p, empresaNombre, erp, nueva }: { p: Pago; empresaNombre:
   const { facturas, proveedor, catalogos, usuario, contabilizarPago, marcarRalpharma, abrirArchivo, anularPago, liberarPagoXubio } = useStore()
   // Envío a Xubio sin confirmar: se reservó para enviar y nunca quedó contabilizado. No se sabe si Xubio lo creó.
   const trabado = !!p.envioXubioEn && (p.estado === 'CARGADO' || p.estado === 'REVISADO')
+  // Hasta que pase el plazo que define la base, el envío puede estar todavía saliendo: no se ofrece resolverlo
+  // (la base tampoco lo acepta). Sin el dato del plazo, tampoco.
+  const plazoSeg = catalogos.plazoEnvioXubioSeg
+  const resolubleDesde = trabado && plazoSeg ? new Date(p.envioXubioEn!).getTime() + plazoSeg * 1000 : null
+  const [ahora, setAhora] = useState(() => Date.now())
+  useEffect(() => {
+    if (resolubleDesde == null || ahora >= resolubleDesde) return
+    const t = setTimeout(() => setAhora(Date.now()), Math.min(resolubleDesde - ahora + 500, 30_000))
+    return () => clearTimeout(t)
+  }, [resolubleDesde, ahora])
+  const envioEnCurso = trabado && (resolubleDesde == null || ahora < resolubleDesde)
   const [nroXubio, setNroXubio] = useState('')
+  const [confirmandoLiberar, setConfirmandoLiberar] = useState(false)
   const puedeAnular = puede(usuario.rol, 'ANULAR_PAGO') && p.gestion !== 'HOJA' && !trabado && ['CARGADO', 'REVISADO', 'PENDIENTE_RALPHARMA'].includes(p.estado)
   const [anulando, setAnulando] = useState(false)
   const [motivoAnular, setMotivoAnular] = useState('')
@@ -199,7 +211,17 @@ function TarjetaPago({ p, empresaNombre, erp, nueva }: { p: Pago; empresaNombre:
         <div className="rounded-xl border border-borde bg-suave/40 p-5 space-y-4 self-start w-full">
           <p className="text-[0.625rem] uppercase tracking-[0.16em] font-bold text-seco">{hecho ? 'Cómo quedó' : erp === 'XUBIO' ? 'Contabilizar en Xubio' : 'Carga en Ralpharma'}</p>
           {!hecho && !puedeContabilizar && <p className="text-sm text-seco">Lo contabiliza Administración.</p>}
-          {trabado && (
+          {envioEnCurso && (
+            <div className="rounded-lg border border-borde bg-suave p-3">
+              <p className="text-[0.8125rem] text-seco leading-snug">
+                <b className="text-crema">Envío a Xubio en curso</b> (salió {fechaHora(p.envioXubioEn!)}). Mientras tanto no se puede volver a enviar ni anular.{' '}
+                {resolubleDesde != null
+                  ? `Si a las ${new Date(resolubleDesde).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })} sigue sin quedar contabilizado, actualizá la pantalla: acá va a aparecer cómo resolverlo.`
+                  : 'Actualizá la pantalla en unos minutos para ver cómo quedó.'}
+              </p>
+            </div>
+          )}
+          {trabado && !envioEnCurso && (
             <div className="rounded-lg border border-amber-900 bg-amber-950/40 p-3 space-y-3">
               <p className="text-[0.8125rem] text-amber-200 leading-snug">
                 <b>Envío a Xubio sin confirmar</b> ({fechaHora(p.envioXubioEn!)}). No se sabe si Xubio creó el comprobante, así que no se puede volver a enviar ni anular
@@ -210,8 +232,23 @@ function TarjetaPago({ p, empresaNombre, erp, nueva }: { p: Pago; empresaNombre:
                   <Field label="Número del comprobante en Xubio" hint="Solo si lo encontraste en Xubio. Queda contabilizado con la cuenta contable y la forma elegidas abajo, sin enviar nada.">
                     <input id={`xubio-${p.id}`} value={nroXubio} onChange={(ev) => setNroXubio(ev.target.value)} placeholder="Ej.: OP-1234" className={inputCls} />
                   </Field>
+                  {confirmandoLiberar && (
+                    <div className="rounded-lg border border-red-500/40 p-3 space-y-2">
+                      <p className="text-[0.8125rem] text-red-200 leading-snug">
+                        ¿Seguro que no está en Xubio de {empresaNombre}? Al liberar, el pago se puede volver a enviar: si el comprobante sí existe, quedaría cargado dos veces.
+                      </p>
+                      <div className="flex justify-end gap-2">
+                        <Btn variant="fantasma" onClick={() => setConfirmandoLiberar(false)}>
+                          Cancelar
+                        </Btn>
+                        <Btn variant="peligro" onClick={() => void liberarPagoXubio(p.id, '', {}).then(() => setConfirmandoLiberar(false))}>
+                          Lo busqué y no está: liberar
+                        </Btn>
+                      </div>
+                    </div>
+                  )}
                   <div className="flex flex-wrap justify-end gap-2">
-                    <Btn variant="secundario" disabled={!!nroXubio.trim()} onClick={() => void liberarPagoXubio(p.id, '', {})} title={nroXubio.trim() ? 'Borrá el número para liberar' : undefined}>
+                    <Btn variant="secundario" disabled={!!nroXubio.trim() || confirmandoLiberar} onClick={() => setConfirmandoLiberar(true)} title={nroXubio.trim() ? 'Borrá el número para liberar' : undefined}>
                       No está en Xubio: liberar
                     </Btn>
                     <Btn

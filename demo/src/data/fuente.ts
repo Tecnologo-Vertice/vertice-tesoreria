@@ -30,6 +30,12 @@ export interface Catalogos {
   productos: string[]
   /** Nombre del producto → código en Xubio (Catalogo_Productos). */
   codigosProducto: Record<string, string>
+  /**
+   * Segundos que tienen que pasar desde que un pago se reservó para enviar a Xubio hasta que se puede dar el
+   * envío por cortado y resolverlo a mano. Lo define la base (plazo_envio_xubio, migración 0016). Sin dato, la
+   * pantalla no ofrece resolverlo.
+   */
+  plazoEnvioXubioSeg?: number
 }
 
 export interface Datos {

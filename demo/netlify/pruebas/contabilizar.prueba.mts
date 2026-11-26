@@ -113,6 +113,7 @@ check('…el pago queda reservado (trabado), sin contabilizar', pago(m).estado =
 check('…con la cuenta, la forma y el origen del envío, para resolverlo desde la tarjeta', pago(m).cuenta_contable === 'Gastos Generales' && pago(m).forma_carga_xubio === 'ORDEN_PAGO'
   && pago(m).cuenta_origen === CUENTA_ELEGIDA && /sin confirmar/.test(String(pago(m).detalle_contabilizacion)))
 check('…y el intento queda en el registro de Xubio', m.tablas.xubio_log.length === 1 && /no respondió/.test(JSON.stringify(m.tablas.xubio_log[0].response)))
+check('…y, aunque venía de la hoja, pasa a gestión del sistema: la copia de la hoja no le borra el aviso', pago(m).gestion === 'SISTEMA')
 r = await pedir()
 cuerpo = await r.json()
 check('un pago trabado no se vuelve a enviar (no se crea una segunda orden de pago)', r.status === 409 && /tarjeta del pago/.test(cuerpo.error) && envios(m).length === 1, `${r.status} · ${envios(m).length} envío(s)`)
@@ -120,14 +121,14 @@ check('un pago trabado no se vuelve a enviar (no se crea una segunda orden de pa
 // Xubio responde con error del servidor: tampoco se sabe.
 m = mundo({}, { xubio: xubioCon(() => json({ error: 'caído' }, 500)) })
 r = await pedir()
-check('Xubio responde 500 al envío: queda trabado', r.status === 502 && pago(m).envio_xubio_en != null && pago(m).estado === 'CARGADO' && pago(m).cuenta_contable === 'Gastos Generales')
+check('Xubio responde 500 al envío: queda trabado y en gestión del sistema', r.status === 502 && pago(m).envio_xubio_en != null && pago(m).estado === 'CARGADO' && pago(m).cuenta_contable === 'Gastos Generales' && pago(m).gestion === 'SISTEMA')
 
 // Xubio rechaza con claridad: no se creó nada, se libera sola.
 m = mundo({}, { xubio: xubioCon(() => json({ error: 'cuenta inválida' }, 400)) })
 r = await pedir()
 cuerpo = await r.json()
 check('Xubio rechaza el comprobante (400): la reserva se libera y el pago no cambia de dueño', r.status === 502 && /rechazó/.test(cuerpo.error) && pago(m).envio_xubio_en === null
-  && pago(m).estado === 'CARGADO' && pago(m).cuenta_contable === null && pago(m).cuenta_origen === 'Banco Hipotecario', JSON.stringify(cambios(m)))
+  && pago(m).estado === 'CARGADO' && pago(m).cuenta_contable === null && pago(m).cuenta_origen === 'Banco Hipotecario' && pago(m).gestion === 'HOJA', JSON.stringify(cambios(m)))
 
 // Xubio acepta.
 m = mundo({}, { xubio: xubioCon(() => json({ ID: 9001 })) })

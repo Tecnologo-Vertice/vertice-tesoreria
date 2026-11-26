@@ -572,9 +572,17 @@ await como('')
 await falla('rol desconocido y sin sesión: no pasa nada', `select aprobar_factura($1, 'SEGUROS', 'TRANSFERENCIA')`, [fBer], /no habilitada|acceso/)
 await db.exec(`reset role`)
 check('la factura de Beratung sigue sin aprobar', (await val(`select estado from facturas where id = $1`, [fBer])).estado === 'PENDIENTE_APROBACION')
+check('las personas no pueden ejecutar es_servidor()', !(await val(`select has_function_privilege('authenticated', 'es_servidor()', 'execute') p`)).p && !(await val(`select has_function_privilege('anon', 'es_servidor()', 'execute') p`)).p)
+// Para preguntarle a la función qué responde con cada rol hay que darles permiso un momento.
+await db.exec(`grant execute on function es_servidor() to authenticated, anon`)
 await db.exec(`set role authenticated`)
-check('una persona con sesión no cuenta como servidor', (await db.query(`select 1`)).rows.length === 1 && !(await val(`select has_function_privilege('authenticated', 'es_servidor()', 'execute') p`)).p)
+await como('aprobador@verticebi.com')
+check('una persona con sesión no cuenta como servidor', (await val(`select es_servidor() s`)).s === false)
+await db.exec(`reset role; set role anon`)
+await como('')
+check('sin sesión (anon) tampoco cuenta como servidor', (await val(`select es_servidor() s`)).s === false)
 await db.exec(`reset role`)
+await db.exec(`revoke execute on function es_servidor() from authenticated, anon`)
 
 // El servidor de verdad entra con el rol service_role: ingesta, copia de la hoja y cola siguen andando.
 await db.exec(`set role service_role`)
@@ -609,8 +617,13 @@ await db.exec(`reset role`)
 
 check('empresas que ve una persona asignada a India', (await val(`select empresas_visibles_de('aprob.india@verticebi.com') e`)).e.join() === 'india')
 check('empresas que ve quien ve todas', (await val(`select empresas_visibles_de('aprobador@verticebi.com') e`)).e.length === nEmpresas)
-check('sin asignar, dado de baja o desconocido: ninguna', (await val(`select empresas_visibles_de('nuevo@verticebi.com') a, empresas_visibles_de('nadie@otro.com') b`)).a.length === 0
-  && (await val(`select empresas_visibles_de('nadie@otro.com') b`)).b.length === 0)
+check('sin empresas asignadas: ninguna', (await val(`select empresas_visibles_de('nuevo@verticebi.com') e`)).e.length === 0)
+check('mail desconocido: ninguna', (await val(`select empresas_visibles_de('nadie@otro.com') e`)).e.length === 0)
+await db.exec(`update usuarios set activo = false where email in ('aprob.india@verticebi.com', 'aprobador@verticebi.com')`)
+r = await val(`select empresas_visibles_de('aprob.india@verticebi.com') a, empresas_visibles_de('aprobador@verticebi.com') b`)
+check('dado de baja: ninguna, tuviera una empresa o todas', r.a.length === 0 && r.b.length === 0, JSON.stringify(r))
+await db.exec(`update usuarios set activo = true where email in ('aprob.india@verticebi.com', 'aprobador@verticebi.com')`)
+check('vuelto a dar de alta: las ve de nuevo', (await val(`select empresas_visibles_de('aprob.india@verticebi.com') e`)).e.join() === 'india')
 
 // "Leer ahora" pedido por alguien de India: solo lo subido para India.
 await db.exec(`update documentos set estado = 'DESCARTADO' where estado in ('PENDIENTE', 'LEYENDO')`)
@@ -674,27 +687,57 @@ check('la hoja registra otro pago: se copia y la marca de mail preparado no se b
 e1 = await espFact([filaF({ _fila: 53, NUMERO: '00007-00000373', PORCENTAJE_PAGADO: 75, MAIL_ENVIADO_FECHA: 'Enviado 20/11/2026' })])
 check('si la hoja trae su propia marca de mail, se copia la de la hoja', (await val(`select mail_enviado m from facturas where id = $1`, [hMail])).m === 'Enviado 20/11/2026')
 
-// ================================================================ Liberar un pago trabado en Xubio (0015)
+// ================================================================ Liberar un pago trabado en Xubio (0015, corregida en 0016)
 await db.exec(`reset role; set role authenticated`)
 await como('tesoreria@verticebi.com')
 const pTr1 = (await val(`select registrar_pago($1) id`, [pago({ empresa_id: 'ysd', importe: 150, descripcion: 'trabado 1' })])).id
 const pTr2 = (await val(`select registrar_pago($1) id`, [pago({ empresa_id: 'ysd', importe: 250, descripcion: 'trabado 2' })])).id
 await como('administracion@verticebi.com')
 await falla('un pago sin envío en curso no se libera', `select liberar_pago_xubio($1, '', null, null)`, [pTr1], /no tiene un envío a Xubio trabado/)
-// El envío real reservó los dos pagos y se cortó sin respuesta (lo que hace contabilizar antes de enviar).
+const pTr3 = (await val(`select registrar_pago($1) id`, [pago({ empresa_id: 'ysd', importe: 350, descripcion: 'trabado 3' })])).id
+// contabilizar reserva el pago justo antes de enviarlo a Xubio (envio_xubio_en = ahora). Uno es de la hoja.
 await db.exec(`reset role`)
-await db.query(`update pagos set envio_xubio_en = now() where id in ($1, $2)`, [pTr1, pTr2])
-check('la reserva del envío no cambia quién gestiona el pago ni su estado', (await val(`select count(*)::int n from pagos where id in ($1, $2) and estado = 'CARGADO' and envio_xubio_en is not null`, [pTr1, pTr2])).n === 2)
+const pHoja = await val(`select id, gestion, estado, cuenta_contable, forma_carga_xubio from pagos where hoja_id = 'PAGO-1792698009000-0'`)
+await db.query(`update pagos set envio_xubio_en = now() where id in ($1, $2, $3, $4)`, [pTr1, pTr2, pTr3, pHoja.id])
+r = await val(`select gestion, estado from pagos where id = $1`, [pHoja.id])
+check('la reserva del envío no cambia quién gestiona un pago de la hoja ni su estado', pHoja.gestion === 'HOJA' && r.gestion === 'HOJA' && r.estado === pHoja.estado && r.estado === 'CARGADO', JSON.stringify(r))
+check('…ni los del sistema', (await val(`select count(*)::int n from pagos where id in ($1, $2, $3) and estado = 'CARGADO' and gestion = 'SISTEMA' and envio_xubio_en is not null`, [pTr1, pTr2, pTr3])).n === 3)
 await db.exec(`set role authenticated`)
 await como('tesoreria@verticebi.com')
 await falla('un pago trabado no se anula', `select anular_pago($1, 'x')`, [pTr1], /enviando a Xubio/)
 await falla('Tesorería no libera pagos trabados (es de Administración)', `select liberar_pago_xubio($1, '', null, null)`, [pTr1], /rol/)
+
+// Plazo (0016): el envío recién salió y puede estar en curso. Ninguna de las dos salidas se acepta todavía.
+check('el plazo para dar un envío por cortado está en un solo lugar y la pantalla lo puede leer', (await val(`select plazo_envio_xubio_segundos() s, extract(epoch from plazo_envio_xubio())::int e`)).s === 300
+  && (await val(`select plazo_envio_xubio_segundos() s, extract(epoch from plazo_envio_xubio())::int e`)).e === 300)
+await como('administracion@verticebi.com')
+await falla('envío recién salido: no se puede liberar (podría estar en curso)', `select liberar_pago_xubio($1, '', null, null)`, [pTr1], /todavía puede estar en curso.*Esperá [45] min \d+ s/)
+await falla('envío recién salido: tampoco marcar "ya está en Xubio"', `select liberar_pago_xubio($1, 'OP-777', 'SEGUROS', 'ORDEN_PAGO')`, [pTr2], /todavía puede estar en curso/)
 await db.exec(`reset role`)
+check('…y los pagos siguen reservados, sin contabilizar', (await val(`select count(*)::int n from pagos where id in ($1, $2) and estado = 'CARGADO' and envio_xubio_en is not null and xubio_id is null`, [pTr1, pTr2])).n === 2)
+await db.query(`update pagos set envio_xubio_en = now() - plazo_envio_xubio() + interval '20 seconds' where id in ($1, $2, $3, $4)`, [pTr1, pTr2, pTr3, pHoja.id])
+await db.exec(`set role authenticated`)
+await como('administracion@verticebi.com')
+await falla('a 20 segundos de cumplirse el plazo: todavía no', `select liberar_pago_xubio($1, '', null, null)`, [pTr1], /Esperá 0 min (1\d|20) s/)
+await db.exec(`reset role`)
+// Pasó el plazo: el envío se cortó sin respuesta.
+await db.query(`update pagos set envio_xubio_en = now() - plazo_envio_xubio() - interval '1 second' where id in ($1, $2, $3, $4)`, [pTr1, pTr2, pTr3, pHoja.id])
+
+// Control de empresa propio de liberar_pago_xubio. Se apaga un momento el trigger de pagos, que rechaza
+// con el mismo mensaje, para comprobar que la función controla por sí misma (antes de mirar nada del pago).
 await db.exec(`insert into usuarios (email, nombre, rol) values ('admin.india@verticebi.com', 'Administración India', 'ADMINISTRACION');
   insert into usuarios_empresas (email, empresa_id) values ('admin.india@verticebi.com', 'india')`)
+await db.exec(`alter table pagos disable trigger trg_aislar_pagos`)
 await db.exec(`set role authenticated`)
 await como('admin.india@verticebi.com')
-await falla('Administración de India no libera pagos de YSD', `select liberar_pago_xubio($1, '', null, null)`, [pTr1], /acceso a la empresa ysd/)
+await falla('Administración de India no libera pagos de YSD (control de la propia función)', `select liberar_pago_xubio($1, '', null, null)`, [pTr1], /acceso a la empresa ysd/)
+await falla('…ni los marca como ya cargados en Xubio', `select liberar_pago_xubio($1, 'OP-1', 'SEGUROS', null)`, [pTr1], /acceso a la empresa ysd/)
+await db.exec(`reset role`)
+await db.exec(`alter table pagos enable trigger trg_aislar_pagos`)
+check('…y el pago de YSD sigue reservado', (await val(`select count(*)::int n from pagos where id = $1 and envio_xubio_en is not null and estado = 'CARGADO'`, [pTr1])).n === 1)
+await db.exec(`set role authenticated`)
+await como('admin.india@verticebi.com')
+await falla('con el trigger de pagos puesto, también', `select liberar_pago_xubio($1, '', null, null)`, [pTr1], /acceso a la empresa ysd/)
 await como('administracion@verticebi.com')
 // No estaba en Xubio: se libera.
 check('liberar sin número devuelve LIBERADO', (await val(`select liberar_pago_xubio($1, '  ', null, null) r`, [pTr1])).r === 'LIBERADO')
@@ -707,6 +750,12 @@ check('liberado: ahora sí se puede anular', (await val(`select estado from pago
 // Sí estaba en Xubio: queda contabilizado con ese número, sin enviar nada.
 await como('administracion@verticebi.com')
 await falla('ya estaba en Xubio pero falta la cuenta contable', `select liberar_pago_xubio($1, 'OP-777', null, null)`, [pTr2], /cuenta contable/)
+// El número cargado a mano tiene que ser un número de comprobante, no una marca interna ni un texto.
+for (const malo of ['RALPHARMA', 'ralpharma', 'CARGADO_A_MANO', 'EN-SECO', 'ya lo cargué', 'OP-', '-123', 'OP 1234; x', '1'.repeat(41)])
+  await falla(`número de Xubio "${malo.slice(0, 16)}" rechazado`, `select liberar_pago_xubio($1, $2, 'SEGUROS', 'ORDEN_PAGO')`, [pTr2, malo], /no es válido/)
+check('…y el pago sigue trabado, sin número', (await val(`select count(*)::int n from pagos where id = $1 and estado = 'CARGADO' and xubio_id is null`, [pTr2])).n === 1)
+check('solo dígitos: se guarda como los envíos automáticos (OP-1234)', (await val(`select liberar_pago_xubio($1, '1234', 'SEGUROS', 'ORDEN_PAGO') r`, [pTr3])).r === 'CONTABILIZADO'
+  && (await val(`select xubio_id from pagos where id = $1`, [pTr3])).xubio_id === 'OP-1234')
 check('con número de Xubio devuelve CONTABILIZADO', (await val(`select liberar_pago_xubio($1, ' OP-777 ', 'SEGUROS', 'ORDEN_PAGO') r`, [pTr2])).r === 'CONTABILIZADO')
 r = await val(`select estado, xubio_id, cuenta_contable, forma_carga_xubio, contabilizado_por, contabilizado_en from pagos where id = $1`, [pTr2])
 check('queda contabilizado con el número, la cuenta, la forma y quién lo resolvió', r.estado === 'CONTABILIZADO' && r.xubio_id === 'OP-777' && r.cuenta_contable === 'SEGUROS'
@@ -714,6 +763,22 @@ check('queda contabilizado con el número, la cuenta, la forma y quién lo resol
 await falla('un pago ya contabilizado no se vuelve a liberar', `select liberar_pago_xubio($1, 'OP-778', 'SEGUROS', null)`, [pTr2], /no tiene un envío a Xubio trabado/)
 await db.exec(`reset role`)
 check('las dos salidas quedan en la auditoría', (await val(`select count(*)::int n from auditoria where accion = 'XUBIO_PAGO_LIBERADO' and entidad_id in ($1, $2)`, [pTr1, pTr2])).n === 2)
+
+// Pago de la hoja con el envío sin confirmar: contabilizar guarda el aviso, la cuenta y la forma y lo pasa
+// a gestión del sistema (mismo cambio que hace la función). La copia de la hoja ya no lo borra.
+await db.query(`update pagos set cuenta_contable = $2, forma_carga_xubio = $3, gestion = 'SISTEMA', detalle_contabilizacion = 'Envío a Xubio sin confirmar: Xubio no respondió' where id = $1`,
+  [pHoja.id, pHoja.cuenta_contable, pHoja.forma_carga_xubio])
+ep = await espPag([filaP({ _fila: 41, ID_PAGO: 'PAGO-1792698009000-0', FACTURA_ASOCIADA: '00007-00000360', IMPORTE: 1000, CUENTA_CONTABLE: 'Otra cuenta', FORMA_CARGA: 'ASIENTO_MANUAL' })])
+r = await val(`select gestion, cuenta_contable, forma_carga_xubio, detalle_contabilizacion d, envio_xubio_en from pagos where id = $1`, [pHoja.id])
+check('pago de la hoja sin confirmar: la copia no borra el aviso, la cuenta ni la forma del envío', r.gestion === 'SISTEMA' && r.cuenta_contable === pHoja.cuenta_contable
+  && r.forma_carga_xubio === pHoja.forma_carga_xubio && /sin confirmar/.test(r.d ?? '') && r.envio_xubio_en !== null, JSON.stringify(r))
+await db.exec(`set role authenticated`)
+await como('administracion@verticebi.com')
+check('…y se resuelve desde la tarjeta con el formato de Xubio', (await val(`select liberar_pago_xubio($1, 'X-0001-00000483', null, null) r`, [pHoja.id])).r === 'CONTABILIZADO'
+  && (await val(`select xubio_id from pagos where id = $1`, [pHoja.id])).xubio_id === 'X-0001-00000483')
+await db.exec(`reset role`)
+for (const fn of ['plazo_envio_xubio()', 'plazo_envio_xubio_segundos()'])
+  check(`anon NO puede ejecutar ${fn.split('(')[0]}; las personas sí`, !(await val(`select has_function_privilege('anon', $1, 'execute') p`, [fn])).p && (await val(`select has_function_privilege('authenticated', $1, 'execute') p`, [fn])).p)
 check('anon no puede liberar pagos', !(await val(`select has_function_privilege('anon', 'liberar_pago_xubio(uuid,text,text,forma_carga_xubio)', 'execute') p`)).p)
 
 console.log(`\n${ok} OK · ${mal} MAL`)
