@@ -3,6 +3,8 @@
 // asientoContableManualBean (la API no tiene salida de fondos: se registra como asiento).
 // Las órdenes de pago NO se pueden borrar por API; los asientos manuales sí.
 
+import type { SupabaseClient } from '@supabase/supabase-js'
+import { cifrar, descifrar } from './cifrado'
 import { env, ErrorHttp } from './comun'
 
 const API = 'https://xubio.com/API/1.1/'
@@ -14,8 +16,8 @@ export interface Credenciales {
   secret: string
 }
 
-/** XUBIO_CREDS_JSON = {"beratung":{"clientId":"...","secret":"..."}, "india":{...}} */
-export function credencialesDe(empresaId: string): Credenciales | null {
+/** Variable de siempre: XUBIO_CREDS_JSON = {"beratung":{"clientId":"...","secret":"..."}, "india":{...}} */
+function credencialesDeLaVariable(empresaId: string): Credenciales | null {
   const raw = env('XUBIO_CREDS_JSON', false)
   if (!raw) return null
   try {
@@ -25,6 +27,62 @@ export function credencialesDe(empresaId: string): Credenciales | null {
   } catch {
     throw new ErrorHttp(500, 'XUBIO_CREDS_JSON no es un JSON válido')
   }
+}
+
+/** Dónde queda atado el dato cifrado: copiado a otra empresa no se descifra. */
+const lugarXubio = (empresaId: string) => `conexiones_erp:${empresaId}:XUBIO`
+
+/**
+ * Credenciales de Xubio de una empresa: las guardadas (cifradas) en conexiones_erp si hay fila;
+ * si no, las de la variable XUBIO_CREDS_JSON, como siempre. Si hay fila y no se puede descifrar, es un
+ * error (no se cae en silencio a la variable: podría estar vieja). El mensaje nunca incluye la credencial.
+ */
+export async function credencialesDe(db: SupabaseClient, empresaId: string): Promise<Credenciales | null> {
+  const { data, error } = await db.from('conexiones_erp').select('secreto_cifrado').eq('empresa_id', empresaId).eq('erp', 'XUBIO').maybeSingle()
+  if (error) throw new ErrorHttp(500, `No se pudieron leer las credenciales de Xubio de ${empresaId} guardadas en la base`)
+  if (!data?.secreto_cifrado) return credencialesDeLaVariable(empresaId)
+  const nombre = `Credenciales de Xubio de ${empresaId}`
+  const d = descifrar(String(data.secreto_cifrado), lugarXubio(empresaId), nombre)
+  let c: Partial<Credenciales>
+  try {
+    c = JSON.parse(d.texto) as Partial<Credenciales>
+  } catch {
+    throw new ErrorHttp(500, `${nombre}: el dato guardado no tiene el formato esperado.`)
+  }
+  if (!c.clientId || !c.secret) throw new ErrorHttp(500, `${nombre}: el dato guardado está incompleto.`)
+  // Cambio de clave: lo que todavía estaba con la anterior se vuelve a cifrar con la actual al usarlo.
+  if (d.conClaveAnterior)
+    await db.from('conexiones_erp').update({ secreto_cifrado: cifrar(d.texto, lugarXubio(empresaId)) }).eq('empresa_id', empresaId).eq('erp', 'XUBIO')
+  return { clientId: c.clientId, secret: c.secret }
+}
+
+/**
+ * Alta (o reemplazo) de las credenciales de Xubio de una empresa en la base. Primero exige la clave de
+ * cifrado, después prueba la credencial pidiendo un token a Xubio (solo lectura) y recién entonces la
+ * cifra y la guarda. Si algo falla no se guarda nada. Devuelve solo la pista (últimos 4 del identificador).
+ */
+export async function guardarCredencialesXubio(db: SupabaseClient, d: { empresaId: string; clientId: string; secret: string; usuario: string }): Promise<{ pista: string; verificadoEn: string }> {
+  const clientId = String(d.clientId ?? '').trim()
+  const secret = String(d.secret ?? '').trim()
+  if (!clientId || !secret) throw new ErrorHttp(400, 'Faltan el identificador o el secreto de Xubio')
+  if (clientId.length > 500 || secret.length > 500) throw new ErrorHttp(400, 'El identificador o el secreto de Xubio son demasiado largos')
+  // Sin clave no se sigue: ni siquiera se le pide el token a Xubio.
+  const cifrado = cifrar(JSON.stringify({ clientId, secret }), lugarXubio(d.empresaId))
+  const { data: e, error } = await db.from('empresas').select('id, nombre, erp').eq('id', d.empresaId).maybeSingle()
+  if (error) throw new ErrorHttp(500, error.message)
+  if (!e) throw new ErrorHttp(404, `La empresa ${d.empresaId} no existe`)
+  if (e.erp !== 'XUBIO') throw new ErrorHttp(422, `${e.nombre} no usa Xubio`)
+  try {
+    await token({ clientId, secret })
+  } catch (err) {
+    // Los mensajes de token() no llevan la credencial (va en una cabecera, nunca en el texto).
+    throw new ErrorHttp(422, `Xubio no aceptó las credenciales de ${e.nombre} (${err instanceof Error ? err.message : 'sin detalle'}). No se guardó nada.`)
+  }
+  const verificadoEn = new Date().toISOString()
+  const pista = clientId.slice(-4)
+  const { error: e2 } = await db.from('conexiones_erp').upsert({ empresa_id: d.empresaId, erp: 'XUBIO', secreto_cifrado: cifrado, pista, verificado_en: verificadoEn, cargado_por: d.usuario, cargado_en: verificadoEn })
+  if (e2) throw new ErrorHttp(500, `No se pudieron guardar las credenciales de ${e.nombre}`)
+  return { pista, verificadoEn }
 }
 
 export interface Token {

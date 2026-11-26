@@ -22,7 +22,9 @@ export async function cargarCatalogosXubio(db: SupabaseClient, soloEmpresas?: st
   const hasta = new Date()
   const desde = new Date(hasta.getTime() - 180 * 86_400_000)
   for (const e of empresas ?? []) {
-    const cred = credencialesDe(e.id)
+    let cred: Awaited<ReturnType<typeof credencialesDe>>
+    // Una credencial guardada que no se puede descifrar frena solo a su empresa, no a las demás.
+    try { cred = await credencialesDe(db, e.id) } catch (err) { log.push(`${e.nombre}: ${String(err instanceof Error ? err.message : err).slice(0, 200)}`); continue }
     if (!cred) { log.push(`${e.nombre}: sin credenciales de Xubio, se conserva lo que había`); continue }
     let t: Token
     try { t = await token(cred) } catch (err) { log.push(`${e.nombre}: sin conexión (${String(err instanceof Error ? err.message : err).slice(0, 120)})`); continue }

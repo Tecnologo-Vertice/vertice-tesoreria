@@ -1255,6 +1255,35 @@ await db.query(`update empresas set alias = '{"otra uno"}' where id = 'otra-uno'
 r = (await db.query(`select id, nombre, cuit, erp::text erp, alias, alias_emisor, alias_orden from empresas where organizacion_id = $1`, [orgB])).rows
 check('cargando el alias en la base, Otra reconoce su empresa por nombre', espejo.empresaDesdeTexto('OTRA UNO S.A.', r) === 'otra-uno' && espejo.empresaDesdeTexto('OTRA UNO S.A.', EMPRESAS_BASE) === null)
 
+// ================================================================ Credenciales de Xubio en la base (0021)
+// Las cifra el servidor (lib/cifrado.ts, probado en test:credenciales). Acá: que ninguna persona las lea.
+await db.exec(`reset role`)
+await como('')
+const CIFRADO_DE_PRUEBA = 'v1:0123abcd:aXZpdml2aXZp:ZXRpcXVldGE:ZGF0b3MtY2lmcmFkb3M'
+await db.query(`insert into conexiones_erp (empresa_id, erp, secreto_cifrado, pista, cargado_por) values ('beratung', 'XUBIO', $1, 'ab12', 'admin@prueba'), ('otra-uno', 'XUBIO', $1, 'cd34', 'admin@otra.com')`, [CIFRADO_DE_PRUEBA])
+check('conexiones_erp: el servidor guarda una fila por empresa', (await val(`select count(*)::int n from conexiones_erp`)).n === 2)
+await falla('conexiones_erp: no acepta una credencial en claro', `insert into conexiones_erp (empresa_id, erp, secreto_cifrado, cargado_por) values ('india', 'XUBIO', '{"clientId":"x","secret":"y"}', 'x')`, [], /conexiones_erp_secreto_cifrado_check/)
+await falla('conexiones_erp: una sola fila por empresa y ERP', `insert into conexiones_erp (empresa_id, erp, secreto_cifrado, cargado_por) values ('beratung', 'XUBIO', $1, 'x')`, [CIFRADO_DE_PRUEBA], /conexiones_erp_pkey/)
+for (const rol of ['anon', 'authenticated'])
+  check(`conexiones_erp: ${rol} no tiene ningún permiso sobre la tabla`, !(await val(`select has_table_privilege($1, 'conexiones_erp', 'select') s, has_table_privilege($1, 'conexiones_erp', 'insert') i,
+    has_table_privilege($1, 'conexiones_erp', 'update') u, has_table_privilege($1, 'conexiones_erp', 'delete') d`, [rol]).then((x) => x.s || x.i || x.u || x.d)))
+check('conexiones_erp: tiene RLS prendido (sin reglas: ni con permiso se leería una fila)', (await val(`select relrowsecurity r from pg_class where relname = 'conexiones_erp'`)).r === true
+  && (await val(`select count(*)::int n from pg_policies where tablename = 'conexiones_erp'`)).n === 0)
+for (const [quien, email] of [['un administrador de Vértice', 'tecnologia@verticebi.com'], ['el administrador de Otra', 'admin@otra.com'], ['Tesorería', 'tesoreria@verticebi.com']]) {
+  await db.exec(`set role authenticated`)
+  await como(email)
+  await falla(`conexiones_erp: ${quien}, con su sesión, no la lee`, `select pista from conexiones_erp`, [], /permission denied/)
+  await falla(`…ni la escribe`, `update conexiones_erp set cargado_por = 'yo'`, [], /permission denied/)
+  await db.exec(`reset role`)
+}
+await db.exec(`set role anon`)
+await falla('conexiones_erp: sin sesión tampoco', `select pista from conexiones_erp`, [], /permission denied/)
+await db.exec(`reset role`)
+check('conexiones_erp: ninguna función de la base la lee (no hay un camino indirecto para una persona)', (await val(`select count(*)::int n from pg_proc where prosrc ilike '%conexiones_erp%'`)).n === 0)
+await db.exec(`set role service_role`)
+check('conexiones_erp: el servidor (service_role) sí la lee', (await val(`select count(*)::int n from conexiones_erp`)).n === 2)
+await db.exec(`reset role`)
+
 // ================================================================ Migrar una base que ya tiene datos (0017 en adelante)
 // La base real tiene datos: las migraciones nuevas se aplican sobre una base cargada con las anteriores.
 {

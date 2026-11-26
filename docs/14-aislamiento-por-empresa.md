@@ -69,6 +69,18 @@ La IA recibe en el pedido solo los nombres y CUIT de las empresas de la organiza
 | `demo/src/lib/mails.ts` | Los nombres de las 8 empresas y las casillas de Tesorería. Para otra organización, el mail a un proveedor saldría con el remitente de Vértice |
 | `demo/src/screens/Ralpharma.tsx` | El texto de la bandeja nombra a Droguería Robles, Héctor Robles y Farma Control |
 
+### Credenciales de Xubio en la base (migración 0021)
+
+| Qué | Cómo queda |
+|---|---|
+| `conexiones_erp` | Una fila por empresa y ERP con la credencial de Xubio cifrada (`secreto_cifrado`), los últimos 4 caracteres del identificador (`pista`), cuándo se probó y quién la cargó. Solo acepta texto cifrado. |
+| Quién la lee | Solo el servidor. Ninguna sesión de persona, ni siquiera un administrador: sin permisos para `anon` ni `authenticated` y con RLS sin reglas. Ninguna función de la base la toca. |
+| Cifrado | Lo hace la función de Netlify (`lib/cifrado.ts`): AES-256-GCM con la clave de la variable `CREDENCIALES_CLAVE` (32 bytes en base64). Cada dato queda atado a su empresa: copiado a otra no se descifra. |
+| Cuál se usa | `credencialesDe(db, empresa)`: la de la tabla si hay fila; si no, la de `XUBIO_CREDS_JSON`, como siempre. Si hay fila y no se puede descifrar, da error (no cae en silencio a la variable). |
+| Alta | `POST /api/xubio/credenciales` (`{ empresaId, clientId, secret }`), solo rol ADMIN y para una empresa que ve. Pide un token a Xubio para probarla; si Xubio la rechaza, no guarda nada. Sin `CREDENCIALES_CLAVE`, se rechaza con un mensaje claro y todo sigue con la variable. No hay pantalla todavía (grupo K) |
+| Cambio de clave | Poner la nueva en `CREDENCIALES_CLAVE` y la de antes en `CREDENCIALES_CLAVE_ANTERIOR`. Lo cifrado con la anterior se sigue leyendo y se vuelve a cifrar con la nueva la primera vez que se usa. |
+| Para volver a la variable | `delete from conexiones_erp where empresa_id = '…';` |
+
 La prueba fija está en `npm run test:sql`, sección "Dos organizaciones que no se ven ni se tocan": una segunda organización de mentira con sus empresas, usuarios, proveedores, facturas, pagos, documentos y auditoría. Compara, tabla por tabla, lo que ve cada una con lo que es suyo, y prueba cada acción de negocio contra los datos de la otra. `npm run test:organizaciones` hace lo mismo con las funciones de Netlify.
 
 ## Configurar

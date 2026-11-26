@@ -55,7 +55,7 @@ export default manejar(async (req) => {
   const envioReal = env('XUBIO_ENVIO_REAL', false) === 'true'
   if (echeqAMano && envioReal)
     throw new ErrorHttp(422, `Pago con e-cheq ${pago.numero_cheque}: Xubio no permite crear esta orden de pago por API. Cargala a mano en Xubio (${pago.empresas.nombre}).`)
-  const creds = xubio.credencialesDe(pago.empresas.id)
+  const creds = await xubio.credencialesDe(db, pago.empresas.id)
   const notas: string[] = []
   if (echeqAMano) notas.push('e-cheq: en real hay que cargar la OP a mano en Xubio')
 

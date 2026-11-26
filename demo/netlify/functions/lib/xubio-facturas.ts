@@ -28,9 +28,9 @@ export async function subirFacturaAXubio(db: SupabaseClient, facturaId: string, 
     return { estado: 'ERROR', detalle: motivo }
   }
 
-  const creds = xubio.credencialesDe(f.empresas.id)
+  const creds = await xubio.credencialesDe(db, f.empresas.id)
   if (!creds) {
-    if (real) return fallo(`Faltan las credenciales de Xubio de ${f.empresas.nombre} (XUBIO_CREDS_JSON en Netlify)`)
+    if (real) return fallo(`Faltan las credenciales de Xubio de ${f.empresas.nombre} (ni en la base ni en XUBIO_CREDS_JSON)`)
     return { estado: 'EN_SECO', detalle: `Sin credenciales de Xubio para ${f.empresas.nombre}: no se pudo verificar proveedor ni producto` }
   }
 
