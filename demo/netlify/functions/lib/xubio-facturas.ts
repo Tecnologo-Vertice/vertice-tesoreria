@@ -15,14 +15,18 @@ const masDias = (iso: string, n: number) => {
   return d.toISOString().slice(0, 10)
 }
 
-export async function subirFacturaAXubio(db: SupabaseClient, facturaId: string, usuario: string): Promise<ResultadoXubioFactura> {
+/** Producto de compra del comprobante "Extracto Bancario" cuando la factura no trae código (el neto va a gastos bancarios). */
+export const PRODUCTO_GASTOS_BANCARIOS = 'GASTOS_BANCARIOS'
+
+/** opciones.real: lo decide quien llama (los envíos bancarios usan XUBIO_BANCOS_ENVIO_REAL). Si no, XUBIO_FACTURAS_ENVIO_REAL. */
+export async function subirFacturaAXubio(db: SupabaseClient, facturaId: string, usuario: string, opciones: { real?: boolean } = {}): Promise<ResultadoXubioFactura> {
   const { data: f, error } = await db.from('facturas').select('*, proveedores(nombre, cuit), empresas(id, nombre, erp)').eq('id', facturaId).single()
   if (error || !f) throw new ErrorHttp(404, 'Factura inexistente')
   if (f.empresas.erp !== 'XUBIO') return { estado: 'NO_APLICA', detalle: `${f.empresas.nombre} no usa Xubio: va al sector Ralpharma` }
   if (f.estado_xubio === 'SUBIDA') return { estado: 'SUBIDA', xubioId: f.xubio_id, detalle: 'Ya estaba en Xubio' }
   if (!['PARA_PAGAR', 'PAGADA_PARCIAL', 'PAGADA'].includes(f.estado)) throw new ErrorHttp(409, 'Solo se suben a Xubio facturas aprobadas')
 
-  const real = env('XUBIO_FACTURAS_ENVIO_REAL', false) === 'true'
+  const real = opciones.real ?? env('XUBIO_FACTURAS_ENVIO_REAL', false) === 'true'
   const fallo = async (motivo: string, liberar = true): Promise<ResultadoXubioFactura> => {
     await db.rpc('resultado_factura_xubio', { p_id: f.id, p_estado: 'ERROR', p_xubio_id: null, p_error: motivo, p_usuario: usuario, p_liberar: liberar })
     return { estado: 'ERROR', detalle: motivo }
@@ -46,9 +50,10 @@ export async function subirFacturaAXubio(db: SupabaseClient, facturaId: string, 
 
   const proveedor: Ref | null = elegirProveedor(proveedores, f.proveedores.cuit, f.proveedores.nombre)
   if (!proveedor) return fallo(`El proveedor ${f.proveedores.nombre} (CUIT ${f.proveedores.cuit}) no está dado de alta en el Xubio de ${f.empresas.nombre}`)
-  const producto = elegirProducto(productos, f.codigo_producto, f.cuenta_contable)
+  const codigoProducto: string | null = f.codigo_producto ?? (f.cuenta_origen_extracto_id ? PRODUCTO_GASTOS_BANCARIOS : null)
+  const producto = elegirProducto(productos, codigoProducto, f.cuenta_contable)
   if (!producto)
-    return fallo(`No hay producto de compra en Xubio para la cuenta "${f.cuenta_contable ?? ''}"${f.codigo_producto ? ` ni con el código ${f.codigo_producto}` : ''}. Crear el producto en Xubio o cargar el código en la memoria del proveedor.`)
+    return fallo(`No hay producto de compra en Xubio para la cuenta "${f.cuenta_contable ?? ''}"${codigoProducto ? ` ni con el código ${codigoProducto}` : ''}. Crear el producto en Xubio o cargar el código en la memoria del proveedor.`)
 
   const payload = facturaCompra(f, proveedor, producto)
   const nroDoc = numeroDocumento(f.letra, f.punto_venta, f.numero)

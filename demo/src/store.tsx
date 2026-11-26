@@ -1,7 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { Auditoria, ComprobanteEjemplo, Documento, Empresa, EstadoEspejo, Factura, LecturaComprobante, Pago, Proveedor, Usuario } from './types'
-import type { Bucket, Catalogos, DatosAprobacion, DatosContabilizacion, DatosEdicion, DatosLiberacion, DatosYaPagada, Fuente, NuevoPago } from './data/fuente'
-import { addDays, parseIso, pendiente } from './lib/format'
+import type { Bucket, CambioLinea, Catalogos, DatosAprobacion, DatosContabilizacion, DatosEdicion, DatosLiberacion, DatosTesoreria, DatosYaPagada, Fuente, NuevaProyeccion, NuevoCheque, NuevoPago, ResultadoExtracto } from './data/fuente'
+import type { CategoriaMovimiento, OrigenSaldo, RefLinea, TipoPagoFactura } from './types'
+import { fecha as fmtFecha, money } from './lib/format'
 
 type Toast = { id: number; texto: string; tipo: 'ok' | 'error' | 'info' }
 
@@ -43,6 +44,22 @@ interface Store {
   descartarDocumento: (id: string, motivo: string) => Promise<void>
   reiniciar: () => Promise<void>
   recargar: () => Promise<void>
+  /** Bancos, cheques y Flujo (0023 a 0027). Null mientras carga. */
+  tesoreria: DatosTesoreria | null
+  subirExtracto: (archivo: File, cuentaId: string) => Promise<ResultadoExtracto | null>
+  reclasificarMovimiento: (id: string, categoria: CategoriaMovimiento, cuenta: string | null, aprender: string | null) => Promise<boolean>
+  marcarSinMovimientos: (cuentaId: string, fecha: string, confirmo: boolean) => Promise<boolean>
+  registrarSaldo: (cuentaId: string, fecha: string, saldo: number, origen: Extract<OrigenSaldo, 'TENENCIA' | 'MANUAL'>) => Promise<boolean>
+  generarComprobanteGastos: (cuentaId: string, fecha: string) => Promise<void>
+  generarAsientoBancario: (cuentaId: string, fecha: string) => Promise<void>
+  emitirCheque: (c: NuevoCheque) => Promise<boolean>
+  marcarChequeDebitado: (id: string, numero: string, fecha: string) => Promise<boolean>
+  anularCheque: (id: string, motivo: string) => Promise<boolean>
+  ajustarLineaFlujo: (ref: RefLinea, cambio: CambioLinea, motivo: string) => Promise<boolean>
+  restaurarLineaFlujo: (ref: RefLinea) => Promise<boolean>
+  crearProyeccion: (p: NuevaProyeccion) => Promise<boolean>
+  cancelarProyeccion: (id: string, motivo: string) => Promise<boolean>
+  definirPagoFactura: (id: string, tipoPago: TipoPagoFactura, anticipoPct: number | null, unidadId: string | null) => Promise<boolean>
   toasts: Toast[]
   toast: (texto: string, tipo?: Toast['tipo']) => void
   proveedor: (id?: string) => Proveedor | undefined
@@ -60,6 +77,7 @@ export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fu
   const [documentos, setDocumentos] = useState<Documento[]>([])
   const [catalogos, setCatalogos] = useState<Catalogos>(CATALOGOS_VACIOS)
   const [espejo, setEspejo] = useState<EstadoEspejo[]>([])
+  const [tesoreria, setTesoreria] = useState<DatosTesoreria | null>(null)
   const [usuario, setUsuario] = useState<Usuario>(usuarioInicial)
   const [cargando, setCargando] = useState(true)
   const [toasts, setToasts] = useState<Toast[]>([])
@@ -79,6 +97,8 @@ export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fu
       setDocumentos(d.documentos)
       setCatalogos(d.catalogos)
       setEspejo(d.espejo)
+      // Tesorería se lee aparte: si la base todavía no tiene 0023 a 0027, el resto sigue andando.
+      setTesoreria(await fuente.cargarTesoreria(d.facturas))
     } catch (e) {
       toast(`No se pudieron cargar los datos: ${e instanceof Error ? e.message : e}`, 'error')
     } finally {
@@ -253,12 +273,43 @@ export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fu
         toast('Demo reiniciada', 'info')
       },
       recargar,
+      tesoreria,
+      subirExtracto: (a, c) =>
+        accion(
+          () => fuente.subirExtracto(a, c, usuario),
+          (r) =>
+            r.repetido
+              ? 'Ese archivo ya estaba importado: no se agregó nada'
+              : `Extracto importado: ${r.nuevos} movimiento(s) nuevo(s)${r.movimientos !== undefined ? ` de ${r.movimientos}` : ''}${r.aRevisar ? ` · ${r.aRevisar} a revisar` : ''}`,
+        ),
+      reclasificarMovimiento: async (id, cat, cta, apr) =>
+        (await accion(() => fuente.reclasificarMovimiento(id, cat, cta, apr, usuario).then(() => true), apr ? 'Reclasificado. Regla aprendida: la próxima vez entra sola' : 'Reclasificado')) === true,
+      marcarSinMovimientos: async (c, f, conf) =>
+        (await accion(() => fuente.marcarSinMovimientos(c, f, conf, usuario).then((s) => s), (s) => `Sin movimientos el ${fmtFecha(f)}: se repitió el saldo ${money(s)}`)) !== null,
+      registrarSaldo: async (c, f, s, o) =>
+        (await accion(() => fuente.registrarSaldo(c, f, s, o, usuario).then(() => true), o === 'TENENCIA' ? 'Tenencia cargada: el rendimiento sale solo de la conciliación' : 'Saldo cargado')) === true,
+      generarComprobanteGastos: async (c, f) => {
+        await accion(() => fuente.generarComprobanteGastos(c, f, usuario), (id) => (id ? 'Comprobante de gastos generado: queda para aprobar, ya nace pagado' : 'Ese día no hubo gastos facturables del banco'))
+      },
+      generarAsientoBancario: async (c, f) => {
+        await accion(() => fuente.generarAsientoBancario(c, f, usuario), (id) => (id ? 'Asiento del día generado: queda pendiente de subir a Xubio' : 'Ese día no hubo nada para el asiento'))
+      },
+      emitirCheque: async (c) => (await accion(() => fuente.emitirCheque(c, usuario), 'Cheque emitido: el Flujo lo proyecta en su fecha de pago')) !== null,
+      marcarChequeDebitado: async (id, nro, f) =>
+        (await accion(() => fuente.marcarChequeDebitado(id, nro, f, usuario).then(() => true), `Cheque marcado debitado el ${fmtFecha(f)}: pasa a real en el Flujo`)) === true,
+      anularCheque: async (id, m) => (await accion(() => fuente.anularCheque(id, m, usuario).then(() => true), 'Cheque anulado; queda registrado quién y por qué')) === true,
+      ajustarLineaFlujo: async (ref, c, m) =>
+        (await accion(() => fuente.ajustarLineaFlujo(ref, c, m, usuario).then(() => true), c.eliminar ? 'Línea eliminada del Flujo (se puede restaurar)' : c.fecha ? `Línea movida al ${fmtFecha(c.fecha)}` : 'Importe cambiado')) === true,
+      restaurarLineaFlujo: async (ref) => (await accion(() => fuente.restaurarLineaFlujo(ref, usuario).then(() => true), 'Línea restaurada: vuelve a como la calcula el sistema')) === true,
+      crearProyeccion: async (p) => (await accion(() => fuente.crearProyeccion(p, usuario), 'Proyección creada')) !== null,
+      cancelarProyeccion: async (id, m) => (await accion(() => fuente.cancelarProyeccion(id, m, usuario).then(() => true), 'Proyección cancelada')) === true,
+      definirPagoFactura: async (id, t, pct, u) => (await accion(() => fuente.definirPagoFactura(id, t, pct, u, usuario).then(() => true), 'Forma de pago guardada: el Flujo la proyecta en tramos')) === true,
       toasts,
       toast,
       proveedor: (id) => catalogos.proveedores.find((p) => p.id === id),
       empresa: empresaDe,
     }
-  }, [fuente, cargando, facturas, pagos, auditoria, documentos, catalogos, espejo, usuario, toasts, toast, accion, recargar])
+  }, [fuente, cargando, facturas, pagos, auditoria, documentos, catalogos, espejo, tesoreria, usuario, toasts, toast, accion, recargar])
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
 }
@@ -267,48 +318,4 @@ export function useStore(): Store {
   const s = useContext(Ctx)
   if (!s) throw new Error('useStore fuera del provider')
   return s
-}
-
-/** Proyección semanal: pagos reales + facturas aprobadas por vencer + cheques a acreditar. */
-export function useFlujo(empresaId: string | 'TODAS') {
-  const { facturas, pagos } = useStore()
-  return useMemo(() => {
-    const t = new Date()
-    t.setHours(0, 0, 0, 0)
-    const lunes = new Date(t)
-    const dow = lunes.getDay() === 0 ? 7 : lunes.getDay()
-    lunes.setDate(lunes.getDate() - (dow - 1))
-    const semanas = Array.from({ length: 8 }, (_, i) => {
-      const ini = addDays(lunes, (i - 2) * 7)
-      return { ini, fin: addDays(ini, 6), real: 0, proyectado: 0, cheques: 0, vencido: 0 }
-    })
-    const enRango = (d: Date) => semanas.findIndex((s) => d >= s.ini && d <= s.fin)
-    const filtro = (eid: string) => empresaId === 'TODAS' || eid === empresaId
-    for (const p of pagos) {
-      if (!filtro(p.empresaId) || p.estado === 'ANULADO') continue
-      // Un cheque sale del banco cuando se acredita, no cuando se entrega: va a una sola barra.
-      if (p.fechaAcreditacion) {
-        const j = enRango(parseIso(p.fechaAcreditacion))
-        if (j >= 0) semanas[j].cheques += p.importe
-      } else {
-        const i = enRango(parseIso(p.fecha))
-        if (i >= 0) semanas[i].real += p.importe
-      }
-    }
-    for (const f of facturas) {
-      if (!filtro(f.empresaId)) continue
-      if (f.estado !== 'PARA_PAGAR' && f.estado !== 'PAGADA_PARCIAL') continue
-      if (f.tipo.startsWith('Nota de Cr')) continue
-      const resto = pendiente(f)
-      const v = parseIso(f.vencimiento)
-      if (v < t) {
-        const i = enRango(t)
-        if (i >= 0) semanas[i].vencido += resto
-      } else {
-        const i = enRango(v)
-        if (i >= 0) semanas[i].proyectado += resto
-      }
-    }
-    return semanas
-  }, [facturas, pagos, empresaId])
 }

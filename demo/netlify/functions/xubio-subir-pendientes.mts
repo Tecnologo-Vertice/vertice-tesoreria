@@ -26,8 +26,10 @@ export default async () => {
       console.error('Subidor Xubio:', organizacion, error.message)
       continue
     }
-    for (const f of (data as { id: string }[]) ?? []) {
+    for (const f of (data as { id: string; cuenta_origen_extracto_id?: string | null }[]) ?? []) {
       if (Date.now() - inicio > 18_000) break
+      // El comprobante "Extracto Bancario" lo sube xubio-bancos-pendientes, con su propio interruptor.
+      if (f.cuenta_origen_extracto_id) continue
       try {
         const r = await subirFacturaAXubio(db, f.id, 'Subidor automático')
         console.log('Subidor Xubio:', f.id, r.estado, r.detalle)

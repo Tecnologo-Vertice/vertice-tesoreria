@@ -49,15 +49,17 @@ Desde las migraciones 0023 a 0027, la base es la única fuente de datos de Tesor
 
 | Grupo | Resultado |
 |---|---|
-| `npm run test:sql` (las de siempre, con las migraciones nuevas aplicadas) | 600 OK |
+| `npm run test:sql` (las de siempre, con las migraciones nuevas aplicadas) | 601 OK |
 | `npm run test:tesoreria` (nuevas: importación, reglas, conciliación, FCI, comprobante, asiento, cheques, anticipo, ajustes, control, seguridad) | 82 OK |
+| `npm run test:tesoreria` · `probar_espera_fc.mjs` (0028: pagos sin factura en el Flujo, clave vieja de movimientos) | 29 OK |
+| `npm run test:migracion` (script de migración con planillas ficticias: control, idempotencia, casos) | 50 OK |
 
 Varios casos son los del 26/11 en VBI+ (rendimiento FCI Hipotecario 4,38; Mercado Pago "Sin movimientos"; PFP cancelado; número de cheque), con importes de prueba.
 
 ## Lo que falta para apagar las planillas
 
-1. **Cargar los datos reales** (script de migración, fuera del repo porque son datos reales): cuentas bancarias con su unidad y CUIT, estructura de filas del Flujo de cada pestaña, reglas del Mapa Flujo, proyecciones y planes de pago, cheques emitidos sin debitar, saldos de cierre desde el 02/11 y movimientos de Extractos_Movimientos.
+1. **Cargar los datos reales**: `demo/scripts/migrar-desde-planillas/migrar.mjs` (26/11). Lee las planillas en el momento (IDs y credencial por variables de entorno; nada real en el repo), corre en seco por defecto contra una base PGlite y deja un reporte con conteos y sumas por tabla y empresa. Para escribir: `--escribir --confirmo` con `SUPABASE_DB_URL`. Falta: CUIT de cada banco (no está en ninguna planilla) y las decisiones marcadas [FALTA] en el reporte.
 2. **Funciones de Netlify:** lectores de extracto por banco (Hipotecario, ICBC, Chubut, Brubank, MP, Macro, Galicia, Credicoop, Santander, tenencias FCI) → `importar_extracto`; envío a Xubio de comprobantes, asientos y anulaciones; mail del control diario (8 h, días hábiles); lectura de saldos de Xubio.
 3. **Pantallas:** Bancos (subir extracto, revisar, sin movimientos, conciliación), Cheques y Flujo como grilla editable.
-4. **Pendiente de lógica:** descontar del Flujo los anticipos pagados sin factura (ESPERA_FC), que hoy hace `gas/FlujoCaja.gs`.
+4. ~~Descontar del Flujo los anticipos pagados sin factura (ESPERA_FC)~~: hecho en 0028 (vista `anticipos_sin_factura` + `flujo_lineas`). 0028 además borra la clave vieja de movimientos que 0024 no llegó a borrar (nombre truncado).
 5. **Período en paralelo:** dos semanas con VBI+ y la base a la vez, comparando el control del Flujo día por día antes de apagar las planillas.

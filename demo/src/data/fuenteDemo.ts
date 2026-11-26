@@ -2,6 +2,10 @@
 // Toda la lógica de negocio de acá tiene su equivalente en supabase/migrations/0003_funciones.sql.
 
 import type { Auditoria, ComprobanteEjemplo, Documento, Factura, LecturaComprobante, Pago, Usuario } from '../types'
+import type { CambioLinea, DatosTesoreria, NuevaProyeccion, NuevoCheque, ResultadoExtracto } from './fuente'
+import type { CategoriaMovimiento, Cheque, MovimientoBancario, OrigenSaldo, RefLinea, TipoPagoFactura } from '../types'
+import { reglaPara, tesoreriaInicial, vistaTesoreria, type EstadoTesoreria } from './tesoreriaDemo'
+import { diaHabilAnterior, textoBanco } from '../lib/tesoreria'
 import type { Datos, DatosAprobacion, DatosContabilizacion, DatosEdicion, DatosLiberacion, DatosYaPagada, Fuente, ResultadoLiberacion, ResultadoYaPagada, ResultadoEdicion, NuevoPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
 import {
   auditoriaInicial,
@@ -17,19 +21,23 @@ import {
 import { leerComprobante as leerSimulado, registrarEnXubio } from '../lib/ia'
 import { iso, pendiente } from '../lib/format'
 
-const STORAGE_KEY = 'vertice-demo-v4' // v4: documentos de entrada (Flujo 1)
+const STORAGE_KEY = 'vertice-demo-v5' // v5: Tesorería sin planillas (bancos, cheques, Flujo en grilla)
 
 interface EstadoDemo {
   facturas: Factura[]
   pagos: Pago[]
   auditoria: Auditoria[]
   documentos: Documento[]
+  tesoreria: EstadoTesoreria
   dia: string
 }
 
 function inicial(): EstadoDemo {
+  const hoyIso = iso(new Date())
   return {
-    facturas: FACTURAS_INICIALES,
+    // Una factura de Beratung con "Anticipo 30 % + Cta. Cte." para que el Flujo muestre los dos tramos.
+    facturas: FACTURAS_INICIALES.map((f): Factura => (f.id === 'f026' ? { ...f, tipoPago: 'ANTICIPO_PARCIAL', anticipoPct: 30 } : f)),
+    tesoreria: tesoreriaInicial(hoyIso),
     pagos: PAGOS_INICIALES,
     auditoria: auditoriaInicial(FACTURAS_INICIALES, PAGOS_INICIALES),
     documentos: DOCUMENTOS_INICIALES,
@@ -43,7 +51,7 @@ function leer(): EstadoDemo {
     if (raw) {
       const p = JSON.parse(raw) as EstadoDemo
       // Si cambió el día se regeneran los datos para que los vencimientos sigan relativos a hoy.
-      if (p.dia === iso(new Date()) && p.facturas?.length) return p
+      if (p.dia === iso(new Date()) && p.facturas?.length && p.tesoreria?.cuentas?.length) return p
     }
   } catch {
     /* sin storage */
@@ -70,7 +78,7 @@ export class FuenteDemo implements Fuente {
   }
 
   private commit() {
-    this.e = { ...this.e, facturas: [...this.e.facturas], pagos: [...this.e.pagos], auditoria: [...this.e.auditoria], documentos: [...this.e.documentos] }
+    this.e = { ...this.e, facturas: [...this.e.facturas], pagos: [...this.e.pagos], auditoria: [...this.e.auditoria], documentos: [...this.e.documentos], tesoreria: { ...this.e.tesoreria } }
     guardar(this.e)
   }
 
@@ -435,5 +443,288 @@ export class FuenteDemo implements Fuente {
   async reiniciar() {
     this.e = inicial()
     guardar(this.e)
+  }
+  // ---------------------------------------------------------------- Tesorería (mismas reglas que 0024 a 0026)
+
+  private get t() {
+    return this.e.tesoreria
+  }
+
+  private exigirRol(u: Usuario, roles: Usuario['rol'][]) {
+    if (!roles.includes(u.rol)) throw new Error(`Tu rol (${u.rol}) no puede hacer esto`)
+  }
+
+  async cargarTesoreria(facturas: Factura[]): Promise<DatosTesoreria> {
+    return vistaTesoreria(this.t, facturas, iso(new Date()))
+  }
+
+  async subirExtracto(archivo: File, cuentaId: string, u: Usuario): Promise<ResultadoExtracto> {
+    this.exigirRol(u, ['TESORERIA', 'ADMINISTRACION', 'ADMIN'])
+    await demora(700)
+    const c = this.t.cuentas.find((x) => x.id === cuentaId)
+    if (!c) throw new Error('Cuenta bancaria inexistente')
+    const huella = `${archivo.name}|${archivo.size}`
+    if (this.t.extractos.some((x) => x.cuentaId === cuentaId && x.huella === huella)) return { repetido: true, nuevos: 0, detalle: 'Ese archivo ya se había importado' }
+    // La demo simula el archivo: trae el último día hábil que le falta a la cuenta (hasta ayer).
+    const fer = new Set(this.t.feriados)
+    const ayer = diaHabilAnterior(iso(new Date()), fer)
+    const falta = !this.t.saldos.some((s) => s.cuentaId === cuentaId && s.fecha === ayer)
+    const nuevos: MovimientoBancario[] = []
+    if (falta) {
+      const ant = [...this.t.saldos].filter((s) => s.cuentaId === cuentaId && s.fecha < ayer).sort((a, b) => b.fecha.localeCompare(a.fecha))[0]
+      const filas: [string, number][] = c.rindeDiario ? [['RENDIMIENTO ACREDITADO', Math.round((ant?.saldo ?? 0) * 0.00095 * 100) / 100]] : [['IMP. LEY 25413 DEB 0,6%', -1_250.4], ['COMISION MANTENIMIENTO CUENTA', -4_200], ['IVA 21% S/COMISION', -882]]
+      for (const [desc, imp] of filas) {
+        const r = reglaPara(this.t.reglas, desc, imp)
+        nuevos.push({
+          id: `mv${Date.now()}${nuevos.length}`, empresaId: c.empresaId, cuentaId, fecha: ayer, descripcion: desc, importe: imp,
+          categoria: r?.categoria ?? 'SIN_CLASIFICAR', cuentaContable: r?.cuenta, destinoXubio: r?.destino ?? 'NINGUNO', componente: r?.componente,
+          estado: r ? 'PENDIENTE' : 'A_REVISAR',
+        })
+      }
+      const saldo = Math.round(((ant?.saldo ?? 0) + nuevos.reduce((a, m) => a + m.importe, 0)) * 100) / 100
+      this.t.movimientos = [...this.t.movimientos, ...nuevos]
+      this.t.saldos = [...this.t.saldos.filter((s) => !(s.cuentaId === cuentaId && s.fecha === ayer)), { cuentaId, fecha: ayer, saldo, origen: 'EXTRACTO' }]
+    }
+    this.t.extractos = [
+      { id: `ex${Date.now()}`, cuentaId, archivo: archivo.name, desde: falta ? ayer : undefined, hasta: falta ? ayer : undefined, movimientos: nuevos.length || 12, nuevos: nuevos.length, importadoPor: u.nombre, importadoEn: new Date().toISOString(), huella },
+      ...this.t.extractos,
+    ]
+    this.log(u, { accion: 'IMPORTAR_EXTRACTO', entidad: 'CUENTA', entidadId: cuentaId, detalle: `${c.nombre}: ${nuevos.length} nuevos` })
+    this.commit()
+    return {
+      repetido: false,
+      movimientos: nuevos.length || 12,
+      nuevos: nuevos.length,
+      formato: `${c.banco}_CSV`,
+      aRevisar: nuevos.filter((m) => m.estado === 'A_REVISAR').length,
+      detalle: nuevos.length ? undefined : 'El archivo se superpone con lo ya importado: no hay movimientos nuevos',
+    }
+  }
+
+  async reclasificarMovimiento(id: string, categoria: CategoriaMovimiento, cuenta: string | null, aprender: string | null, u: Usuario) {
+    this.exigirRol(u, ['TESORERIA', 'ADMINISTRACION', 'ADMIN'])
+    const mv = this.t.movimientos.find((m) => m.id === id)
+    if (!mv) throw new Error('Movimiento inexistente')
+    if (mv.estado === 'CONTABILIZADO' || mv.estado === 'CARGADO_A_MANO') throw new Error('El movimiento ya está contabilizado')
+    const asiento = ['IMPUESTO', 'FCI', 'FCI_RENDIMIENTO', 'INTERESES'].includes(categoria)
+    if (aprender?.trim()) {
+      if (!textoBanco(mv.descripcion).includes(textoBanco(aprender))) throw new Error('El texto a aprender no está en la descripción del movimiento')
+      this.t.reglas = [
+        ...this.t.reglas,
+        { orden: 5, patrones: [textoBanco(aprender)], sentido: mv.importe < 0 ? 'DEBITO' : 'CREDITO', categoria, cuenta: cuenta ?? undefined, destino: asiento ? 'ASIENTO' : 'NINGUNO' },
+      ]
+    }
+    this.t.movimientos = this.t.movimientos.map((m) =>
+      m.id === id ? { ...m, categoria, cuentaContable: cuenta ?? undefined, destinoXubio: asiento ? 'ASIENTO' : 'NINGUNO', componente: undefined, estado: 'PENDIENTE', revisadoPor: u.nombre } : m,
+    )
+    this.log(u, { accion: 'RECLASIFICAR', entidad: 'MOVIMIENTO', entidadId: id, detalle: `${categoria} · ${cuenta ?? ''}${aprender ? ` · regla "${aprender}"` : ''}` })
+    this.commit()
+  }
+
+  async marcarSinMovimientos(cuentaId: string, fecha: string, confirmo: boolean, u: Usuario): Promise<number> {
+    this.exigirRol(u, ['TESORERIA', 'ADMINISTRACION', 'ADMIN'])
+    const c = this.t.cuentas.find((x) => x.id === cuentaId)
+    if (!c) throw new Error('Cuenta bancaria inexistente')
+    if (c.rindeDiario && !confirmo) throw new Error(`${c.nombre} rinde todos los días: subí el extracto o confirmá que no hubo rendimiento`)
+    if (this.t.movimientos.some((m) => m.cuentaId === cuentaId && m.fecha === fecha && m.estado !== 'IGNORADO')) throw new Error('Ese día tiene movimientos: no se puede marcar sin movimientos')
+    if (this.t.saldos.some((s) => s.cuentaId === cuentaId && s.fecha === fecha && s.origen !== 'SIN_MOVIMIENTOS')) throw new Error('Ese día ya tiene saldo del banco')
+    const ant = this.t.saldos.filter((s) => s.cuentaId === cuentaId && s.fecha < fecha).sort((a, b) => b.fecha.localeCompare(a.fecha))[0]
+    if (!ant) throw new Error(`No hay un saldo anterior: cargá el saldo de ${c.nombre} a mano`)
+    if (this.t.movimientos.some((m) => m.cuentaId === cuentaId && m.fecha > ant.fecha && m.fecha < fecha && m.estado !== 'IGNORADO'))
+      throw new Error(`Hay movimientos entre ${ant.fecha} y ${fecha} sin saldo de cierre: subí ese extracto primero`)
+    this.t.saldos = [...this.t.saldos.filter((s) => !(s.cuentaId === cuentaId && s.fecha === fecha)), { cuentaId, fecha, saldo: ant.saldo, origen: 'SIN_MOVIMIENTOS' }]
+    this.log(u, { accion: 'SIN_MOVIMIENTOS', entidad: 'CUENTA', entidadId: cuentaId, detalle: `${c.nombre} ${fecha} · saldo ${ant.saldo} (de ${ant.fecha})` })
+    this.commit()
+    return ant.saldo
+  }
+
+  async registrarSaldo(cuentaId: string, fecha: string, saldo: number, origen: Extract<OrigenSaldo, 'TENENCIA' | 'MANUAL'>, u: Usuario) {
+    this.exigirRol(u, ['TESORERIA', 'ADMINISTRACION', 'ADMIN'])
+    const c = this.t.cuentas.find((x) => x.id === cuentaId)
+    if (!c) throw new Error('Cuenta bancaria inexistente')
+    this.t.saldos = [...this.t.saldos.filter((s) => !(s.cuentaId === cuentaId && s.fecha === fecha)), { cuentaId, fecha, saldo: Math.round(saldo * 100) / 100, origen }]
+    this.log(u, { accion: `SALDO_${origen}`, entidad: 'CUENTA', entidadId: cuentaId, detalle: `${c.nombre} ${fecha} · ${saldo}` })
+    this.commit()
+  }
+
+  async generarComprobanteGastos(cuentaId: string, fecha: string, u: Usuario): Promise<string | null> {
+    this.exigirRol(u, ['TESORERIA', 'ADMINISTRACION', 'ADMIN'])
+    const c = this.t.cuentas.find((x) => x.id === cuentaId)
+    if (!c) throw new Error('Cuenta bancaria inexistente')
+    const movs = this.t.movimientos.filter((m) => m.cuentaId === cuentaId && m.fecha === fecha && m.destinoXubio === 'COMPROBANTE' && m.estado !== 'IGNORADO')
+    const total = Math.round(-movs.reduce((a, m) => a + m.importe, 0) * 100) / 100
+    if (total === 0) return null
+    const numero = `09990-${fecha.replace(/-/g, '')}`
+    const prev = this.t.documentos.find((d) => d.tipo === 'COMPROBANTE' && d.cuentaId === cuentaId && d.fecha === fecha)
+    if (prev?.estadoXubio === 'SUBIDA') throw new Error(`El comprobante ${numero} ya está en Xubio: no se regenera`)
+    const id = prev?.id ?? `doc${Date.now()}`
+    this.t.documentos = [...this.t.documentos.filter((d) => d.id !== id), { id, tipo: 'COMPROBANTE', cuentaId, fecha, numero, total, estado: 'PENDIENTE_APROBACION', estadoXubio: 'PENDIENTE' }]
+    this.t.movimientos = this.t.movimientos.map((m) => (movs.some((x) => x.id === m.id) ? { ...m, facturaId: id } : m))
+    this.log(u, { accion: 'COMPROBANTE_GASTOS', entidad: 'CUENTA', entidadId: cuentaId, detalle: `${numero} · ${total}` })
+    this.commit()
+    return id
+  }
+
+  async generarAsientoBancario(cuentaId: string, fecha: string, u: Usuario): Promise<string | null> {
+    this.exigirRol(u, ['TESORERIA', 'ADMINISTRACION', 'ADMIN'])
+    const movs = this.t.movimientos.filter((m) => m.cuentaId === cuentaId && m.fecha === fecha && m.destinoXubio === 'ASIENTO' && m.estado !== 'IGNORADO')
+    if (!movs.length) return null
+    if (movs.some((m) => !m.cuentaContable)) throw new Error('Hay movimientos del asiento sin cuenta contable: clasificalos primero')
+    const prev = this.t.documentos.find((d) => d.tipo === 'ASIENTO' && d.cuentaId === cuentaId && d.fecha === fecha)
+    if (prev?.estadoXubio === 'SUBIDA') throw new Error('El asiento de ese día ya está en Xubio: anulalo para rehacerlo')
+    const id = prev?.id ?? `as${Date.now()}`
+    const total = Math.round(movs.reduce((a, m) => a + Math.abs(m.importe), 0) * 100) / 100
+    this.t.documentos = [...this.t.documentos.filter((d) => d.id !== id), { id, tipo: 'ASIENTO', cuentaId, fecha, total, estado: 'GENERADO', estadoXubio: 'PENDIENTE' }]
+    this.log(u, { accion: 'ASIENTO_BANCARIO', entidad: 'CUENTA', entidadId: cuentaId, detalle: `${fecha} · ${movs.length} movimientos` })
+    this.commit()
+    return id
+  }
+
+  async emitirCheque(n: NuevoCheque, u: Usuario): Promise<string> {
+    this.exigirRol(u, ['TESORERIA', 'ADMINISTRACION', 'ADMIN'])
+    const c = this.t.cuentas.find((x) => x.id === n.cuentaId)
+    if (!c || c.empresaId !== n.empresaId) throw new Error('La chequera es de otra empresa')
+    if (!n.numero.trim()) throw new Error('Falta el número del cheque')
+    if (!(n.importe > 0)) throw new Error('El importe tiene que ser mayor a cero')
+    if (n.fechaPago < n.fechaEmision) throw new Error('La fecha de pago no puede ser anterior a la de emisión')
+    if (this.t.cheques.some((x) => x.cuentaId === n.cuentaId && x.tipo === n.tipo && x.numero === n.numero.trim())) throw new Error(`Ya hay un cheque ${n.numero} en esa chequera`)
+    if (n.pagos.some((p) => this.e.pagos.find((x) => x.id === p.pagoId)?.empresaId !== n.empresaId)) throw new Error('Un pago del lote es de otra empresa')
+    const suma = Math.round(n.pagos.reduce((a, p) => a + p.importe, 0) * 100) / 100
+    if (n.pagos.length && suma !== Math.round(n.importe * 100) / 100) throw new Error(`Los pagos del lote suman ${suma} y el cheque es de ${n.importe}`)
+    const id = `ch${Date.now()}`
+    const ch: Cheque = { id, empresaId: n.empresaId, cuentaId: n.cuentaId, tipo: n.tipo, numero: n.numero.trim(), beneficiario: n.beneficiario.trim(), proveedorId: n.proveedorId, importe: Math.round(n.importe * 100) / 100, fechaEmision: n.fechaEmision, fechaPago: n.fechaPago, estado: 'EMITIDO', origen: n.origen, observaciones: n.observaciones, pagos: n.pagos }
+    this.t.cheques = [...this.t.cheques, ch]
+    this.log(u, { accion: 'EMITIR_CHEQUE', entidad: 'CHEQUE', entidadId: id, detalle: `${n.tipo} ${n.numero} · ${n.importe}` })
+    this.commit()
+    return id
+  }
+
+  async marcarChequeDebitado(id: string, numero: string, fecha: string, u: Usuario) {
+    this.exigirRol(u, ['TESORERIA', 'ADMINISTRACION', 'ADMIN'])
+    const ch = this.t.cheques.find((x) => x.id === id)
+    if (!ch) throw new Error('Cheque inexistente')
+    if (numero.trim() !== ch.numero) throw new Error(`El número no coincide con el cheque (${ch.numero}): no se marcó`)
+    if (ch.estado !== 'EMITIDO' && ch.estado !== 'ENTREGADO') throw new Error(`El cheque está ${ch.estado}`)
+    this.t.cheques = this.t.cheques.map((x): Cheque => (x.id === id ? { ...x, estado: 'DEBITADO', debitadoEn: fecha, marcadoPor: u.nombre } : x))
+    this.log(u, { accion: 'CHEQUE_DEBITADO', entidad: 'CHEQUE', entidadId: id, detalle: `${ch.numero} · ${fecha}` })
+    this.commit()
+  }
+
+  async anularCheque(id: string, motivo: string, u: Usuario) {
+    this.exigirRol(u, ['TESORERIA', 'ADMINISTRACION', 'ADMIN'])
+    if (!motivo.trim()) throw new Error('Falta el motivo')
+    const ch = this.t.cheques.find((x) => x.id === id)
+    if (!ch) throw new Error('Cheque inexistente')
+    if (ch.estado === 'DEBITADO') throw new Error('El cheque ya se debitó: no se anula')
+    this.t.cheques = this.t.cheques.map((x): Cheque => (x.id === id ? { ...x, estado: 'ANULADO', anuladoPor: u.nombre, motivoAnulacion: motivo } : x))
+    this.log(u, { accion: 'ANULAR', entidad: 'CHEQUE', entidadId: id, detalle: motivo })
+    this.commit()
+  }
+
+  /** linea_proyectada_de: lo proyectado sigue proyectado; lo real no se toca. */
+  private empresaDeLinea(ref: RefLinea): string {
+    let empresa: string | undefined
+    let ok = false
+    if (ref.origenTipo === 'FACTURA') {
+      const f = this.e.facturas.find((x) => x.id === ref.origenId)
+      empresa = f?.empresaId
+      ok = !!f && (f.estado === 'PARA_PAGAR' || f.estado === 'PAGADA_PARCIAL')
+    } else if (ref.origenTipo === 'CHEQUE') {
+      const c = this.t.cheques.find((x) => x.id === ref.origenId)
+      empresa = c?.empresaId
+      ok = !!c && (c.estado === 'EMITIDO' || c.estado === 'ENTREGADO')
+    } else if (ref.origenTipo === 'PROYECCION') {
+      const p = this.t.proyecciones.find((x) => x.id === ref.origenId)
+      empresa = p?.empresaId
+      ok = p?.estado === 'ACTIVA'
+    } else {
+      throw new Error('Lo real (pagos, débitos, cobros, movimientos) no se edita desde el Flujo')
+    }
+    if (!empresa) throw new Error('La línea no existe')
+    if (!ok) throw new Error('La línea ya no está proyectada (está pagada, debitada o cancelada)')
+    return empresa
+  }
+
+  async ajustarLineaFlujo(ref: RefLinea, cambio: CambioLinea, motivo: string, u: Usuario) {
+    this.exigirRol(u, ['TESORERIA', 'ADMINISTRACION', 'CONTROLLER', 'ADMIN'])
+    if (!motivo.trim()) throw new Error('Falta el motivo')
+    const empresa = this.empresaDeLinea(ref)
+    if (ref.origenTipo === 'FACTURA' && !['ANTICIPO', 'SALDO'].includes(ref.ocurrencia)) throw new Error('Ocurrencia de factura inválida')
+    if (ref.origenTipo === 'CHEQUE' && ref.ocurrencia !== 'CHEQUE') throw new Error('Ocurrencia de cheque inválida')
+    const hoyIso = iso(new Date())
+    let fecha = cambio.fecha
+    if (fecha && fecha < hoyIso) throw new Error('No se proyecta en el pasado')
+    // Mover el saldo de una factura = cambiar su fecha de pago programada (no el vencimiento).
+    if (ref.origenTipo === 'FACTURA' && ref.ocurrencia === 'SALDO' && fecha && !cambio.eliminar) {
+      const nueva = fecha
+      this.e.facturas = this.e.facturas.map((f): Factura => (f.id === ref.origenId ? { ...f, fechaPago: nueva } : f))
+      fecha = undefined
+      if (cambio.importe === undefined) {
+        this.log(u, { accion: 'FLUJO_MOVER', entidad: 'FACTURA', entidadId: ref.origenId, detalle: `Fecha de pago ${nueva} · ${motivo}` })
+        this.commit()
+        return
+      }
+    }
+    const prev = this.t.ajustes.find((a) => !a.reemplazadoEn && a.origenTipo === ref.origenTipo && a.origenId === ref.origenId && a.ocurrencia === ref.ocurrencia)
+    const ahora = new Date().toISOString()
+    this.t.ajustes = [
+      ...this.t.ajustes.map((a) => (a === prev ? { ...a, reemplazadoEn: ahora } : a)),
+      {
+        id: `aj${Date.now()}`, empresaId: empresa, origenTipo: ref.origenTipo, origenId: ref.origenId, ocurrencia: ref.ocurrencia,
+        fechaNueva: fecha ?? (!cambio.eliminar ? prev?.fechaNueva : undefined),
+        importeNuevo: cambio.importe !== undefined ? Math.abs(cambio.importe) : !cambio.eliminar ? prev?.importeNuevo : undefined,
+        eliminada: !!cambio.eliminar, motivo, creadoPor: u.nombre, creadoEn: ahora,
+      },
+    ]
+    this.log(u, { accion: cambio.eliminar ? 'FLUJO_ELIMINAR' : 'FLUJO_AJUSTAR', entidad: 'FLUJO', entidadId: ref.origenId, detalle: `${ref.ocurrencia} · ${fecha ?? ''} · ${cambio.importe ?? ''} · ${motivo}` })
+    this.commit()
+  }
+
+  async restaurarLineaFlujo(ref: RefLinea, u: Usuario) {
+    this.exigirRol(u, ['TESORERIA', 'ADMINISTRACION', 'CONTROLLER', 'ADMIN'])
+    this.empresaDeLinea(ref)
+    const ahora = new Date().toISOString()
+    this.t.ajustes = this.t.ajustes.map((a) =>
+      !a.reemplazadoEn && a.origenTipo === ref.origenTipo && a.origenId === ref.origenId && a.ocurrencia === ref.ocurrencia ? { ...a, reemplazadoEn: ahora } : a,
+    )
+    this.log(u, { accion: 'FLUJO_RESTAURAR', entidad: 'FLUJO', entidadId: ref.origenId, detalle: ref.ocurrencia })
+    this.commit()
+  }
+
+  async crearProyeccion(p: NuevaProyeccion, u: Usuario): Promise<string> {
+    this.exigirRol(u, ['TESORERIA', 'ADMINISTRACION', 'CONTROLLER', 'ADMIN'])
+    const fila = this.t.filas.find((f) => f.id === p.filaId)
+    const unidad = this.t.unidades.find((x) => x.id === p.unidadId)
+    if (!fila || !unidad || fila.unidadId !== p.unidadId || unidad.empresaId !== p.empresaId) throw new Error('La fila no es de esa unidad o la unidad no es de esa empresa')
+    if (!p.concepto.trim()) throw new Error('Falta el concepto')
+    if (!p.importe) throw new Error('El importe no puede ser cero')
+    if (p.recurrencia !== 'UNICA' && !p.hasta && !p.cuotas) throw new Error('Una proyección recurrente necesita "hasta" o cantidad de cuotas')
+    if (p.recurrencia === 'MENSUAL' && !p.diaMes) throw new Error('Una proyección mensual necesita el día del mes')
+    const id = `pr${Date.now()}`
+    this.t.proyecciones = [...this.t.proyecciones, { ...p, id, estado: 'ACTIVA', creadoPor: u.nombre }]
+    this.log(u, { accion: 'CREAR', entidad: 'PROYECCION', entidadId: id, detalle: `${p.concepto} · ${p.importe}` })
+    this.commit()
+    return id
+  }
+
+  async cancelarProyeccion(id: string, motivo: string, u: Usuario) {
+    this.exigirRol(u, ['TESORERIA', 'ADMINISTRACION', 'CONTROLLER', 'ADMIN'])
+    if (!motivo.trim()) throw new Error('Falta el motivo')
+    if (!this.t.proyecciones.some((p) => p.id === id)) throw new Error('Proyección inexistente')
+    this.t.proyecciones = this.t.proyecciones.map((p) => (p.id === id ? { ...p, estado: 'CANCELADA', nota: [p.nota, motivo].filter(Boolean).join(' · ') } : p))
+    this.log(u, { accion: 'CANCELAR', entidad: 'PROYECCION', entidadId: id, detalle: motivo })
+    this.commit()
+  }
+
+  async definirPagoFactura(id: string, tipoPago: TipoPagoFactura, anticipoPct: number | null, unidadId: string | null, u: Usuario) {
+    this.exigirRol(u, ['TESORERIA', 'ADMINISTRACION', 'ADMIN'])
+    const f = this.e.facturas.find((x) => x.id === id)
+    if (!f) throw new Error('Factura inexistente')
+    if ((tipoPago === 'ANTICIPO_PARCIAL') !== (anticipoPct !== null)) throw new Error('El porcentaje va solo con "Anticipo % + Cta. Cte."')
+    if (anticipoPct !== null && !(anticipoPct > 0 && anticipoPct < 100)) throw new Error('El anticipo tiene que estar entre 0 y 100 %')
+    if (unidadId && !this.t.unidades.some((x) => x.id === unidadId && x.empresaId === f.empresaId)) throw new Error('La unidad es de otra empresa')
+    this.e.facturas = this.e.facturas.map((x): Factura => (x.id === id ? { ...x, tipoPago, anticipoPct: anticipoPct ?? undefined, unidadId: unidadId ?? x.unidadId } : x))
+    this.log(u, { accion: 'FORMA_PAGO', entidad: 'FACTURA', entidadId: id, detalle: `${tipoPago}${anticipoPct !== null ? ` ${anticipoPct} %` : ''}` })
+    this.commit()
   }
 }

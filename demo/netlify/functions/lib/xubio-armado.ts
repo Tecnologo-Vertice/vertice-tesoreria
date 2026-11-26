@@ -22,6 +22,8 @@ export function tipoComprobante(tipo: string): number {
   if (t.startsWith('nota de crédito') || t.startsWith('nota de credito')) return 3
   if (t.startsWith('nota de débito') || t.startsWith('nota de debito')) return 2
   if (t.startsWith('recibo')) return 6
+  // Comprobante de gastos bancarios que sale del extracto (09990-AAAAMMDD). VBI+ lo sube con tipo 8.
+  if (t === 'extracto bancario') return 8
   return 0
 }
 
@@ -44,7 +46,9 @@ export interface FacturaParaXubio {
   iva: number
   exento: number
   total: number
-  percepciones_json: { nombre?: string; codigo?: string; descripcion?: string; importe?: number }[]
+  /** De una factura leída: nombre/código. Del comprobante "Extracto Bancario" (generar_comprobante_gastos):
+   *  tipo (PERCEPCION_IVA o PERCEPCION_IIBB) y cuenta (la de Xubio de la regla del extracto). */
+  percepciones_json: { nombre?: string; codigo?: string; descripcion?: string; importe?: number; tipo?: string; cuenta?: string }[]
   descripcion?: string
 }
 
@@ -52,10 +56,10 @@ export function facturaCompra(f: FacturaParaXubio, proveedor: Ref, producto: Ref
   const percepciones = (f.percepciones_json ?? [])
     .filter((p) => Number(p.importe) > 0)
     .map((p) => ({
-      percepcionImpuesto: { ID: 0, nombre: p.nombre || 'Otro', codigo: p.codigo || 'OTRO', id: 0 },
+      percepcionImpuesto: { ID: 0, nombre: p.nombre || p.cuenta || 'Otro', codigo: p.codigo || p.tipo || 'OTRO', id: 0 },
       transaccionId: 0,
       centroDeCosto: VACIO,
-      descripcion: p.descripcion || p.nombre || 'Percepción',
+      descripcion: p.descripcion || p.nombre || p.cuenta || 'Percepción',
       importe: Number(p.importe),
     }))
   const totalPercepciones = percepciones.reduce((a, p) => a + p.importe, 0)

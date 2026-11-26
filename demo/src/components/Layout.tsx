@@ -5,7 +5,7 @@ import { supabase } from '../lib/supabase'
 import type { EstadoEspejo, Rol } from '../types'
 import { BotonLetra, BotonTema, Desplegable } from './ui'
 
-export type Pantalla = 'vencimientos' | 'aprobacion' | 'pagos' | 'contabilizacion' | 'ralpharma' | 'flujo' | 'auditoria'
+export type Pantalla = 'vencimientos' | 'aprobacion' | 'pagos' | 'cheques' | 'bancos' | 'contabilizacion' | 'ralpharma' | 'flujo' | 'auditoria'
 
 const ROLES: Record<Rol, string> = {
   TESORERIA: 'Tesorería',
@@ -21,6 +21,8 @@ const ICONOS: Record<Pantalla, ReactNode> = {
   vencimientos: <path d="M12 7v5l3 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" />,
   aprobacion: <path d="M9 12l2 2 4-4M7 3h7l5 5v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" />,
   pagos: <path d="M3 9h18M7 15h3M5 5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z" />,
+  cheques: <path d="M3 7h18v10H3zM7 13h6M16 11h2" />,
+  bancos: <path d="M3 10l9-6 9 6M5 10v8M9 10v8M15 10v8M19 10v8M3 20h18" />,
   contabilizacion: <path d="M4 19V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v14l-4-2-4 2-4-2-4 2zM8 8h8M8 12h8" />,
   ralpharma: <path d="M12 3a9 9 0 1 0 0 18V3zM12 3a9 9 0 0 1 0 18" />,
   flujo: <path d="M3 17l5-5 4 4 8-8M15 8h5v5" />,
@@ -35,7 +37,8 @@ interface Item {
 }
 
 export function Layout({ pantalla, onNav, children }: { pantalla: Pantalla; onNav: (p: Pantalla) => void; children: ReactNode }) {
-  const { modo, cargando, usuario, setUsuario, facturas, pagos, documentos, espejo, toasts, reiniciar, recargar, empresa } = useStore()
+  const { modo, cargando, usuario, setUsuario, facturas, pagos, documentos, espejo, toasts, reiniciar, recargar, empresa, tesoreria } = useStore()
+  const hoyT = tesoreria?.hoy ?? ''
 
   const items: Item[] = [
     { id: 'vencimientos', titulo: 'Vencimientos', sub: 'Deuda del grupo' },
@@ -46,6 +49,13 @@ export function Layout({ pantalla, onNav, children }: { pantalla: Pantalla; onNa
       n: facturas.filter((f) => f.estado === 'PENDIENTE_APROBACION' || f.estado === 'ERROR').length + documentos.filter((d) => d.estado === 'ERROR').length,
     },
     { id: 'pagos', titulo: 'Pagos', sub: 'Tesorería', n: facturas.filter((f) => f.estado === 'PARA_PAGAR' || f.estado === 'PAGADA_PARCIAL').length },
+    {
+      id: 'cheques',
+      titulo: 'Cheques',
+      sub: 'Emitidos y a debitar',
+      n: tesoreria?.cheques.filter((c) => (c.estado === 'EMITIDO' || c.estado === 'ENTREGADO') && c.fechaPago < hoyT).length,
+    },
+    { id: 'bancos', titulo: 'Bancos', sub: 'Extractos y conciliación', n: tesoreria?.movimientos.filter((m) => m.estado === 'A_REVISAR').length },
     { id: 'contabilizacion', titulo: 'Contabilización', sub: 'Administración', n: pagos.filter((p) => p.estado === 'CARGADO' || p.estado === 'REVISADO').length },
     {
       id: 'ralpharma',
@@ -55,7 +65,7 @@ export function Layout({ pantalla, onNav, children }: { pantalla: Pantalla; onNa
         facturas.filter((f) => f.estadoXubio === 'PENDIENTE_RALPHARMA' && empresa(f.empresaId).erp === 'RALPHARMA' && ['PARA_PAGAR', 'PAGADA_PARCIAL', 'PAGADA'].includes(f.estado)).length +
         pagos.filter((p) => p.estado === 'PENDIENTE_RALPHARMA').length,
     },
-    { id: 'flujo', titulo: 'Flujo de fondos', sub: 'Real y proyectado' },
+    { id: 'flujo', titulo: 'Flujo de caja', sub: 'Grilla real y proyectada' },
     { id: 'auditoria', titulo: 'Auditoría', sub: 'Quién hizo qué' },
   ]
   const actual = items.find((i) => i.id === pantalla)

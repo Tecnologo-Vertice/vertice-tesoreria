@@ -4,6 +4,26 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Auditoria, ComprobanteEjemplo, CuentaOrigen, Documento, Empresa, EstadoEspejo, Factura, LecturaComprobante, Pago, Proveedor, Usuario } from '../types'
+import type { CambioLinea, DatosTesoreria, NuevaProyeccion, NuevoCheque, ResultadoExtracto } from './fuente'
+import type {
+  CategoriaMovimiento,
+  Cheque,
+  Conciliacion,
+  ControlFlujo,
+  CuentaBancaria,
+  DocumentoBancario,
+  Extracto,
+  FilaFlujo,
+  LineaFlujo,
+  MovimientoBancario,
+  OrigenSaldo,
+  Proyeccion,
+  RefLinea,
+  SaldoBancario,
+  TipoPagoFactura,
+  Unidad,
+} from '../types'
+import { addDays, iso } from '../lib/format'
 import type { Bucket, Datos, DatosAprobacion, DatosContabilizacion, DatosEdicion, DatosLiberacion, DatosYaPagada, Fuente, ResultadoLiberacion, ResultadoYaPagada, ResultadoEdicion, NuevoPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
 import { archivoABase64, llamarFuncion } from '../lib/supabase'
 import { rutaComprobante } from '../lib/rutas'
@@ -11,6 +31,9 @@ import { rutaComprobante } from '../lib/rutas'
 type Row = Record<string, unknown>
 const s = (v: unknown) => (v == null ? undefined : String(v))
 const n = (v: unknown) => (v == null ? 0 : Number(v))
+const nu = (v: unknown) => (v == null ? undefined : Number(v))
+const d10 = (v: unknown) => (v == null ? undefined : String(v).slice(0, 10))
+type Consulta = ReturnType<ReturnType<SupabaseClient['from']>['select']>
 
 function mapFactura(r: Row): Factura {
   return {
@@ -62,6 +85,10 @@ function mapFactura(r: Row): Factura {
     saldoNc: r.saldo_nc == null ? undefined : n(r.saldo_nc),
     yaPagadaSegunAdmin: s(r.ya_pagada_segun_admin),
     mailEnviado: s(r.mail_enviado),
+    tipoPago: s(r.tipo_pago) as Factura['tipoPago'],
+    anticipoPct: nu(r.anticipo_pct),
+    fechaPago: d10(r.fecha_pago),
+    unidadId: s(r.unidad_id),
   }
 }
 
@@ -408,7 +435,370 @@ export class FuenteSupabase implements Fuente {
   async reiniciar() {
     /* no aplica con datos reales */
   }
+  // ---------------------------------------------------------------- Tesorería (0023 a 0027)
+
+  /** Como lista(), con filtros. */
+  private async consulta<T>(tabla: string, map: (r: Row) => T, filtrar: (q: Consulta) => Consulta, orden: [string, 'asc' | 'desc'][], tope = 20000): Promise<T[]> {
+    const PAGINA = 1000
+    const filas: Row[] = []
+    for (let desde = 0; desde < tope; desde += PAGINA) {
+      const hasta = Math.min(desde + PAGINA, tope) - 1
+      let q = filtrar(this.db.from(tabla).select('*'))
+      for (const [col, dir] of orden) q = q.order(col, { ascending: dir === 'asc' })
+      const { data, error } = await q.range(desde, hasta)
+      if (error) throw new Error(`${tabla}: ${error.message}`)
+      filas.push(...(data as Row[]))
+      if ((data as Row[]).length < hasta - desde + 1) break
+    }
+    return filas.map(map)
+  }
+
+  async cargarTesoreria(): Promise<DatosTesoreria> {
+    const hoy = iso(new Date())
+    const desde = iso(addDays(new Date(), -45))
+    const hasta = iso(addDays(new Date(), 200))
+    const todo = (q: Consulta) => q
+    try {
+      const [unidades, cuentas, feriados, movimientos, saldos, conciliacion, asientos, comprobantes, extractos, chequesRaw, chequesPagos, acreedores, filas, lineas, control, proyecciones] = await Promise.all([
+        this.consulta<Unidad>('unidades', (r) => ({ id: String(r.id), empresaId: String(r.empresa_id), nombre: String(r.nombre), porDefecto: Boolean(r.por_defecto), orden: n(r.orden) }), (q) => q.eq('activa', true), [['orden', 'asc'], ['id', 'asc']]),
+        this.consulta<CuentaBancaria>(
+          'cuentas_origen',
+          (r) => ({
+            id: String(r.id),
+            empresaId: String(r.empresa_id),
+            unidadId: s(r.unidad_id),
+            nombre: String(r.nombre),
+            banco: s(r.banco),
+            clase: (s(r.clase) ?? 'CC') as CuentaBancaria['clase'],
+            rindeDiario: Boolean(r.rinde_diario),
+            requiereExtracto: r.requiere_extracto !== false,
+            cuentaMadreId: s(r.cuenta_madre_id),
+            orden: n(r.orden),
+          }),
+          (q) => q.eq('activa', true),
+          [['orden', 'asc'], ['id', 'asc']],
+        ),
+        this.consulta<string>('feriados', (r) => String(r.fecha), (q) => q.gte('fecha', desde), [['fecha', 'asc']]),
+        this.consulta<MovimientoBancario>(
+          'movimientos_bancarios',
+          (r) => ({
+            id: String(r.id),
+            empresaId: String(r.empresa_id),
+            cuentaId: String(r.cuenta_origen_id),
+            fecha: String(r.fecha),
+            descripcion: s(r.descripcion) ?? '',
+            importe: n(r.importe),
+            referencia: s(r.referencia),
+            numeroCheque: s(r.numero_cheque),
+            categoria: (s(r.categoria) ?? 'SIN_CLASIFICAR') as CategoriaMovimiento,
+            cuentaContable: s(r.cuenta_contable),
+            destinoXubio: (s(r.destino_xubio) ?? 'NINGUNO') as MovimientoBancario['destinoXubio'],
+            componente: s(r.componente) as MovimientoBancario['componente'],
+            estado: (s(r.estado) ?? 'A_REVISAR') as MovimientoBancario['estado'],
+            contraparteCuentaId: s(r.contraparte_cuenta_id),
+            pagoId: s(r.pago_id),
+            cobroId: s(r.cobro_id),
+            chequeId: s(r.cheque_id),
+            facturaId: s(r.factura_id),
+            revisadoPor: s(r.revisado_por),
+          }),
+          (q) => q.gte('fecha', desde),
+          [['fecha', 'desc'], ['id', 'asc']],
+        ),
+        this.consulta<SaldoBancario>('saldos_bancarios', (r) => ({ cuentaId: String(r.cuenta_origen_id), fecha: String(r.fecha), saldo: n(r.saldo), origen: String(r.origen) as OrigenSaldo }), (q) => q.gte('fecha', desde), [['fecha', 'asc'], ['cuenta_origen_id', 'asc']]),
+        this.consulta<Conciliacion>(
+          'conciliacion_bancaria',
+          (r) => ({
+            empresaId: String(r.empresa_id),
+            unidadId: s(r.unidad_id),
+            cuentaId: String(r.cuenta_origen_id),
+            cuenta: String(r.cuenta),
+            clase: (s(r.clase) ?? 'CC') as Conciliacion['clase'],
+            fecha: String(r.fecha),
+            fechaAnterior: s(r.fecha_anterior),
+            saldoAnterior: nu(r.saldo_anterior),
+            creditos: n(r.creditos),
+            debitos: n(r.debitos),
+            movimientos: n(r.movimientos),
+            saldoCalculado: nu(r.saldo_calculado),
+            saldoExtracto: nu(r.saldo_extracto),
+            origen: s(r.origen) as OrigenSaldo | undefined,
+            diferencia: nu(r.diferencia),
+            rendimiento: nu(r.rendimiento),
+            saldoXubio: nu(r.saldo_xubio),
+            diferenciaXubio: nu(r.diferencia_xubio),
+            estado: String(r.estado) as Conciliacion['estado'],
+          }),
+          (q) => q.gte('fecha', desde),
+          [['fecha', 'asc'], ['cuenta_origen_id', 'asc']],
+        ),
+        this.consulta<DocumentoBancario>(
+          'asientos',
+          (r) => ({ id: String(r.id), tipo: 'ASIENTO', cuentaId: String(r.cuenta_origen_id), fecha: String(r.fecha), estado: r.anulado_en ? 'ANULADO' : 'GENERADO', estadoXubio: s(r.estado_xubio) }),
+          (q) => q.gte('fecha', desde).eq('tipo', 'BANCARIO_DIARIO').is('anulado_en', null),
+          [['fecha', 'asc'], ['id', 'asc']],
+        ),
+        this.consulta<DocumentoBancario>(
+          'facturas',
+          (r) => ({ id: String(r.id), tipo: 'COMPROBANTE', cuentaId: String(r.cuenta_origen_extracto_id), fecha: String(r.fecha), numero: `09990-${s(r.numero) ?? ''}`, total: n(r.total), estado: String(r.estado), estadoXubio: s(r.estado_xubio) }),
+          (q) => q.gte('fecha', desde).not('cuenta_origen_extracto_id', 'is', null),
+          [['fecha', 'asc'], ['id', 'asc']],
+        ),
+        this.consulta<Extracto>(
+          'extractos',
+          (r) => ({ id: String(r.id), cuentaId: String(r.cuenta_origen_id), archivo: String(r.archivo_nombre), desde: s(r.desde), hasta: s(r.hasta), movimientos: n(r.movimientos), nuevos: n(r.nuevos), importadoPor: String(r.importado_por), importadoEn: String(r.importado_en) }),
+          todo,
+          [['importado_en', 'desc'], ['id', 'asc']],
+          200,
+        ),
+        this.consulta<Row>('cheques', (r) => r, todo, [['fecha_pago', 'desc'], ['id', 'asc']], 3000),
+        this.consulta<{ cheque: string; pago: string; importe: number }>('cheques_pagos', (r) => ({ cheque: String(r.cheque_id), pago: String(r.pago_id), importe: n(r.importe) }), todo, [['cheque_id', 'asc'], ['pago_id', 'asc']]),
+        this.consulta<{ id: string; nombre: string }>('acreedores', (r) => ({ id: String(r.id), nombre: String(r.nombre) }), todo, [['id', 'asc']]),
+        this.consulta<FilaFlujo>(
+          'flujo_filas',
+          (r) => ({
+            id: String(r.id),
+            unidadId: String(r.unidad_id),
+            orden: n(r.orden),
+            tipo: String(r.tipo) as FilaFlujo['tipo'],
+            seccion: String(r.seccion) as FilaFlujo['seccion'],
+            etiqueta: String(r.etiqueta),
+            cuentaContable: s(r.cuenta_contable),
+            padreId: s(r.padre_id),
+            mueveCaja: r.mueve_caja !== false,
+          }),
+          (q) => q.eq('activa', true),
+          [['unidad_id', 'asc'], ['orden', 'asc'], ['id', 'asc']],
+        ),
+        this.consulta<LineaFlujo>(
+          'flujo_lineas',
+          (r) => ({
+            empresaId: String(r.empresa_id),
+            unidadId: String(r.unidad_id),
+            filaId: String(r.fila_id),
+            origenTipo: String(r.origen_tipo) as LineaFlujo['origenTipo'],
+            origenId: String(r.origen_id),
+            ocurrencia: String(r.ocurrencia),
+            naturaleza: String(r.naturaleza) as LineaFlujo['naturaleza'],
+            fecha: String(r.fecha),
+            fechaCalculada: String(r.fecha_calculada ?? r.fecha),
+            importe: n(r.importe),
+            contraparte: s(r.contraparte),
+            concepto: s(r.concepto),
+            vencido: Boolean(r.vencido),
+            ajustada: Boolean(r.ajustada),
+            editable: Boolean(r.editable),
+          }),
+          (q) => q.gte('fecha', desde).lte('fecha', hasta),
+          [['fecha', 'asc'], ['origen_tipo', 'asc'], ['origen_id', 'asc'], ['ocurrencia', 'asc']],
+        ),
+        this.consulta<ControlFlujo>(
+          'flujo_control',
+          (r) => ({
+            unidadId: String(r.unidad_id),
+            fecha: String(r.fecha),
+            fechaAnterior: s(r.fecha_anterior),
+            saldoAnterior: nu(r.saldo_anterior),
+            saldoBancos: n(r.saldo_bancos),
+            realDelPeriodo: n(r.real_del_periodo),
+            diferencia: n(r.diferencia),
+            estado: String(r.estado) as ControlFlujo['estado'],
+          }),
+          (q) => q.gte('fecha', desde),
+          [['unidad_id', 'asc'], ['fecha', 'asc']],
+        ),
+        this.consulta<Proyeccion>(
+          'proyecciones',
+          (r) => ({
+            id: String(r.id),
+            empresaId: String(r.empresa_id),
+            unidadId: String(r.unidad_id),
+            filaId: String(r.fila_id),
+            concepto: String(r.concepto),
+            importe: n(r.importe),
+            fechaInicio: String(r.fecha_inicio),
+            recurrencia: String(r.recurrencia) as Proyeccion['recurrencia'],
+            diaMes: nu(r.dia_mes),
+            hasta: s(r.hasta),
+            cuotas: nu(r.cuotas),
+            ajustePctMensual: n(r.ajuste_pct_mensual),
+            estado: String(r.estado) as Proyeccion['estado'],
+            origen: String(r.origen) as Proyeccion['origen'],
+            nota: s(r.nota),
+            creadoPor: String(r.creado_por),
+          }),
+          (q) => q.neq('estado', 'CANCELADA'),
+          [['fecha_inicio', 'asc'], ['id', 'asc']],
+        ),
+      ])
+      const nombreAcreedor = new Map(acreedores.map((a) => [a.id, a.nombre]))
+      const cheques: Cheque[] = chequesRaw.map((r) => ({
+        id: String(r.id),
+        empresaId: String(r.empresa_id),
+        cuentaId: String(r.cuenta_origen_id),
+        tipo: String(r.tipo) as Cheque['tipo'],
+        numero: String(r.numero),
+        acreedor: r.acreedor_id ? nombreAcreedor.get(String(r.acreedor_id)) : undefined,
+        proveedorId: s(r.proveedor_id),
+        beneficiario: String(r.beneficiario),
+        importe: n(r.importe),
+        fechaEmision: String(r.fecha_emision),
+        fechaPago: String(r.fecha_pago),
+        estado: String(r.estado) as Cheque['estado'],
+        origen: String(r.origen) as Cheque['origen'],
+        debitadoEn: s(r.debitado_en),
+        marcadoPor: s(r.marcado_por),
+        anuladoPor: s(r.anulado_por),
+        motivoAnulacion: s(r.motivo_anulacion),
+        observaciones: s(r.observaciones),
+        pagos: chequesPagos.filter((x) => x.cheque === String(r.id)).map((x) => ({ pagoId: x.pago, importe: x.importe })),
+      }))
+      return {
+        disponible: true,
+        hoy,
+        unidades,
+        cuentas,
+        feriados,
+        movimientos,
+        saldos,
+        conciliacion,
+        documentos: [...asientos, ...comprobantes],
+        extractos,
+        cheques,
+        filas,
+        lineas,
+        control,
+        proyecciones,
+        cuentasContables: [...new Set(filas.map((f) => f.cuentaContable).filter((x): x is string => !!x))].sort((a, b) => a.localeCompare(b)),
+      }
+    } catch (e) {
+      return {
+        disponible: false,
+        error: e instanceof Error ? e.message : String(e),
+        hoy,
+        unidades: [],
+        cuentas: [],
+        feriados: [],
+        movimientos: [],
+        saldos: [],
+        conciliacion: [],
+        documentos: [],
+        extractos: [],
+        cheques: [],
+        filas: [],
+        lineas: [],
+        control: [],
+        proyecciones: [],
+        cuentasContables: [],
+      }
+    }
+  }
+
+  async subirExtracto(archivo: File, cuentaId: string): Promise<ResultadoExtracto> {
+    const data = await archivoABase64(archivo)
+    const r = await llamarFuncion<Record<string, unknown>>('bancos/extracto', { cuentaOrigenId: cuentaId, nombre: archivo.name, mimeType: archivo.type || 'application/octet-stream', data })
+    return {
+      repetido: Boolean(r.repetido),
+      movimientos: nu(r.movimientos),
+      nuevos: n(r.nuevos),
+      formato: s(r.formato),
+      aRevisar: nu(r.a_revisar ?? r.aRevisar),
+      detalle: s(r.detalle),
+    }
+  }
+
+  async reclasificarMovimiento(id: string, categoria: CategoriaMovimiento, cuenta: string | null, aprender: string | null) {
+    await this.rpc('reclasificar_movimiento', { p_id: id, p_categoria: categoria, p_cuenta: cuenta, p_aprender_patron: aprender })
+  }
+
+  async marcarSinMovimientos(cuentaId: string, fecha: string, confirmo: boolean): Promise<number> {
+    return Number(await this.rpc('marcar_sin_movimientos', { p_cuenta: cuentaId, p_fecha: fecha, p_confirmo_sin_rendimiento: confirmo }))
+  }
+
+  async registrarSaldo(cuentaId: string, fecha: string, saldo: number, origen: Extract<OrigenSaldo, 'TENENCIA' | 'MANUAL'>) {
+    await this.rpc('registrar_saldo', { p_cuenta: cuentaId, p_fecha: fecha, p_saldo: saldo, p_origen: origen })
+  }
+
+  async generarComprobanteGastos(cuentaId: string, fecha: string): Promise<string | null> {
+    return (await this.rpc<string | null>('generar_comprobante_gastos', { p_cuenta: cuentaId, p_fecha: fecha })) ?? null
+  }
+
+  async generarAsientoBancario(cuentaId: string, fecha: string): Promise<string | null> {
+    return (await this.rpc<string | null>('generar_asiento_bancario', { p_cuenta: cuentaId, p_fecha: fecha })) ?? null
+  }
+
+  async emitirCheque(c: NuevoCheque): Promise<string> {
+    return this.rpc<string>('emitir_cheque', {
+      p: {
+        empresa_id: c.empresaId,
+        cuenta_origen_id: c.cuentaId,
+        tipo: c.tipo,
+        numero: c.numero,
+        beneficiario: c.beneficiario,
+        proveedor_id: c.proveedorId ?? null,
+        importe: c.importe,
+        fecha_emision: c.fechaEmision,
+        fecha_pago: c.fechaPago,
+        origen: c.origen,
+        observaciones: c.observaciones ?? null,
+        pagos: c.pagos.map((p) => ({ pago_id: p.pagoId, importe: p.importe })),
+      },
+    })
+  }
+
+  async marcarChequeDebitado(id: string, numero: string, fecha: string) {
+    await this.rpc('marcar_cheque_debitado', { p_id: id, p_numero: numero, p_fecha: fecha, p_movimiento: null })
+  }
+
+  async anularCheque(id: string, motivo: string) {
+    await this.rpc('anular_cheque', { p_id: id, p_motivo: motivo })
+  }
+
+  async ajustarLineaFlujo(ref: RefLinea, cambio: CambioLinea, motivo: string) {
+    await this.rpc('ajustar_linea_flujo', {
+      p_tipo: ref.origenTipo,
+      p_id: ref.origenId,
+      p_ocurrencia: ref.ocurrencia,
+      p_fecha: cambio.fecha ?? null,
+      p_importe: cambio.importe ?? null,
+      p_eliminar: cambio.eliminar ?? false,
+      p_motivo: motivo,
+    })
+  }
+
+  async restaurarLineaFlujo(ref: RefLinea) {
+    await this.rpc('restaurar_linea_flujo', { p_tipo: ref.origenTipo, p_id: ref.origenId, p_ocurrencia: ref.ocurrencia })
+  }
+
+  async crearProyeccion(p: NuevaProyeccion): Promise<string> {
+    return this.rpc<string>('crear_proyeccion', {
+      p: {
+        empresa_id: p.empresaId,
+        unidad_id: p.unidadId,
+        fila_id: p.filaId,
+        concepto: p.concepto,
+        importe: p.importe,
+        fecha_inicio: p.fechaInicio,
+        recurrencia: p.recurrencia,
+        dia_mes: p.diaMes ?? null,
+        hasta: p.hasta ?? null,
+        cuotas: p.cuotas ?? null,
+        ajuste_pct_mensual: p.ajustePctMensual,
+        origen: p.origen,
+        nota: p.nota ?? null,
+      },
+    })
+  }
+
+  async cancelarProyeccion(id: string, motivo: string) {
+    await this.rpc('cancelar_proyeccion', { p_id: id, p_motivo: motivo })
+  }
+
+  async definirPagoFactura(id: string, tipoPago: TipoPagoFactura, anticipoPct: number | null, unidadId: string | null) {
+    await this.rpc('definir_pago_factura', { p_id: id, p_tipo_pago: tipoPago, p_anticipo_pct: anticipoPct, p_unidad: unidadId })
+  }
 }
+
 
 /** Usuario actual a partir de la sesión de Supabase y la tabla usuarios. */
 export async function usuarioActual(db: SupabaseClient): Promise<Usuario | null> {

@@ -5,6 +5,23 @@
 
 import type {
   Auditoria,
+  CategoriaMovimiento,
+  Cheque,
+  Conciliacion,
+  ControlFlujo,
+  CuentaBancaria,
+  DocumentoBancario,
+  Extracto,
+  FilaFlujo,
+  LineaFlujo,
+  MovimientoBancario,
+  OrigenSaldo,
+  Proyeccion,
+  RefLinea,
+  SaldoBancario,
+  TipoCheque,
+  TipoPagoFactura,
+  Unidad,
   ComprobanteEjemplo,
   CuentaOrigen,
   Documento,
@@ -103,6 +120,68 @@ export type ResultadoLiberacion = 'CONTABILIZADO' | 'LIBERADO'
 export type NuevoPago = Omit<Pago, 'id' | 'estado' | 'cargadoPor' | 'cargadoEn'>
 export type ResultadoXubio = { ok: true; id: string; enSeco: boolean; detalle?: string } | { ok: false; error: string }
 
+// ---------------------------------------------------------------- Tesorería sin planillas
+
+/** Bancos, cheques y Flujo. Conectado sale de las tablas y vistas de las migraciones 0023 a 0027. */
+export interface DatosTesoreria {
+  /** False si la base todavía no tiene las migraciones 0023 a 0027 (las pantallas lo avisan). */
+  disponible: boolean
+  error?: string
+  /** Hoy según la base (current_date). En demo, hoy del navegador. */
+  hoy: string
+  unidades: Unidad[]
+  cuentas: CuentaBancaria[]
+  feriados: string[]
+  movimientos: MovimientoBancario[]
+  saldos: SaldoBancario[]
+  conciliacion: Conciliacion[]
+  documentos: DocumentoBancario[]
+  extractos: Extracto[]
+  cheques: Cheque[]
+  filas: FilaFlujo[]
+  lineas: LineaFlujo[]
+  control: ControlFlujo[]
+  proyecciones: Proyeccion[]
+  /** Cuentas contables para reclasificar (plan común + las usadas en el Flujo). */
+  cuentasContables: string[]
+}
+
+/** Respuesta de POST /api/bancos/extracto (importar_extracto). */
+export interface ResultadoExtracto {
+  repetido: boolean
+  movimientos?: number
+  nuevos: number
+  /** Formato que reconoció el lector (HIPOTECARIO_CSV, BRUBANK_XLSX…), si lo informa. */
+  formato?: string
+  /** Movimientos que entraron sin regla: quedan en "A revisar". */
+  aRevisar?: number
+  detalle?: string
+}
+
+export interface NuevoCheque {
+  empresaId: string
+  cuentaId: string
+  tipo: TipoCheque
+  numero: string
+  beneficiario: string
+  proveedorId?: string
+  importe: number
+  fechaEmision: string
+  fechaPago: string
+  origen: 'PAGO' | 'FINANCIERA' | 'MANUAL'
+  observaciones?: string
+  pagos: { pagoId: string; importe: number }[]
+}
+
+export interface CambioLinea {
+  fecha?: string
+  /** En positivo: el signo lo pone la línea. */
+  importe?: number
+  eliminar?: boolean
+}
+
+export type NuevaProyeccion = Omit<Proyeccion, 'id' | 'estado' | 'creadoPor'>
+
 export interface Fuente {
   modo: 'demo' | 'conectado'
   cargar(): Promise<Datos>
@@ -148,4 +227,25 @@ export interface Fuente {
   marcarFacturaRalpharma(id: string, u: Usuario): Promise<void>
   descartarDocumento(id: string, motivo: string, u: Usuario): Promise<void>
   reiniciar(): Promise<void>
+
+  // Tesorería (0023 a 0027). Toda escritura pasa por las funciones de la base.
+  cargarTesoreria(facturas: Factura[]): Promise<DatosTesoreria>
+  /** Sube el archivo del banco a POST /api/bancos/extracto (el lector por banco lo arma el servidor). */
+  subirExtracto(archivo: File, cuentaId: string, u: Usuario): Promise<ResultadoExtracto>
+  reclasificarMovimiento(id: string, categoria: CategoriaMovimiento, cuenta: string | null, aprenderPatron: string | null, u: Usuario): Promise<void>
+  /** Repite el saldo anterior. Devuelve el saldo que quedó. */
+  marcarSinMovimientos(cuentaId: string, fecha: string, confirmoSinRendimiento: boolean, u: Usuario): Promise<number>
+  registrarSaldo(cuentaId: string, fecha: string, saldo: number, origen: Extract<OrigenSaldo, 'TENENCIA' | 'MANUAL'>, u: Usuario): Promise<void>
+  /** Devuelve el id del comprobante, o null si ese día no hubo nada facturable. */
+  generarComprobanteGastos(cuentaId: string, fecha: string, u: Usuario): Promise<string | null>
+  /** Devuelve el id del asiento, o null si ese día no hubo nada para el asiento. */
+  generarAsientoBancario(cuentaId: string, fecha: string, u: Usuario): Promise<string | null>
+  emitirCheque(c: NuevoCheque, u: Usuario): Promise<string>
+  marcarChequeDebitado(id: string, numero: string, fecha: string, u: Usuario): Promise<void>
+  anularCheque(id: string, motivo: string, u: Usuario): Promise<void>
+  ajustarLineaFlujo(ref: RefLinea, cambio: CambioLinea, motivo: string, u: Usuario): Promise<void>
+  restaurarLineaFlujo(ref: RefLinea, u: Usuario): Promise<void>
+  crearProyeccion(p: NuevaProyeccion, u: Usuario): Promise<string>
+  cancelarProyeccion(id: string, motivo: string, u: Usuario): Promise<void>
+  definirPagoFactura(id: string, tipoPago: TipoPagoFactura, anticipoPct: number | null, unidadId: string | null, u: Usuario): Promise<void>
 }

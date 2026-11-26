@@ -166,6 +166,21 @@ export async function post(t: Token, path: string, payload: unknown): Promise<{ 
   return enviar('POST', t, path, payload)
 }
 
+/**
+ * DELETE de un recurso de Xubio (hoy solo lo usa la anulación de asientos, lib/xubio-bancos.ts).
+ * Si tira error (sin respuesta a tiempo o sin conexión), no se sabe si Xubio lo borró.
+ */
+export async function borrar(t: Token, path: string): Promise<{ status: number; body: unknown }> {
+  const r = await pedir(`DELETE ${path}`, API + path, { method: 'DELETE', headers: { Authorization: `${t.token_type} ${t.access_token}`, Accept: 'application/json' } })
+  let body: unknown = r.texto
+  try {
+    body = r.texto ? JSON.parse(r.texto) : null
+  } catch {
+    /* texto plano */
+  }
+  return { status: r.status, body }
+}
+
 /** Si tira error (sin respuesta a tiempo o sin conexión), no se sabe si Xubio creó el comprobante. */
 async function enviar(metodo: 'POST' | 'PUT', t: Token, path: string, payload: unknown): Promise<{ status: number; body: unknown }> {
   const r = await pedir(`${metodo} ${path}`, API + path, {

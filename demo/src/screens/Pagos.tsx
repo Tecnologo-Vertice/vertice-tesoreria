@@ -3,6 +3,7 @@ import { useStore } from '../store'
 import { Badge, BadgeVencimiento, Btn, Desplegable, Empty, Field, inputCls, Modal, SelectorCuenta, Tabs } from '../components/ui'
 import { cuentasOrigenDe, cuentasPara, enLista } from '../lib/cuentas'
 import { useFiltro } from '../components/Filtros'
+import { ModalFormaPago, etiquetaFormaPago } from '../components/Tesoreria'
 import { addDays, diasHasta, fecha, fmtCuit, iso, money, nroComprobante, parseIso, pendiente } from '../lib/format'
 import { formaDeCarga, sugerirCuenta, type Sugerencia } from '../lib/ia'
 import { puede } from '../lib/permisos'
@@ -37,6 +38,7 @@ export function Pagos() {
   const [ncModal, setNcModal] = useState<string | null>(null)
   const [selPagadas, setSelPagadas] = useState<string[]>([])
   const [mailsModal, setMailsModal] = useState<string[] | null>(null)
+  const [formaPago, setFormaPago] = useState<Factura | null>(null)
 
   const paraPagar = useMemo(
     () => facturas.filter((f) => f.estado === 'PARA_PAGAR' || f.estado === 'PAGADA_PARCIAL').sort((a, b) => diasHasta(a.vencimiento) - diasHasta(b.vencimiento)),
@@ -122,6 +124,7 @@ export function Pagos() {
                     {f.pagadoPct > 0 && !esNc && <Badge tone="azul">{f.pagadoPct}% pagado</Badge>}
                     {esNc && <Badge tone="verde">Nota de crédito · saldo {money(f.saldoNc ?? f.total)}</Badge>}
                     {f.yaPagadaSegunAdmin && <Badge tone="naranja" title={f.yaPagadaSegunAdmin}>Ya pagada: falta el comprobante</Badge>}
+                    {etiquetaFormaPago(f) && <Badge tone="azul">{etiquetaFormaPago(f)}</Badge>}
                   </div>
                   <p className="font-semibold truncate">{p?.nombre ?? f.proveedorId}</p>
                   <p className="text-xs text-seco">
@@ -137,6 +140,17 @@ export function Pagos() {
                       className="text-[0.6875rem] text-acento underline mt-0.5 mr-3"
                     >
                       Aplicar a una factura
+                    </button>
+                  )}
+                  {!esNc && puedePagar && (
+                    <button
+                      onClick={(ev) => {
+                        ev.stopPropagation()
+                        setFormaPago(f)
+                      }}
+                      className="text-[0.6875rem] text-acento underline mt-0.5 mr-3"
+                    >
+                      Forma de pago
                     </button>
                   )}
                   {puedeXubio && e.erp === 'XUBIO' && (f.estadoXubio === 'PENDIENTE' || f.estadoXubio === 'ERROR') && (
@@ -204,6 +218,7 @@ export function Pagos() {
         </div>
       )}
 
+      {formaPago && <ModalFormaPago factura={formaPago} onClose={() => setFormaPago(null)} />}
       {ncModal && <ModalAplicarNc ncId={ncModal} onClose={() => setNcModal(null)} />}
       {mailsModal && (
         <ModalMails

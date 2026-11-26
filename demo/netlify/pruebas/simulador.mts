@@ -103,6 +103,10 @@ async function supabase(m: Mundo, p: Pedido, req: { headers: Headers }): Promise
     }
     const originales = filas.filter((f) => cumple(completar(m, tabla, f), filtros))
     if (p.metodo === 'PATCH') for (const f of originales) Object.assign(f, p.cuerpo as Fila)
+    if (p.metodo === 'DELETE') {
+      m.tablas[tabla] = filas.filter((f) => !originales.includes(f))
+      return responder(null, 204)
+    }
     if (p.metodo !== 'GET' && p.metodo !== 'PATCH') return responder({ message: `El simulador no atiende ${p.metodo}` }, 405)
     const elegidas = originales.map((f) => completar(m, tabla, f))
     if ((req.headers.get('accept') ?? '').includes('vnd.pgrst.object')) {

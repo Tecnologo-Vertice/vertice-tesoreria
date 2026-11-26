@@ -106,7 +106,17 @@ export interface Factura {
   mailEnviado?: string
   /** Notas de crédito aplicadas a esta factura. */
   ncAplicadas?: { ncId: string; importe: number }[]
+  /** Forma de pago (definir_pago_factura): cuenta corriente, anticipado o anticipo % + cuenta corriente. */
+  tipoPago?: TipoPagoFactura
+  /** Con ANTICIPO_PARCIAL: el porcentaje que se paga por adelantado (el resto, al vencimiento). */
+  anticipoPct?: number
+  /** Fecha de pago programada (la que mueve el Flujo). No es el vencimiento. */
+  fechaPago?: string
+  /** Pestaña del Flujo donde cae. Sin dato: la unidad por defecto de la empresa. */
+  unidadId?: string
 }
+
+export type TipoPagoFactura = 'CUENTA_CORRIENTE' | 'ANTICIPADO' | 'ANTICIPO_PARCIAL'
 
 export interface Percepcion {
   nombre: string
@@ -204,7 +214,7 @@ export interface Auditoria {
   usuario: string
   rol: Rol
   accion: string
-  entidad: 'FACTURA' | 'PAGO' | 'SISTEMA'
+  entidad: 'FACTURA' | 'PAGO' | 'SISTEMA' | 'CHEQUE' | 'MOVIMIENTO' | 'CUENTA' | 'PROYECCION' | 'FLUJO'
   entidadId: string
   detalle: string
 }
@@ -245,4 +255,250 @@ export interface ComprobanteEjemplo {
   nombre: string
   descripcion: string
   lectura: LecturaComprobante
+}
+
+// ---------------------------------------------------------------- Tesorería sin planillas (migraciones 0023 a 0027)
+
+/** Una pestaña del Flujo (Beratung S/Dax, Dax Salud, India…). */
+export interface Unidad {
+  id: string
+  empresaId: string
+  nombre: string
+  porDefecto: boolean
+  orden: number
+}
+
+export type ClaseCuenta = 'CC' | 'CA' | 'FCI' | 'REMUNERADA' | 'BILLETERA' | 'CAJA' | 'ECHEQ' | 'TARJETA'
+
+/** cuentas_origen con los datos de banco (0023). */
+export interface CuentaBancaria {
+  id: string
+  empresaId: string
+  unidadId?: string
+  nombre: string
+  banco?: string
+  clase: ClaseCuenta
+  /** Rinde todos los días (Mercado Pago, remunerada): "Sin movimientos" pide confirmación. */
+  rindeDiario: boolean
+  requiereExtracto: boolean
+  cuentaMadreId?: string
+  orden: number
+}
+
+export type CategoriaMovimiento =
+  | 'SIN_CLASIFICAR'
+  | 'PAGO'
+  | 'COBRO'
+  | 'IMPUESTO'
+  | 'GASTO_BANCARIO'
+  | 'FCI'
+  | 'FCI_RENDIMIENTO'
+  | 'TRANSFERENCIA_PROPIA'
+  | 'CHEQUE_PAGADO'
+  | 'INTERESES'
+  | 'PRESTAMO'
+  | 'INFORMATIVO'
+
+export type EstadoMovimiento = 'A_REVISAR' | 'PENDIENTE' | 'CONTABILIZADO' | 'CARGADO_A_MANO' | 'INFORMATIVO' | 'IGNORADO'
+export type DestinoXubio = 'COMPROBANTE' | 'ASIENTO' | 'NINGUNO'
+
+export interface MovimientoBancario {
+  id: string
+  empresaId: string
+  cuentaId: string
+  fecha: string
+  descripcion: string
+  importe: number
+  referencia?: string
+  numeroCheque?: string
+  categoria: CategoriaMovimiento
+  cuentaContable?: string
+  destinoXubio: DestinoXubio
+  componente?: 'NETO' | 'IVA' | 'PERCEPCION_IVA' | 'PERCEPCION_IIBB'
+  estado: EstadoMovimiento
+  /** Otra cuenta propia (FCI, remunerada, transferencia entre cuentas). */
+  contraparteCuentaId?: string
+  pagoId?: string
+  cobroId?: string
+  chequeId?: string
+  /** Comprobante "Extracto Bancario" donde quedó. */
+  facturaId?: string
+  /** Solo demo: a quién se le pagó o quién cobró (en la base sale del pago o del cobro). */
+  contraparte?: string
+  revisadoPor?: string
+}
+
+export type OrigenSaldo = 'EXTRACTO' | 'TENENCIA' | 'SIN_MOVIMIENTOS' | 'MANUAL'
+
+export interface SaldoBancario {
+  cuentaId: string
+  fecha: string
+  saldo: number
+  origen: OrigenSaldo
+}
+
+export type EstadoConciliacion = 'OK' | 'DIFERENCIA' | 'SIN_EXTRACTO' | 'SIN_MOVIMIENTOS' | 'PRIMER_SALDO'
+
+/** Una fila de la vista conciliacion_bancaria: banco vs calculado vs Xubio, por cuenta y día. */
+export interface Conciliacion {
+  empresaId: string
+  unidadId?: string
+  cuentaId: string
+  cuenta: string
+  clase: ClaseCuenta
+  fecha: string
+  fechaAnterior?: string
+  saldoAnterior?: number
+  creditos: number
+  debitos: number
+  movimientos: number
+  saldoCalculado?: number
+  saldoExtracto?: number
+  origen?: OrigenSaldo
+  diferencia?: number
+  rendimiento?: number
+  saldoXubio?: number
+  diferenciaXubio?: number
+  estado: EstadoConciliacion
+}
+
+/** Comprobante "Extracto Bancario" (09990-AAAAMMDD) o asiento del día, por cuenta y fecha. */
+export interface DocumentoBancario {
+  id: string
+  tipo: 'COMPROBANTE' | 'ASIENTO'
+  cuentaId: string
+  fecha: string
+  numero?: string
+  total?: number
+  estado: string
+  estadoXubio?: string
+}
+
+export interface Extracto {
+  id: string
+  cuentaId: string
+  archivo: string
+  desde?: string
+  hasta?: string
+  movimientos: number
+  nuevos: number
+  importadoPor: string
+  importadoEn: string
+}
+
+export type TipoCheque = 'FISICO' | 'ECHEQ' | 'PAGARE'
+export type EstadoCheque = 'EMITIDO' | 'ENTREGADO' | 'DEBITADO' | 'ANULADO' | 'RECHAZADO'
+
+export interface Cheque {
+  id: string
+  empresaId: string
+  cuentaId: string
+  tipo: TipoCheque
+  numero: string
+  acreedor?: string
+  proveedorId?: string
+  beneficiario: string
+  importe: number
+  fechaEmision: string
+  fechaPago: string
+  estado: EstadoCheque
+  origen: 'PAGO' | 'FINANCIERA' | 'MANUAL'
+  debitadoEn?: string
+  marcadoPor?: string
+  anuladoPor?: string
+  motivoAnulacion?: string
+  observaciones?: string
+  /** Pagos del lote que cubre (cheques_pagos). */
+  pagos: { pagoId: string; importe: number }[]
+}
+
+export type SeccionFlujo =
+  | 'INGRESOS_OPERATIVOS'
+  | 'COSTOS'
+  | 'GASTOS_OPERATIVOS'
+  | 'IMPUESTOS'
+  | 'CAPEX'
+  | 'INGRESOS_FINANCIEROS'
+  | 'TOMA_DEUDA'
+  | 'DEVOLUCION_DEUDA'
+  | 'SOCIOS'
+  | 'INTERCOMPANY'
+  | 'ENTRE_CUENTAS'
+  | 'SIN_CLASIFICAR'
+
+export interface FilaFlujo {
+  id: string
+  unidadId: string
+  orden: number
+  tipo: 'SECCION' | 'CUENTA' | 'APERTURA' | 'INTERNO'
+  seccion: SeccionFlujo
+  etiqueta: string
+  cuentaContable?: string
+  padreId?: string
+  mueveCaja: boolean
+}
+
+export type OrigenLinea = 'PAGO' | 'CHEQUE' | 'COBRO' | 'MOVIMIENTO' | 'RENDIMIENTO' | 'FACTURA' | 'PROYECCION'
+
+/** Una línea de la vista flujo_lineas. Cada celda de la grilla es la suma de sus líneas. */
+export interface LineaFlujo {
+  empresaId: string
+  unidadId: string
+  filaId: string
+  origenTipo: OrigenLinea
+  origenId: string
+  /** ANTICIPO · SALDO (facturas) · CHEQUE · fecha (proyecciones) · PAGO, MOVIMIENTO, CONTRAPARTE… (real). */
+  ocurrencia: string
+  naturaleza: 'REAL' | 'PROYECTADO'
+  fecha: string
+  fechaCalculada: string
+  importe: number
+  contraparte?: string
+  concepto?: string
+  vencido: boolean
+  ajustada: boolean
+  editable: boolean
+}
+
+/** Identifica una línea proyectada para moverla, editarla, eliminarla o restaurarla. */
+export interface RefLinea {
+  origenTipo: 'FACTURA' | 'CHEQUE' | 'PROYECCION'
+  origenId: string
+  ocurrencia: string
+}
+
+export type EstadoControlFlujo = 'OK' | 'F' | 'PRIMER_SALDO'
+
+/** Vista flujo_control: el cambio en los bancos contra lo real del período, por unidad y día. */
+export interface ControlFlujo {
+  unidadId: string
+  fecha: string
+  fechaAnterior?: string
+  saldoAnterior?: number
+  saldoBancos: number
+  realDelPeriodo: number
+  diferencia: number
+  estado: EstadoControlFlujo
+}
+
+export type Recurrencia = 'UNICA' | 'SEMANAL' | 'QUINCENAL' | 'MENSUAL'
+
+export interface Proyeccion {
+  id: string
+  empresaId: string
+  unidadId: string
+  filaId: string
+  concepto: string
+  /** Con signo: negativo = egreso. */
+  importe: number
+  fechaInicio: string
+  recurrencia: Recurrencia
+  diaMes?: number
+  hasta?: string
+  cuotas?: number
+  ajustePctMensual: number
+  estado: 'ACTIVA' | 'PAUSADA' | 'CANCELADA'
+  origen: 'MANUAL' | 'GASTO_FIJO' | 'PLAN_PAGO' | 'PRESTAMO' | 'SUELDOS' | 'COBRANZA'
+  nota?: string
+  creadoPor: string
 }
