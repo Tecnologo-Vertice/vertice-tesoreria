@@ -8,9 +8,13 @@ import { cuentasDesdeXubio, origenDesdePagos, type CuentaXubio, type PagoXubio }
 
 const iso = (d: Date) => d.toISOString().slice(0, 10)
 
-/** Lee Xubio de cada empresa con credenciales y guarda. Devuelve una línea por empresa (como el log del Apps Script). */
-export async function cargarCatalogosXubio(db: SupabaseClient): Promise<string[]> {
-  const { data: empresas, error } = await db.from('empresas').select('id, nombre, erp').eq('erp', 'XUBIO').eq('activa', true)
+/**
+ * Lee Xubio de cada empresa con credenciales y guarda. Devuelve una línea por empresa (como el log del Apps Script).
+ * `soloEmpresas`: cuando lo pide una persona, las empresas que ve. Sin lista (tarea programada), todas.
+ */
+export async function cargarCatalogosXubio(db: SupabaseClient, soloEmpresas?: string[]): Promise<string[]> {
+  const consulta = db.from('empresas').select('id, nombre, erp').eq('erp', 'XUBIO').eq('activa', true)
+  const { data: empresas, error } = await (soloEmpresas ? consulta.in('id', soloEmpresas) : consulta)
   if (error) throw new Error(error.message)
   const log: string[] = []
   const cuentas: ReturnType<typeof cuentasDesdeXubio> = []

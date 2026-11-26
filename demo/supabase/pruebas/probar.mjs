@@ -18,7 +18,7 @@ const como = (email) => db.query(`select set_config('request.jwt.claims', $1, fa
 
 // --- Supabase mínimo: roles, auth.users, auth.jwt(), storage.
 await db.exec(`
-  create role anon; create role authenticated; create role service_role;
+  create role anon; create role authenticated; create role service_role bypassrls; -- como en Supabase: la clave de servicio salta el RLS
   create schema auth; create schema storage;
   create table auth.users (id uuid primary key default gen_random_uuid(), email text);
   create function auth.jwt() returns jsonb language sql stable as $$ select coalesce(nullif(current_setting('request.jwt.claims', true), ''), '{}')::jsonb $$;
@@ -531,6 +531,83 @@ check('flujo: cheque a N días como lo lee FlujoCaja.gs', fl.facturas.every((x) 
 const pagoFl = fl.pagos.find((x) => x.ID_PAGO === pCh)
 check('flujo: pagos con número de cheque y fecha de cobro', pagoFl && pagoFl.NUMERO_CHEQUE === '0012345' && pagoFl.FECHA_VTO_CHEQUE === '2026-12-15' && pagoFl.TIPO_CHEQUE === 'ECHEQ' && pagoFl.FACTURA_ASOCIADA === '8001')
 check('flujo: anulados marcados ANULADO', fl.pagos.some((x) => x.ID_PAGO === pAn1 && x.ESTADO_CONTABLE === 'ANULADO'))
+
+// ================================================================ Control que falla cerrado y documentos por empresa (0013)
+await db.exec(`reset role`)
+check('conexión directa (editor SQL, migraciones) cuenta como servidor', (await val(`select es_servidor() s`)).s === true)
+await db.exec(`set role postgres`)
+check('…también si el editor pone el rol postgres a mano', (await val(`select es_servidor() s`)).s === true)
+await db.exec(`reset role`)
+// Un rol que no es ni el de las personas ni el del servidor: el control por empresa tiene que actuar igual.
+// Antes de 0013 solo actuaba si el rol se llamaba 'authenticated' y con cualquier otro dejaba pasar todo.
+await db.exec(`create role rol_nuevo; grant usage on schema public, auth to rol_nuevo; grant execute on function es_servidor() to rol_nuevo`)
+await db.exec(`set role rol_nuevo`)
+check('un rol desconocido no cuenta como servidor', (await val(`select es_servidor() s`)).s === false)
+await como('aprob.india@verticebi.com')
+await falla('rol desconocido: el control de empresa rechaza la aprobación de otra empresa', `select aprobar_factura($1, 'SEGUROS', 'TRANSFERENCIA')`, [fBer], /acceso a la empresa beratung/)
+await falla('rol desconocido: tampoco deja tocar un documento sin empresa', `select reintentar_documento($1)`, [d5.id], /acceso a este documento/)
+await como('teso.india@verticebi.com')
+await falla('rol desconocido: no carga pagos en otra empresa', `select registrar_pago($1)`, [pago({ importe: 10 })], /acceso a la empresa beratung/)
+await falla('rol desconocido: no anula pagos de otra empresa (ni ve su estado)', `select anular_pago($1, 'x')`, [pCont], /acceso a la empresa ysd/)
+await como('')
+await falla('rol desconocido y sin sesión: no pasa nada', `select aprobar_factura($1, 'SEGUROS', 'TRANSFERENCIA')`, [fBer], /no habilitada|acceso/)
+await db.exec(`reset role`)
+check('la factura de Beratung sigue sin aprobar', (await val(`select estado from facturas where id = $1`, [fBer])).estado === 'PENDIENTE_APROBACION')
+await db.exec(`set role authenticated`)
+check('una persona con sesión no cuenta como servidor', (await db.query(`select 1`)).rows.length === 1 && !(await val(`select has_function_privilege('authenticated', 'es_servidor()', 'execute') p`)).p)
+await db.exec(`reset role`)
+
+// El servidor de verdad entra con el rol service_role: ingesta, copia de la hoja y cola siguen andando.
+await db.exec(`set role service_role`)
+await como('')
+check('service_role cuenta como servidor', (await val(`select es_servidor() s`)).s === true)
+const fSrv = (await val(`select ingresar_factura($1) id`, [factura({ empresa_id: 'controlb', numero: 9201, total: 100, neto: 100, iva: 0 })])).id
+check('service_role: la ingesta escribe en cualquier empresa', !!fSrv)
+e1 = await espFact([filaF({ _fila: 40, NUMERO: '00007-00000360' })])
+check('service_role: la copia de la hoja crea facturas', e1.nuevas === 1 && e1.omitidas.length === 0, JSON.stringify(e1))
+e1 = await espFact([filaF({ _fila: 40, NUMERO: '00007-00000360', PORCENTAJE_PAGADO: 25 })])
+check('service_role: la copia de la hoja actualiza lo que gestiona la hoja', e1.actualizadas === 1 && e1.omitidas.length === 0, JSON.stringify(e1))
+ep = await espPag([filaP({ _fila: 41, ID_PAGO: 'PAGO-1792698009000-0', FACTURA_ASOCIADA: '00007-00000360', IMPORTE: 1000 })])
+check('service_role: la copia de la hoja crea pagos', ep.nuevas === 1 && ep.omitidas.length === 0, JSON.stringify(ep))
+const dSrv = await val(`select * from registrar_documento($1)`, [doc('msg-srv')])
+await db.query(`select tomar_documento($1)`, [dSrv.id])
+check('service_role: un documento de Gmail (sin lista de empresas) se carga en cualquier empresa',
+  !!(await val(`select guardar_factura_leida($1, $2) id`, [dSrv.id, leida({ empresa_id: 'controlb', numero: 9202 })])).id)
+
+// Documento subido por una persona: lleva las empresas para las que se puede cargar.
+const dInd = await val(`select * from registrar_documento($1)`, [{ ...doc('', 'subida-india.pdf'), origen: 'MANUAL', empresas_permitidas: ['india'] }])
+check('el documento guarda para qué empresas se subió', (await val(`select empresas_permitidas p from documentos where id = $1`, [dInd.id])).p.join() === 'india')
+check('un documento de Gmail no lleva lista', (await val(`select empresas_permitidas p from documentos where id = $1`, [dSrv.id])).p === null)
+await db.query(`select tomar_documento($1)`, [dInd.id])
+await falla('subido para India y la factura es de Beratung: no se guarda', `select guardar_factura_leida($1, $2)`, [dInd.id, leida({ empresa_id: 'beratung', numero: 9203 })], /no tiene acceso a esa empresa/)
+// leida() sin cambios es la factura 777 de India del principio; en Beratung, la 1001 ya existe con otro proveedor: se usa una que exista.
+await db.query(`select ingresar_factura($1)`, [factura({ cuit_proveedor: '20123456786', proveedor: 'Distribuidora Nueva SRL', punto_venta: 3, numero: 9204, total: 1210, neto: 1000, iva: 210 })])
+await falla('…ni se entera de que esa factura ya estaba cargada en Beratung', `select guardar_factura_leida($1, $2)`, [dInd.id, leida({ empresa_id: 'beratung', numero: 9204 })], /no tiene acceso a esa empresa/)
+check('…y el documento no quedó apuntando a una factura de Beratung', (await val(`select estado, factura_id from documentos where id = $1`, [dInd.id])).factura_id === null)
+const fDoc = (await val(`select guardar_factura_leida($1, $2) id`, [dInd.id, leida({ numero: 9205 })])).id
+check('subido para India y la factura es de India: se guarda', (await val(`select empresa_id from facturas where id = $1`, [fDoc])).empresa_id === 'india')
+await db.exec(`reset role`)
+
+check('empresas que ve una persona asignada a India', (await val(`select empresas_visibles_de('aprob.india@verticebi.com') e`)).e.join() === 'india')
+check('empresas que ve quien ve todas', (await val(`select empresas_visibles_de('aprobador@verticebi.com') e`)).e.length === nEmpresas)
+check('sin asignar, dado de baja o desconocido: ninguna', (await val(`select empresas_visibles_de('nuevo@verticebi.com') a, empresas_visibles_de('nadie@otro.com') b`)).a.length === 0
+  && (await val(`select empresas_visibles_de('nadie@otro.com') b`)).b.length === 0)
+
+// "Leer ahora" pedido por alguien de India: solo lo subido para India.
+await db.exec(`update documentos set estado = 'DESCARTADO' where estado in ('PENDIENTE', 'LEYENDO')`)
+const colaInd = await val(`select * from registrar_documento($1)`, [{ ...doc('', 'cola-india.pdf'), origen: 'MANUAL', empresas_permitidas: ['india'] }])
+const colaBer = await val(`select * from registrar_documento($1)`, [{ ...doc('', 'cola-beratung.pdf'), origen: 'MANUAL', empresas_permitidas: ['beratung'] }])
+const colaDos = await val(`select * from registrar_documento($1)`, [{ ...doc('', 'cola-dos.pdf'), origen: 'MANUAL', empresas_permitidas: ['india', 'beratung'] }])
+const colaGmail = await val(`select * from registrar_documento($1)`, [doc('msg-cola')])
+tomados = (await db.query(`select * from tomar_documentos_de_empresas(5, $1)`, [['india']])).rows
+check('cola limitada a India: toma solo el documento subido para India', tomados.length === 1 && tomados[0].id === colaInd.id && tomados[0].estado === 'LEYENDO',
+  tomados.map((x) => x.nombre_archivo).join())
+check('cola limitada sin empresas: no toma nada', (await db.query(`select * from tomar_documentos_de_empresas(5, $1)`, [[]])).rows.length === 0)
+tomados = (await db.query(`select * from tomar_documentos(5)`)).rows
+check('el lector programado sigue tomando todo lo demás', tomados.map((x) => x.id).sort().join() === [colaBer.id, colaDos.id, colaGmail.id].sort().join())
+for (const fn of ['empresas_visibles_de(text)', 'tomar_documentos_de_empresas(integer,text[])'])
+  check(`authenticated NO puede ejecutar ${fn.split('(')[0]}`, !(await val(`select has_function_privilege('authenticated', $1, 'execute') p`, [fn])).p
+    && (await val(`select has_function_privilege('service_role', $1, 'execute') p`, [fn])).p)
 
 console.log(`\n${ok} OK · ${mal} MAL`)
 process.exit(mal ? 1 : 0)

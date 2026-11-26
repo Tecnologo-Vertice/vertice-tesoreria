@@ -8,6 +8,8 @@ export interface UsuarioFn {
   email: string
   nombre: string
   rol: Rol
+  /** Ve todas las empresas (usuarios.todas_empresas). Si es false, solo las de usuarios_empresas. */
+  todasEmpresas: boolean
 }
 
 export class ErrorHttp extends Error {
@@ -40,9 +42,9 @@ export async function usuarioDesde(req: Request): Promise<UsuarioFn> {
   const { data, error } = await db.auth.getUser(token)
   const email = data.user?.email?.toLowerCase()
   if (error || !email) throw new ErrorHttp(401, 'Sesión inválida')
-  const { data: u } = await db.from('usuarios').select('email, nombre, rol, activo').eq('email', email).maybeSingle()
+  const { data: u } = await db.from('usuarios').select('email, nombre, rol, activo, todas_empresas').eq('email', email).maybeSingle()
   if (!u || !u.activo) throw new ErrorHttp(403, `La cuenta ${email} no está habilitada`)
-  return { email: u.email, nombre: u.nombre, rol: u.rol as Rol }
+  return { email: u.email, nombre: u.nombre, rol: u.rol as Rol, todasEmpresas: u.todas_empresas === true }
 }
 
 export function exigirRol(u: UsuarioFn, ...roles: Rol[]) {
@@ -55,6 +57,15 @@ export async function exigirEmpresa(u: UsuarioFn, empresaId: string | null | und
   const { data, error } = await supabaseAdmin().rpc('usuario_ve_empresa', { p_email: u.email, p_empresa: empresaId })
   if (error) throw new ErrorHttp(500, error.message)
   if (data !== true) throw new ErrorHttp(403, `No tenés acceso a la empresa ${empresaId}`)
+}
+
+/** Empresas activas que ve la persona. Para limitar a ellas lo que la función hace en su nombre. */
+export async function empresasVisibles(u: UsuarioFn): Promise<string[]> {
+  const { data, error } = await supabaseAdmin().rpc('empresas_visibles_de', { p_email: u.email })
+  if (error) throw new ErrorHttp(500, error.message)
+  const ids = Array.isArray(data) ? (data as string[]) : []
+  if (!ids.length) throw new ErrorHttp(403, 'No tenés ninguna empresa asignada')
+  return ids
 }
 
 /** Los puentes del Apps Script (cartero, cheques, flujo) se identifican con INGESTA_TOKEN en x-ingesta-token. */

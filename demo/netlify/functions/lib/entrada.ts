@@ -18,6 +18,8 @@ export interface Documento {
   mime_type: string
   storage_path: string
   intentos: number
+  /** Empresas para las que se puede cargar (lo subió una persona). null = lo trajo el servidor: cualquiera. */
+  empresas_permitidas?: string[] | null
 }
 
 const hoyAR = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Argentina/Buenos_Aires' }).format(new Date())
@@ -52,6 +54,17 @@ async function empresas(db: SupabaseClient): Promise<EmpresaRef[]> {
   return data as EmpresaRef[]
 }
 
+/**
+ * Empresas para las que una persona puede cargar un archivo: la que eligió, si la ve; si no eligió,
+ * todas las que ve. Nunca devuelve una empresa que la persona no ve.
+ */
+export function empresasParaCargar(visibles: string[], elegida?: string | null): string[] {
+  const e = (elegida ?? '').trim()
+  if (!e) return visibles
+  if (!visibles.includes(e)) throw new ErrorHttp(403, `No tenés acceso a la empresa ${e}`)
+  return [e]
+}
+
 export type ResultadoDocumento = { id: string; estado: 'LEIDO' | 'DUPLICADO' | 'ERROR' | 'PENDIENTE'; facturaId?: string; detalle?: string }
 
 /**
@@ -72,6 +85,14 @@ export async function procesarDocumento(db: SupabaseClient, doc: Documento): Pro
       await db.rpc('documento_sin_factura', { p_id: doc.id, p_motivo: r.motivo, p_lectura: raw })
       return { id: doc.id, estado: 'ERROR', detalle: r.motivo }
     }
+    // Subido por una persona: la factura tiene que ser de una empresa que esa persona puede cargar.
+    // (La base lo vuelve a controlar al guardar: trigger factura_respeta_documento.)
+    if (doc.empresas_permitidas && !doc.empresas_permitidas.includes(r.factura.empresa_id)) {
+      const nombre = grupo.find((e) => e.id === r.factura.empresa_id)?.nombre ?? r.factura.empresa_id
+      const motivo = `La factura es de ${nombre} y quien la subió no tiene acceso a esa empresa. La tiene que cargar alguien que la vea.`
+      await db.rpc('documento_sin_factura', { p_id: doc.id, p_motivo: motivo, p_lectura: raw })
+      return { id: doc.id, estado: 'ERROR', detalle: motivo }
+    }
     const { data: facturaId, error: e2 } = await db.rpc('guardar_factura_leida', { p_doc: doc.id, p: r.factura })
     if (e2) throw new ErrorHttp(500, e2.message)
     const { data: d } = await db.from('documentos').select('estado').eq('id', doc.id).single()
@@ -85,12 +106,17 @@ export async function procesarDocumento(db: SupabaseClient, doc: Documento): Pro
   }
 }
 
-/** Lee documentos de la cola de a uno mientras quede tiempo. */
-export async function leerCola(db: SupabaseClient, presupuestoMs: number): Promise<ResultadoDocumento[]> {
+/**
+ * Lee documentos de la cola de a uno mientras quede tiempo. Con `soloEmpresas`, toma únicamente los
+ * que una persona subió para esas empresas (nunca los de Gmail o Drive, que pueden ser de cualquiera).
+ */
+export async function leerCola(db: SupabaseClient, presupuestoMs: number, soloEmpresas?: string[]): Promise<ResultadoDocumento[]> {
   const inicio = Date.now()
   const resultados: ResultadoDocumento[] = []
   while (Date.now() - inicio < presupuestoMs) {
-    const { data, error } = await db.rpc('tomar_documentos', { p_max: 1 })
+    const { data, error } = soloEmpresas
+      ? await db.rpc('tomar_documentos_de_empresas', { p_max: 1, p_empresas: soloEmpresas })
+      : await db.rpc('tomar_documentos', { p_max: 1 })
     if (error) throw new ErrorHttp(500, error.message)
     const doc = (data as Documento[])[0]
     if (!doc) break

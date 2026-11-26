@@ -1,14 +1,15 @@
 // POST /api/ia/leer-comprobante  { nombre, mimeType, data (base64) }
-// Devuelve LecturaComprobante. Cualquier usuario habilitado puede usarla.
+// Devuelve LecturaComprobante. La usan los roles que cargan pagos (los mismos que registrar_pago).
 
 import type { Config } from '@netlify/functions'
-import { json, leerJson, manejar, usuarioDesde, ErrorHttp } from './lib/comun'
+import { exigirRol, json, leerJson, manejar, usuarioDesde, ErrorHttp } from './lib/comun'
 import { leerComprobanteConGemini } from './lib/gemini'
 
 const MIME = new Set(['application/pdf', 'image/jpeg', 'image/jpg', 'image/png', 'image/webp'])
 
 export default manejar(async (req) => {
-  await usuarioDesde(req)
+  const u = await usuarioDesde(req)
+  exigirRol(u, 'TESORERIA', 'ADMINISTRACION', 'ADMIN')
   const b = await leerJson<{ nombre?: string; mimeType?: string; data?: string }>(req)
   if (!b.data) throw new ErrorHttp(400, 'Falta el archivo')
   if (!MIME.has(b.mimeType ?? '')) throw new ErrorHttp(415, 'Solo PDF, JPG, PNG o WEBP')

@@ -9,8 +9,8 @@ Cada persona ve y opera solo las empresas que tiene asignadas. Hasta la migraci�
 | `usuarios.todas_empresas` | `true` → ve las 8 (como antes). Los usuarios que ya existían quedan en `true`: aplicar la migración no cambia nada para el equipo. |
 | `usuarios_empresas` | Si `todas_empresas = false`, la persona ve solo las empresas listadas acá. Un usuario nuevo arranca sin empresas y no ve nada. |
 | Lectura (RLS) | Empresas, facturas, pagos, cuentas, movimientos, memoria de proveedores, log de Xubio, auditoría, documentos y los PDF/comprobantes del storage filtran por empresa. La vista `export_cashflow` ya era `security_invoker`, así que hereda el filtro. |
-| Escritura | Las acciones de negocio son SECURITY DEFINER (saltan el RLS). Un trigger en `facturas`, `pagos`, `proveedores_empresa` y `documentos` controla la empresa cuando la acción viene de una persona (rol `authenticated`). El servidor (ingesta, espejo, subida a Xubio) no pasa por ese control. |
-| Funciones de Netlify | `contabilizar` y `xubio-factura` usan la clave de servicio: controlan la empresa con `exigirEmpresa()` → `usuario_ve_empresa()`. `leer-ahora` solo devuelve el detalle de la cola a quien ve todas. |
+| Escritura | Las acciones de negocio son SECURITY DEFINER (saltan el RLS). Un trigger en `facturas`, `pagos`, `proveedores_empresa` y `documentos` controla la empresa en toda acción que no venga del servidor. Desde la migración 0013 el control falla cerrado: `es_servidor()` reconoce solo el rol `service_role` (funciones de Netlify) y la conexión directa de `postgres` o `supabase_admin` (editor SQL, migraciones); cualquier otro rol se controla como una persona. |
+| Funciones de Netlify | Usan la clave de servicio, así que controlan la empresa a mano. `contabilizar` y `xubio-factura`: `exigirEmpresa()` → `usuario_ve_empresa()`. Desde 0013: `subir-factura` acepta `empresaId` (controlado) y guarda en el documento las empresas para las que se puede cargar (`documentos.empresas_permitidas`); la base no guarda la factura si es de otra. `xubio-catalogos` entra solo al Xubio de las empresas que ve quien lo pide. `leer-ahora`, pedido por quien no ve todas, lee solo lo subido para sus empresas. `ia-leer-comprobante` pide un rol que cargue pagos. |
 
 ## Qué queda visible para todos los habilitados
 
@@ -39,3 +39,5 @@ En `npm run test:sql` hay 30 casos nuevos (sección "Aislamiento por empresa"):
 - Un usuario dado de baja no ve ninguna.
 
 Se verificó que las pruebas fallan si se saca el filtro de facturas o el trigger.
+
+Desde 0013 se suman la sección "Control que falla cerrado y documentos por empresa" de `test:sql` (un rol desconocido es rechazado; el rol `service_role` sigue pudiendo ingresar y copiar la hoja) y `npm run test:separacion`, que corre las funciones de Netlify enteras contra un simulador: un usuario de India no carga una factura en Beratung ni dispara el Xubio de otra empresa.
