@@ -6,7 +6,7 @@ import type { CambioLinea, DatosTesoreria, NuevaProyeccion, NuevoCheque, Opcione
 import type { CategoriaMovimiento, Cheque, MovimientoBancario, OrigenSaldo, RefLinea, TipoPagoFactura } from '../types'
 import { pendientesXubioDemo, reglaPara, tesoreriaInicial, vistaTesoreria, type EstadoTesoreria } from './tesoreriaDemo'
 import { diaHabilAnterior, textoBanco } from '../lib/tesoreria'
-import type { Datos, DatosAprobacion, DatosContabilizacion, DatosEdicion, DatosLiberacion, DatosYaPagada, Fuente, ResultadoLiberacion, ResultadoYaPagada, ResultadoEdicion, NuevoPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
+import type { Datos, DatosAprobacion, ResultadoAprobacion, ResultadoVinculo, DatosContabilizacion, DatosEdicion, DatosLiberacion, DatosYaPagada, Fuente, ResultadoLiberacion, ResultadoYaPagada, ResultadoEdicion, NuevoPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
 import {
   auditoriaInicial,
   comprobantesEjemplo,
@@ -20,6 +20,7 @@ import {
 } from './demo'
 import { leerComprobante as leerSimulado, registrarEnXubio } from '../lib/ia'
 import { iso, pendiente } from '../lib/format'
+import { esperaFactura } from '../lib/pagos'
 
 const STORAGE_KEY = 'vertice-demo-v5' // v5: Tesorería sin planillas (bancos, cheques, Flujo en grilla)
 
@@ -93,12 +94,99 @@ export class FuenteDemo implements Fuente {
     }
   }
 
-  async aprobarFactura(id: string, d: DatosAprobacion, u: Usuario) {
+  /** Mismas reglas que aprobar_factura_y_vincular en SQL (0036). En la demo ningún proveedor está marcado "no va a Xubio". */
+  async aprobarFactura(id: string, d: DatosAprobacion, u: Usuario): Promise<ResultadoAprobacion> {
+    const tarjeta = this.aprobar(id, d, u, true)
+    const f = this.e.facturas.find((x) => x.id === id)!
+    let mensaje: string | undefined
+    let vinculado = false
+    if ((f.estado === 'PARA_PAGAR' || f.estado === 'PAGADA_PARCIAL') && !f.tipo.startsWith('Nota de Cr')) {
+      const candidatos = this.e.pagos.filter((p) => esperaFactura(p) && p.empresaId === f.empresaId && p.proveedorId === f.proveedorId)
+      if (candidatos.length > 1) mensaje = `Hay ${candidatos.length} pagos sin factura de este proveedor: vinculá el que corresponda desde la factura en Para pagar.`
+      else if (candidatos.length === 1) {
+        const v = await this.vincularPagoSinFactura(candidatos[0].id, id, u)
+        vinculado = true
+        mensaje = 'Se vinculó sola con el pago sin factura de este proveedor.' + (v.sobra >= 1 ? ` Ojo: el pago es $ ${v.sobra} mayor que el saldo de la factura.` : '')
+      }
+    }
+    return { estado: this.e.facturas.find((x) => x.id === id)!.estado, tarjeta, vinculado, mensaje }
+  }
+
+  /** Mismas reglas que vincular_pago_sin_factura en SQL. */
+  async vincularPagoSinFactura(pagoId: string, facturaId: string, u: Usuario): Promise<ResultadoVinculo> {
+    const p = this.e.pagos.find((x) => x.id === pagoId)
+    const f = this.e.facturas.find((x) => x.id === facturaId)
+    if (!p) throw new Error('Pago inexistente')
+    if (!f) throw new Error('Factura inexistente')
+    if (p.estado === 'ANULADO') throw new Error('El pago está anulado')
+    if (!esperaFactura(p)) throw new Error('Ese pago ya no está esperando factura')
+    if (f.empresaId !== p.empresaId) throw new Error('La factura es de otra empresa')
+    if (p.proveedorId && f.proveedorId !== p.proveedorId) throw new Error('La factura es de otro proveedor')
+    if (f.tipo.startsWith('Nota de Cr')) throw new Error('Es una nota de crédito: no se le vincula un pago')
+    if (f.estado !== 'PARA_PAGAR' && f.estado !== 'PAGADA_PARCIAL') throw new Error('La factura tiene que estar aprobada (en Para pagar) para vincularle el pago')
+    const saldo = Math.round((f.total - f.pagado) * 100) / 100
+    if (!(saldo > 0.009)) throw new Error('La factura ya está pagada')
+    const monto = Math.min(p.importe, saldo)
+    const sobra = Math.max(0, Math.round((p.importe - saldo) * 100) / 100)
+    const pagado = Math.round((f.pagado + monto) * 100) / 100
+    const numero = `${String(f.puntoVenta).padStart(5, '0')}-${String(f.numero).padStart(8, '0')}`
+    this.e.facturas = this.e.facturas.map((x): Factura =>
+      x.id === facturaId ? { ...x, pagado, pagadoPct: Math.min(100, Math.floor((pagado / x.total) * 10000) / 100), estado: pagado >= x.total ? 'PAGADA' : 'PAGADA_PARCIAL' } : x,
+    )
+    this.e.pagos = this.e.pagos.map((x): Pago =>
+      x.id === pagoId
+        ? { ...x, facturaIds: [facturaId], tipoPago: 'FACTURA', facturaAsociada: numero, proveedorId: x.proveedorId ?? f.proveedorId, formaCargaXubio: 'ORDEN_PAGO', descripcion: `Pago sin FC vinculado a la FC ${numero}` }
+        : x,
+    )
+    this.log(u, { accion: 'PAGO_VINCULADO', entidad: 'PAGO', entidadId: pagoId, detalle: `Vinculado a la factura ${numero} por $ ${monto}` })
+    this.commit()
+    return { numero, monto, sobra, completa: pagado >= f.total, yaEnXubio: p.estado === 'CONTABILIZADO' }
+  }
+
+  async corregirProveedorPago(pagoId: string, proveedorId: string, u: Usuario) {
+    const p = this.e.pagos.find((x) => x.id === pagoId)
+    if (!p) throw new Error('Ese pago ya no existe')
+    if (!PROVEEDORES.some((x) => x.id === proveedorId)) throw new Error('Indicá el proveedor')
+    if (p.facturaIds.length) throw new Error('Ese pago ya está vinculado a una factura')
+    if (!['CARGADO', 'REVISADO', 'PENDIENTE_RALPHARMA'].includes(p.estado) || p.envioXubioEn)
+      throw new Error('Este pago ya está registrado en Xubio. Si quedó con otro proveedor, primero hay que anular esa orden de pago en Xubio.')
+    this.e.pagos = this.e.pagos.map((x): Pago => (x.id === pagoId ? { ...x, proveedorId, proveedorDestino: PROVEEDORES.find((y) => y.id === proveedorId)?.nombre } : x))
+    this.log(u, { accion: 'PAGO_PROVEEDOR_CORREGIDO', entidad: 'PAGO', entidadId: pagoId, detalle: 'Proveedor corregido' })
+    this.commit()
+  }
+
+  async adjuntarComprobantePago(pagoId: string, ruta: string, cuentaOrigen: string | undefined, u: Usuario) {
+    const p = this.e.pagos.find((x) => x.id === pagoId)
+    if (!p) throw new Error('Ese pago ya no existe')
+    if (!ruta.trim()) throw new Error('Adjuntá el comprobante del pago')
+    if (p.estado === 'ANULADO') throw new Error('El pago está anulado')
+    if (p.faltaComprobante && !p.cuentaOrigen && !cuentaOrigen) throw new Error('Completá el banco desde el que se pagó')
+    this.e.pagos = this.e.pagos.map((x): Pago => (x.id === pagoId ? { ...x, comprobante: ruta, faltaComprobante: false, cuentaOrigen: x.cuentaOrigen || cuentaOrigen || '' } : x))
+    this.log(u, { accion: 'COMPROBANTE_ADJUNTADO', entidad: 'PAGO', entidadId: pagoId, detalle: p.comprobante ? `Reemplaza a ${p.comprobante}` : 'Comprobante agregado' })
+    this.commit()
+  }
+
+  async quitarComprobantePago(pagoId: string, u: Usuario) {
+    const p = this.e.pagos.find((x) => x.id === pagoId)
+    if (!p) throw new Error('Ese pago ya no existe')
+    if (!p.comprobante) throw new Error('El pago no tiene comprobante para quitar')
+    this.e.pagos = this.e.pagos.map((x): Pago => (x.id === pagoId ? { ...x, comprobante: '' } : x))
+    this.log(u, { accion: 'COMPROBANTE_QUITADO', entidad: 'PAGO', entidadId: pagoId, detalle: `Se quitó ${p.comprobante}` })
+    this.commit()
+  }
+
+  /** La aprobación de siempre. Con la tarjeta de crédito la factura nace pagada, salvo en "ya pagada" (el pago se crea aparte). */
+  private aprobar(id: string, d: DatosAprobacion, u: Usuario, tarjetaDirecta: boolean): boolean {
+    const nc = this.e.facturas.find((x) => x.id === id)?.tipo.startsWith('Nota de Cr') ?? false
+    const tarjeta = tarjetaDirecta && d.metodoPago === 'TARJETA' && !nc
     this.e.facturas = this.e.facturas.map((f): Factura =>
       f.id === id
         ? {
             ...f,
-            estado: 'PARA_PAGAR',
+            estado: tarjeta ? 'PAGADA' : 'PARA_PAGAR',
+            pagado: tarjeta ? f.total : f.pagado,
+            pagadoPct: tarjeta ? 100 : f.pagadoPct,
+            fechaPago: tarjeta ? iso(new Date()) : f.fechaPago,
             cuentaContable: d.cuentaContable,
             metodoPago: d.metodoPago,
             diasCheque: d.diasCheque,
@@ -108,8 +196,9 @@ export class FuenteDemo implements Fuente {
           }
         : f,
     )
-    this.log(u, { accion: 'APROBACION', entidad: 'FACTURA', entidadId: id, detalle: `Cuenta ${d.cuentaContable} · ${d.metodoPago}` })
+    this.log(u, { accion: 'APROBACION', entidad: 'FACTURA', entidadId: id, detalle: `Cuenta ${d.cuentaContable} · ${d.metodoPago}${tarjeta ? ' · tarjeta de crédito: queda pagada' : ''}` })
     this.commit()
+    return tarjeta
   }
 
   /** Mismas reglas que aprobar_factura_ya_pagada en SQL. */
@@ -117,7 +206,7 @@ export class FuenteDemo implements Fuente {
     const cheque = d.metodoPago === 'CHEQUE' || d.metodoPago === 'ECHEQ'
     const conPago = p.yaEnXubio || !!p.cuentaOrigen?.trim() || d.metodoPago === 'CAJA'
     if (cheque && conPago && (!p.numeroCheque || !p.fechaAcreditacion)) throw new Error('Un pago con cheque necesita número y fecha de vencimiento del cheque')
-    await this.aprobarFactura(id, d, u)
+    this.aprobar(id, d, u, false)
     const f = this.e.facturas.find((x) => x.id === id)!
     if (!conPago) {
       this.e.facturas = this.e.facturas.map((x): Factura => (x.id === id ? { ...x, yaPagadaSegunAdmin: `Ya pagada según ${u.nombre} (${d.metodoPago}), falta el comprobante` } : x))
@@ -132,6 +221,7 @@ export class FuenteDemo implements Fuente {
       importe: pendiente(f), medio: d.metodoPago, cuentaOrigen: p.cuentaOrigen?.trim() || 'Caja', numeroCheque: p.numeroCheque, fechaAcreditacion: p.fechaAcreditacion,
       facturaIds: [id], descripcion: `Factura ${f.puntoVenta}-${f.numero} pagada antes de aprobar`, observaciones: p.observaciones, cuentaContable: d.cuentaContable,
       formaCargaXubio: 'ORDEN_PAGO', estado: p.yaEnXubio ? 'CONTABILIZADO' : erp === 'RALPHARMA' ? 'PENDIENTE_RALPHARMA' : 'CARGADO', comprobante: '',
+      faltaComprobante: d.metodoPago !== 'CAJA' && d.metodoPago !== 'TARJETA',
       cargadoPor: u.nombre, cargadoEn: ahora,
       ...(p.yaEnXubio ? { xubioId: 'CARGADO_A_MANO', contabilizadoPor: u.nombre, contabilizadoEn: ahora } : {}),
     }
@@ -282,6 +372,7 @@ export class FuenteDemo implements Fuente {
       throw new Error('El pago supera lo pendiente de las facturas vinculadas. Cargá el excedente como un pago aparte.')
     const nuevo: Pago = {
       ...d,
+      tipoPago: d.facturaIds.length === 0 && d.proveedorId ? 'SIN_FACTURA' : undefined,
       id: `pg${Date.now().toString().slice(-6)}`,
       estado: EMPRESAS.find((x) => x.id === d.empresaId)?.erp === 'RALPHARMA' ? 'PENDIENTE_RALPHARMA' : 'CARGADO',
       cargadoPor: u.nombre,
@@ -298,6 +389,15 @@ export class FuenteDemo implements Fuente {
     })
     const completas = this.e.facturas.filter((f) => d.facturaIds.includes(f.id) && f.estado === 'PAGADA')
     nuevo.mailProveedorEnviado = completas.length > 0
+    // Posible duplicado (aviso, no bloquea): mismo importe, misma empresa y destino a ±3 días, o el mismo cheque.
+    const parecidos = this.e.pagos.filter((o) => {
+      if (o.estado === 'ANULADO' || o.empresaId !== nuevo.empresaId || o.importe <= 0) return false
+      if (nuevo.comprobante && o.comprobante === nuevo.comprobante) return false
+      if (nuevo.numeroCheque && o.numeroCheque) return nuevo.numeroCheque === o.numeroCheque && Math.abs(nuevo.importe - o.importe) < 1
+      const dias = Math.abs(new Date(nuevo.fecha).getTime() - new Date(o.fecha).getTime()) / 86400000
+      return Math.abs(nuevo.importe - o.importe) < 1 && dias <= 3 && (!nuevo.proveedorId || !o.proveedorId || nuevo.proveedorId === o.proveedorId)
+    })
+    if (parecidos.length) nuevo.posibleDuplicado = parecidos.slice(0, 3).map((o) => `${o.fecha} · $ ${o.importe}`).join(' | ')
     this.e.pagos.push(nuevo)
     this.log(u, { accion: 'PAGO_CARGADO', entidad: 'PAGO', entidadId: nuevo.id, detalle: `${nuevo.medio} · ${nuevo.cuentaOrigen} · ${nuevo.facturaIds.length} factura(s)` })
     if (completas.length)

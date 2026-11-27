@@ -200,6 +200,12 @@ function TarjetaPago({ p, empresaNombre, erp, nueva }: { p: Pago; empresaNombre:
             </div>
           )}
           {p.avisoImporte && <div className="rounded-xl bg-amber-950/40 border border-amber-900 text-amber-200 text-[0.8125rem] p-3">{p.avisoImporte}</div>}
+          {p.posibleDuplicado && (
+            <div className="rounded-xl bg-amber-950/40 border border-amber-900 text-amber-200 text-[0.8125rem] p-3">
+              Posible pago duplicado: se parece a {p.posibleDuplicado}. Revisalo antes de contabilizar; si es otro pago, seguí normal.
+            </div>
+          )}
+          {p.avisoCheque && <div className="rounded-xl bg-suave border border-borde text-seco text-[0.8125rem] p-3">{p.avisoCheque}</div>}
           {p.observaciones && (
             <div className="rounded-xl bg-suave border border-borde p-4">
               <p className="text-[0.625rem] uppercase tracking-[0.16em] font-bold text-seco mb-1">Comentario de {p.cargadoPor}</p>

@@ -22,6 +22,12 @@ interface Store {
   aprobarYaPagada: (id: string, datos: DatosAprobacion, pago: DatosYaPagada) => Promise<boolean>
   aplicarNotaCredito: (ncId: string, facturaId: string, importe: number) => Promise<boolean>
   anularPago: (id: string, motivo: string) => Promise<boolean>
+  /** Vincula un pago sin factura a una factura aprobada del mismo proveedor (la factura baja por lo pagado). */
+  vincularPagoSinFactura: (pagoId: string, facturaId: string) => Promise<boolean>
+  corregirProveedorPago: (pagoId: string, proveedorId: string) => Promise<boolean>
+  /** Sube el archivo a la carpeta de la empresa del pago y lo adjunta (reemplaza el que había). */
+  adjuntarComprobantePago: (pagoId: string, archivo: File, cuentaOrigen?: string) => Promise<boolean>
+  quitarComprobantePago: (pagoId: string) => Promise<boolean>
   liberarPagoXubio: (id: string, xubioId: string, datos: DatosLiberacion) => Promise<void>
   guardarEmailProveedor: (proveedorId: string, email: string) => Promise<boolean>
   marcarMailPreparado: (facturaIds: string[]) => Promise<void>
@@ -154,12 +160,14 @@ export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fu
       aprobarFactura: async (id, d) => {
         const f = facturas.find((x) => x.id === id)
         const erp = f ? empresaDe(f.empresaId).erp : 'NINGUNO'
-        const ok = await accion(
-          () => fuente.aprobarFactura(id, d, usuario).then(() => true),
-          erp === 'XUBIO' ? 'Factura aprobada; subiendo a Xubio…' : 'Factura aprobada; queda en el sector Ralpharma para Guido',
+        const r = await accion(
+          () => fuente.aprobarFactura(id, d, usuario),
+          (r) =>
+            (r.tarjeta ? 'Factura aprobada y pagada con la tarjeta de crédito' : r.estadoXubio === 'SIN_ERP' ? 'Factura aprobada: este proveedor no va a Xubio, no se sube' : erp === 'XUBIO' ? 'Factura aprobada; subiendo a Xubio…' : 'Factura aprobada; queda en el sector Ralpharma para Guido') +
+            (r.mensaje ? `. ${r.mensaje}` : ''),
         )
-        // Xubio automático: al aprobar, la factura se sube sola. Si falla, queda el motivo y se reintenta.
-        if (ok && erp === 'XUBIO') await subirXubio(id)
+        // Xubio automático: al aprobar, la factura se sube sola (salvo un proveedor que no va a Xubio). Si falla, queda el motivo y se reintenta.
+        if (r && erp === 'XUBIO' && r.estadoXubio !== 'SIN_ERP') await subirXubio(id)
       },
       aprobarYaPagada: async (id, d, p) => {
         const f = facturas.find((x) => x.id === id)
@@ -196,6 +204,34 @@ export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fu
       },
       anularPago: async (id, m) =>
         (await accion(() => fuente.anularPago(id, m, usuario).then(() => true), 'Pago anulado: lo aplicado vuelve a sus facturas')) === true,
+      vincularPagoSinFactura: async (pagoId, facturaId) => {
+        const r = await accion(() => fuente.vincularPagoSinFactura(pagoId, facturaId, usuario))
+        if (!r) return false
+        toast(
+          `Pago vinculado a la FC ${r.numero}: la factura bajó ${money(r.monto)}${r.yaEnXubio ? '. Ya estaba registrado en Xubio: no se vuelve a cargar' : ''}${r.sobra >= 1 ? `. Ojo: el pago es ${money(r.sobra)} mayor que el saldo de la factura` : ''}`,
+          r.sobra >= 1 ? 'info' : 'ok',
+        )
+        return true
+      },
+      corregirProveedorPago: async (pagoId, proveedorId) =>
+        (await accion(() => fuente.corregirProveedorPago(pagoId, proveedorId, usuario).then(() => true), 'Proveedor del pago corregido')) === true,
+      adjuntarComprobantePago: async (pagoId, archivo, cuentaOrigen) => {
+        const p = pagos.find((x) => x.id === pagoId)
+        if (!p) return false
+        if (archivo.size > 4 * 1024 * 1024) {
+          toast('El archivo pesa más de 4 MB. Mandá una captura o un PDF más liviano.', 'error')
+          return false
+        }
+        return (
+          (await accion(async () => {
+            const ruta = await fuente.subirComprobante(archivo, p.empresaId)
+            await fuente.adjuntarComprobantePago(pagoId, ruta, cuentaOrigen, usuario)
+            return true
+          }, 'Comprobante adjuntado al pago')) === true
+        )
+      },
+      quitarComprobantePago: async (pagoId) =>
+        (await accion(() => fuente.quitarComprobantePago(pagoId, usuario).then(() => true), 'Comprobante quitado del pago')) === true,
       liberarPagoXubio: async (id, nro, d) => {
         await accion(
           () => fuente.liberarPagoXubio(id, nro, d, usuario),
@@ -218,8 +254,12 @@ export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fu
       registrarPago: (p) =>
         accion(
           () => fuente.registrarPago(p, usuario),
-          (r) => (r.estado === 'PENDIENTE_RALPHARMA' ? 'Pago cargado; queda pendiente de carga en Ralpharma' : 'Pago cargado y en la bandeja de Guido'),
-        ),
+          (r) => (r.estado === 'PENDIENTE_RALPHARMA' ? 'Pago cargado; queda pendiente de carga en Ralpharma' : 'Pago cargado y en la bandeja de Guido') + (r.avisoCheque ? `. ${r.avisoCheque}` : ''),
+        ).then((r) => {
+          // Aviso, no bloqueo: se carga igual, pero Tesorería ve que se parece a otro.
+          if (r?.posibleDuplicado) toast(`Ojo, puede ser un pago repetido: ${r.posibleDuplicado}`, 'info')
+          return r
+        }),
       contabilizarPago: async (id, d) => {
         const r = await accion(() => fuente.contabilizarPago(id, d, usuario))
         if (!r) return

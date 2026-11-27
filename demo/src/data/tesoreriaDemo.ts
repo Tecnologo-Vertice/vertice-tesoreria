@@ -719,6 +719,7 @@ export function vistaTesoreria(e: EstadoTesoreria, facturas: Factura[], hoyIso: 
     extractos: e.extractos,
     cheques: e.cheques,
     pendientesXubio: pendientesXubioDemo(e),
+    chequesSugeridos: [],
     filas: e.filas,
     lineas,
     control: controlFlujo(e, lineas),

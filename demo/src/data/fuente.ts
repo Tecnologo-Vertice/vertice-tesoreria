@@ -99,6 +99,23 @@ export interface DatosEdicion {
 export type ResultadoEdicion = { estado: string; motivo?: string | null }
 
 export type DatosAprobacion = { cuentaContable: string; metodoPago: MetodoPago; diasCheque?: number }
+/** Cómo quedó una factura al aprobarla: pagada sola (tarjeta), sin subir a Xubio, o vinculada a un pago sin factura. */
+export interface ResultadoAprobacion {
+  estado?: string
+  estadoXubio?: string
+  tarjeta?: boolean
+  vinculado?: boolean
+  mensaje?: string
+}
+/** Resultado de vincular un pago sin factura a una factura. */
+export interface ResultadoVinculo {
+  numero: string
+  monto: number
+  /** Lo que el pago supera el saldo de la factura (0 si no sobra). */
+  sobra: number
+  completa: boolean
+  yaEnXubio: boolean
+}
 /** Cómo se pagó una factura que Administración aprueba ya pagada (PagoAlAprobar.gs). */
 export interface DatosYaPagada {
   /** El pago ya está cargado a mano en Xubio: queda contabilizado y no se envía nada. */
@@ -127,7 +144,7 @@ export interface DatosTesoreria {
   /** False si la base todavía no tiene las migraciones 0023 a 0027 (las pantallas lo avisan). */
   disponible: boolean
   error?: string
-  /** Hoy según la base (current_date). En demo, hoy del navegador. */
+  /** Hoy según la base (hoy_ar). En demo, hoy del navegador. */
   hoy: string
   unidades: Unidad[]
   cuentas: CuentaBancaria[]
@@ -138,6 +155,8 @@ export interface DatosTesoreria {
   documentos: DocumentoBancario[]
   extractos: Extracto[]
   cheques: Cheque[]
+  /** Débitos de cheque sin número con un único cheque emitido por el mismo importe (±$1): "puede ser el cheque X". Vacío si la base no tiene 0036. */
+  chequesSugeridos: { movimientoId: string; chequeId: string; numero: string; importe: number }[]
   /** Lo bancario que falta en Xubio (comprobantes, asientos, anulaciones). Vacío si la base no tiene 0029. */
   pendientesXubio: PendienteXubio[]
   filas: FilaFlujo[]
@@ -246,7 +265,15 @@ export type NuevaProyeccion = Omit<Proyeccion, 'id' | 'estado' | 'creadoPor'>
 export interface Fuente {
   modo: 'demo' | 'conectado'
   cargar(): Promise<Datos>
-  aprobarFactura(id: string, datos: DatosAprobacion, u: Usuario): Promise<void>
+  /** Aprueba y, si hay un único pago sin factura de ese proveedor, lo vincula. Dice cómo quedó. */
+  aprobarFactura(id: string, datos: DatosAprobacion, u: Usuario): Promise<ResultadoAprobacion>
+  /** Vincula un pago sin factura a una factura aprobada del mismo proveedor: la factura baja por lo pagado. */
+  vincularPagoSinFactura(pagoId: string, facturaId: string, u: Usuario): Promise<ResultadoVinculo>
+  /** Corrige el proveedor de un pago sin factura que todavía no está en Xubio. */
+  corregirProveedorPago(pagoId: string, proveedorId: string, u: Usuario): Promise<void>
+  /** Adjunta (o reemplaza) el comprobante ya subido de un pago. La cuenta de origen completa a un pago ya pagado que no tenía banco. */
+  adjuntarComprobantePago(pagoId: string, ruta: string, cuentaOrigen: string | undefined, u: Usuario): Promise<void>
+  quitarComprobantePago(pagoId: string, u: Usuario): Promise<void>
   rechazarFactura(id: string, motivo: string, u: Usuario): Promise<void>
   aprobarYaPagada(id: string, datos: DatosAprobacion, pago: DatosYaPagada, u: Usuario): Promise<ResultadoYaPagada>
   /** Aplica una nota de crédito aprobada a una factura del mismo proveedor y empresa. */

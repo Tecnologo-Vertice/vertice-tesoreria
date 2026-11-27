@@ -85,6 +85,7 @@ function Movimientos({ cuentas, dia, puede }: { cuentas: CuentaBancaria[]; dia: 
   const [tenencia, setTenencia] = useState<CuentaBancaria | null>(null)
   const [extracto, setExtracto] = useState<CuentaBancaria | null>(null)
   const nombre = (id: string) => t.cuentas.find((c) => c.id === id)?.nombre ?? id
+  const sugerido = (movimientoId: string) => t.chequesSugeridos.find((x) => x.movimientoId === movimientoId)
   const unidad = (id?: string) => t.unidades.find((u) => u.id === id)?.nombre
   const fondosDe = (cuentaId: string) => t.cuentas.filter((c) => c.cuentaMadreId === cuentaId && (c.clase === 'FCI' || c.clase === 'REMUNERADA'))
 
@@ -277,6 +278,12 @@ function Movimientos({ cuentas, dia, puede }: { cuentas: CuentaBancaria[]; dia: 
                     {m.descripcion}
                   </p>
                   {m.contraparteCuentaId && <p className="text-[0.6875rem] text-seco">contra {nombre(m.contraparteCuentaId)}</p>}
+                  {/* Débito de cheque sin número con un único cheque emitido por el mismo importe (±$1): solo se sugiere, marcar debitado es a mano en Cheques. */}
+                  {!m.chequeId && sugerido(m.id) && (
+                    <p className="text-[0.6875rem] text-amber-300">
+                      Puede ser el cheque {sugerido(m.id)!.numero} (mismo importe): confirmalo en Cheques con «Marcar debitado».
+                    </p>
+                  )}
                   {/* Suscripción o rescate en una cuenta con más de un fondo: Tesorería dice a cuál corresponde (0031). */}
                   {puede && !m.contraparteCuentaId && m.categoria === 'FCI' && fondosDe(m.cuentaId).length > 1 && (
                     <select

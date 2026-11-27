@@ -8,7 +8,8 @@ import { addDays, diasHasta, fecha, fmtCuit, iso, money, nroComprobante, parseIs
 import { formaDeCarga, sugerirCuenta, type Sugerencia } from '../lib/ia'
 import { puede } from '../lib/permisos'
 import { armarMails, linkGmail, type MailProveedor } from '../lib/mails'
-import type { ComprobanteEjemplo, EstadoXubio, Factura, LecturaComprobante, MetodoPago } from '../types'
+import { esperaFactura, faltaComprobante } from '../lib/pagos'
+import type { ComprobanteEjemplo, EstadoXubio, Factura, LecturaComprobante, MetodoPago, Pago } from '../types'
 
 const ESTADO_XUBIO: Record<EstadoXubio, { label: string; tone: 'verde' | 'rojo' | 'naranja' | 'neutro' }> = {
   SUBIDA: { label: 'En Xubio', tone: 'verde' },
@@ -32,7 +33,11 @@ export function Pagos() {
   const { modo, facturas, pagos, proveedor, empresa, usuario, subirFacturaXubio } = useStore()
   const puedePagar = puede(usuario.rol, 'PAGAR')
   const puedeXubio = puede(usuario.rol, 'APROBAR')
-  const [tab, setTab] = useState<'PARA_PAGAR' | 'PAGADAS'>('PARA_PAGAR')
+  const { quitarComprobantePago } = useStore()
+  const [tab, setTab] = useState<'PARA_PAGAR' | 'PAGADAS' | 'SIN_FACTURA' | 'FALTA_COMPROBANTE'>('PARA_PAGAR')
+  const [vincular, setVincular] = useState<null | { pagoId?: string; facturaId?: string }>(null)
+  const [corregir, setCorregir] = useState<Pago | null>(null)
+  const [adjuntar, setAdjuntar] = useState<Pago | null>(null)
   const [sel, setSel] = useState<string[]>([])
   const [modal, setModal] = useState<null | { facturaIds: string[] }>(null)
   const [ncModal, setNcModal] = useState<string | null>(null)
@@ -45,6 +50,12 @@ export function Pagos() {
     [facturas],
   )
   const pagadas = useMemo(() => facturas.filter((f) => f.estado === 'PAGADA'), [facturas])
+  // Pagos que esperan su factura (ESPERA_FC), del más viejo al más nuevo.
+  const sinFactura = useMemo(() => pagos.filter(esperaFactura).sort((a, b) => a.cargadoEn.localeCompare(b.cargadoEn)), [pagos])
+  // "Ya pagada, falta comprobante": facturas marcadas sin pago todavía, y pagos que Administración registró al aprobar sin comprobante.
+  const yaPagadasSinPago = useMemo(() => facturas.filter((f) => f.estado === 'PARA_PAGAR' && f.yaPagadaSegunAdmin), [facturas])
+  const pagosFaltaComprobante = useMemo(() => pagos.filter(faltaComprobante), [pagos])
+  const nFaltaComprobante = yaPagadasSinPago.length + pagosFaltaComprobante.length
 
   const filtro = useFiltro(tab === 'PARA_PAGAR' ? paraPagar : pagadas, {
     clave: 'pagos',
@@ -92,6 +103,8 @@ export function Pagos() {
         tabs={[
           { id: 'PARA_PAGAR', label: 'Para pagar', n: paraPagar.length },
           { id: 'PAGADAS', label: 'Pagadas', n: pagadas.length },
+          { id: 'SIN_FACTURA', label: 'Sin factura', n: sinFactura.length, tone: sinFactura.length ? 'naranja' : undefined },
+          { id: 'FALTA_COMPROBANTE', label: 'Falta comprobante', n: nFaltaComprobante, tone: nFaltaComprobante ? 'naranja' : undefined },
         ]}
       />
 
@@ -140,6 +153,17 @@ export function Pagos() {
                       className="text-[0.6875rem] text-acento underline mt-0.5 mr-3"
                     >
                       Aplicar a una factura
+                    </button>
+                  )}
+                  {!esNc && puedePagar && sinFactura.some((x) => x.empresaId === f.empresaId && x.proveedorId === f.proveedorId) && (
+                    <button
+                      onClick={(ev) => {
+                        ev.stopPropagation()
+                        setVincular({ facturaId: f.id })
+                      }}
+                      className="text-[0.6875rem] text-acento underline mt-0.5 mr-3"
+                    >
+                      Vincular pago sin factura
                     </button>
                   )}
                   {!esNc && puedePagar && (
@@ -203,13 +227,38 @@ export function Pagos() {
                   <div className="flex flex-wrap items-center gap-2 mb-0.5">
                     <Badge tone="dorado">{empresa(f.empresaId).corto}</Badge>
                     <Badge tone="verde">Pagada</Badge>
-                    {pg?.estado === 'CONTABILIZADO' ? <Badge tone="verde">Contabilizada {pg.xubioId}</Badge> : <Badge tone="naranja">Para contabilizar</Badge>}
+                    {!pg ? <Badge tone="azul">Tarjeta de crédito</Badge> : pg.estado === 'CONTABILIZADO' ? <Badge tone="verde">Contabilizada {pg.xubioId}</Badge> : <Badge tone="naranja">Para contabilizar</Badge>}
                     {f.mailEnviado ? <Badge tone="azul" title={f.mailEnviado}>Mail preparado</Badge> : pg?.mailProveedorEnviado && <Badge tone="azul">Mail al proveedor</Badge>}
                   </div>
                   <p className="font-semibold truncate">{p?.nombre ?? f.proveedorId}</p>
                   <p className="text-xs text-seco">
-                    {f.tipo} {nroComprobante(f.puntoVenta, f.numero)} · pagada el {fecha(pg?.fecha)} por {pg?.cargadoPor} · {pg?.medio}
+                    {f.tipo} {nroComprobante(f.puntoVenta, f.numero)} ·{' '}
+                    {pg ? `pagada el ${fecha(pg.fecha)} por ${pg.cargadoPor} · ${pg.medio}` : `Tarjeta de crédito · pagada el ${fecha(f.fechaPago)}`}
                   </p>
+                  {puedePagar && pg && (
+                    <div className="flex flex-wrap gap-3 mt-0.5 text-[0.6875rem]">
+                      <button
+                        className="text-acento underline"
+                        onClick={(ev) => {
+                          ev.stopPropagation()
+                          setAdjuntar(pg)
+                        }}
+                      >
+                        {pg.comprobante || pg.comprobanteUrl ? 'Cambiar comprobante' : 'Adjuntar comprobante'}
+                      </button>
+                      {pg.comprobante && (
+                        <button
+                          className="text-red-300 underline"
+                          onClick={(ev) => {
+                            ev.stopPropagation()
+                            if (window.confirm('¿Quitar el comprobante de este pago? El archivo no se borra, pero el pago queda sin comprobante.')) void quitarComprobantePago(pg.id)
+                          }}
+                        >
+                          Quitar comprobante
+                        </button>
+                      )}
+                    </div>
+                  )}
                 </div>
                 <p className="font-serif text-xl">{money(f.total)}</p>
               </div>
@@ -218,6 +267,108 @@ export function Pagos() {
         </div>
       )}
 
+      {tab === 'SIN_FACTURA' && (
+        <div className="space-y-2">
+          <p className="text-xs text-seco">
+            Pagos a un proveedor que todavía no tiene factura. Cuando llega la factura se vinculan solos al aprobarla (si hay uno solo) o desde acá: la factura baja por lo pagado.
+          </p>
+          {sinFactura.length === 0 && <Empty texto="No hay pagos esperando factura." />}
+          {sinFactura.map((p) => {
+            const prov = proveedor(p.proveedorId)
+            const dias = Math.max(0, Math.floor((Date.now() - new Date(p.cargadoEn).getTime()) / 86400000))
+            return (
+              <div key={p.id} className="flex items-center gap-4 px-4 py-3 rounded-xl border border-borde bg-pino">
+                <div className="flex-1 min-w-0">
+                  <div className="flex flex-wrap items-center gap-2 mb-0.5">
+                    <Badge tone="dorado">{empresa(p.empresaId).corto}</Badge>
+                    <Badge tone="naranja">
+                      Espera factura · {dias} día{dias === 1 ? '' : 's'}
+                    </Badge>
+                    <Badge>{p.medio}</Badge>
+                    {p.gestion === 'HOJA' && <Badge title="Viene de la hoja del Apps Script: se vincula y se corrige allá.">De la hoja</Badge>}
+                    {p.posibleDuplicado && (
+                      <Badge tone="rojo" title={p.posibleDuplicado}>
+                        Posible duplicado
+                      </Badge>
+                    )}
+                  </div>
+                  <p className="font-semibold truncate">{prov?.nombre ?? p.proveedorDestino ?? 'Sin proveedor'}</p>
+                  <p className="text-xs text-seco">
+                    {fecha(p.fecha)} · {p.cuentaOrigen || 'sin cuenta de origen'}
+                    {p.numeroCheque ? ` · cheque ${p.numeroCheque}` : ''}
+                    {p.estado === 'CONTABILIZADO' ? ' · ya en Xubio' : ''}
+                  </p>
+                  {puedePagar && p.gestion !== 'HOJA' && (
+                    <div className="flex flex-wrap gap-3 mt-0.5 text-[0.6875rem]">
+                      <button className="text-acento underline" onClick={() => setVincular({ pagoId: p.id })}>
+                        Vincular a una factura
+                      </button>
+                      <button className="text-acento underline" onClick={() => setCorregir(p)}>
+                        Corregir proveedor
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <p className="font-serif text-xl">{money(p.importe)}</p>
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {tab === 'FALTA_COMPROBANTE' && (
+        <div className="space-y-2">
+          <p className="text-xs text-seco">Facturas que Administración aprobó diciendo que ya estaban pagadas y a las que todavía les falta el comprobante del pago. Se completan sin crear otro pago.</p>
+          {nFaltaComprobante === 0 && <Empty texto="No hay pagos esperando comprobante." />}
+          {yaPagadasSinPago.map((fa) => (
+            <div key={fa.id} className="flex items-center gap-4 px-4 py-3 rounded-xl border border-borde bg-pino">
+              <div className="flex-1 min-w-0">
+                <div className="flex flex-wrap items-center gap-2 mb-0.5">
+                  <Badge tone="dorado">{empresa(fa.empresaId).corto}</Badge>
+                  <Badge tone="naranja">Falta el banco y el comprobante</Badge>
+                </div>
+                <p className="font-semibold truncate">{proveedor(fa.proveedorId)?.nombre ?? fa.proveedorId}</p>
+                <p className="text-xs text-seco">
+                  {fa.tipo} {nroComprobante(fa.puntoVenta, fa.numero)} · {fa.yaPagadaSegunAdmin}
+                </p>
+                {puedePagar && (
+                  <button className="text-[0.6875rem] text-acento underline mt-0.5" onClick={() => setModal({ facturaIds: [fa.id] })}>
+                    Cargar el pago con su comprobante
+                  </button>
+                )}
+              </div>
+              <p className="font-serif text-xl">{money(pendiente(fa))}</p>
+            </div>
+          ))}
+          {pagosFaltaComprobante.map((p) => (
+            <div key={p.id} className="flex items-center gap-4 px-4 py-3 rounded-xl border border-borde bg-pino">
+              <div className="flex-1 min-w-0">
+                <div className="flex flex-wrap items-center gap-2 mb-0.5">
+                  <Badge tone="dorado">{empresa(p.empresaId).corto}</Badge>
+                  <Badge tone="naranja">{p.cuentaOrigen ? 'Falta el comprobante' : 'Falta el banco y el comprobante'}</Badge>
+                  <Badge>{p.medio}</Badge>
+                  {p.estado === 'CONTABILIZADO' && <Badge tone="verde">Ya en Xubio</Badge>}
+                </div>
+                <p className="font-semibold truncate">{proveedor(p.proveedorId)?.nombre ?? p.proveedorDestino ?? 'Sin proveedor'}</p>
+                <p className="text-xs text-seco">
+                  {p.descripcion} · pagado el {fecha(p.fecha)}
+                  {p.cuentaOrigen ? ` · ${p.cuentaOrigen}` : ''}
+                </p>
+                {puedePagar && (
+                  <button className="text-[0.6875rem] text-acento underline mt-0.5" onClick={() => setAdjuntar(p)}>
+                    Adjuntar el comprobante
+                  </button>
+                )}
+              </div>
+              <p className="font-serif text-xl">{money(p.importe)}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {vincular && <ModalVincular pagoId={vincular.pagoId} facturaId={vincular.facturaId} onClose={() => setVincular(null)} />}
+      {corregir && <ModalCorregirProveedor pago={corregir} onClose={() => setCorregir(null)} />}
+      {adjuntar && <ModalAdjuntarComprobante pago={adjuntar} onClose={() => setAdjuntar(null)} />}
       {formaPago && <ModalFormaPago factura={formaPago} onClose={() => setFormaPago(null)} />}
       {ncModal && <ModalAplicarNc ncId={ncModal} onClose={() => setNcModal(null)} />}
       {mailsModal && (
@@ -398,6 +549,179 @@ function ModalAplicarNc({ ncId, onClose }: { ncId: string; onClose: () => void }
             }}
           >
             Aplicar
+          </Btn>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+/** Vincular un pago sin factura a su factura: se elige la factura (desde el pago) o el pago (desde la factura). */
+function ModalVincular({ pagoId, facturaId, onClose }: { pagoId?: string; facturaId?: string; onClose: () => void }) {
+  const { facturas, pagos, proveedor, empresa, vincularPagoSinFactura } = useStore()
+  const pago = pagos.find((p) => p.id === pagoId)
+  const factura = facturas.find((x) => x.id === facturaId)
+  const [elegido, setElegido] = useState('')
+  const [enviando, setEnviando] = useState(false)
+  // Desde el pago: facturas de la misma empresa y proveedor, aprobadas y con saldo. Desde la factura: pagos sin factura del mismo proveedor.
+  const facturasPosibles = pago
+    ? facturas.filter((f) => f.empresaId === pago.empresaId && (!pago.proveedorId || f.proveedorId === pago.proveedorId) && (f.estado === 'PARA_PAGAR' || f.estado === 'PAGADA_PARCIAL') && !esNotaCredito(f) && pendiente(f) > 0.009)
+    : []
+  const pagosPosibles = factura ? pagos.filter((p) => esperaFactura(p) && p.gestion !== 'HOJA' && p.empresaId === factura.empresaId && p.proveedorId === factura.proveedorId) : []
+  const facturaElegida = pago ? facturasPosibles.find((f) => f.id === elegido) : factura
+  const pagoElegido = pago ?? pagosPosibles.find((p) => p.id === elegido)
+  const sobra = facturaElegida && pagoElegido ? Math.round((pagoElegido.importe - pendiente(facturaElegida)) * 100) / 100 : 0
+  const queda = facturaElegida && pagoElegido ? Math.round((pendiente(facturaElegida) - pagoElegido.importe) * 100) / 100 : 0
+  async function confirmar() {
+    if (!facturaElegida || !pagoElegido) return
+    setEnviando(true)
+    const ok = await vincularPagoSinFactura(pagoElegido.id, facturaElegida.id)
+    setEnviando(false)
+    if (ok) onClose()
+  }
+  return (
+    <Modal titulo="Vincular pago sin factura" onClose={onClose} ancho="max-w-xl">
+      <div className="space-y-4">
+        <div className="rounded-xl border border-borde px-4 py-3 text-sm">
+          {pago ? (
+            <>
+              <p className="font-semibold">
+                Pago de {money(pago.importe)} · {fecha(pago.fecha)}
+              </p>
+              <p className="text-xs text-seco">
+                {proveedor(pago.proveedorId)?.nombre ?? pago.proveedorDestino ?? 'Sin proveedor'} · {empresa(pago.empresaId).nombre}
+              </p>
+            </>
+          ) : factura ? (
+            <>
+              <p className="font-semibold">
+                {factura.tipo} {nroComprobante(factura.puntoVenta, factura.numero)} · pendiente {money(pendiente(factura))}
+              </p>
+              <p className="text-xs text-seco">
+                {proveedor(factura.proveedorId)?.nombre} · {empresa(factura.empresaId).nombre}
+              </p>
+            </>
+          ) : null}
+        </div>
+        <p className="text-xs text-seco">
+          {pago ? 'Elegí la factura a la que corresponde.' : 'Elegí el pago que corresponde a esta factura.'} La factura baja por lo pagado y el pago pasa a ser el pago de esa factura; no se crea otro pago ni otro envío a Xubio.
+        </p>
+        <div className="max-h-64 overflow-y-auto rounded-lg border border-borde divide-y divide-borde/60">
+          {pago && facturasPosibles.length === 0 && <p className="p-3 text-xs text-seco">No hay facturas aprobadas de este proveedor con saldo. Cuando llegue y se apruebe, se puede vincular desde acá.</p>}
+          {!pago && pagosPosibles.length === 0 && <p className="p-3 text-xs text-seco">No hay pagos sin factura de este proveedor.</p>}
+          {pago &&
+            facturasPosibles.map((f) => (
+              <label key={f.id} className={`flex items-center gap-3 px-3 py-2 text-xs cursor-pointer ${elegido === f.id ? 'bg-dorado/10' : 'hover:bg-suave/60'}`}>
+                <input type="radio" name="vinculo" checked={elegido === f.id} onChange={() => setElegido(f.id)} className="accent-dorado" />
+                <span className="flex-1 truncate">
+                  {f.tipo} {nroComprobante(f.puntoVenta, f.numero)} · vence {fecha(f.vencimiento)}
+                </span>
+                <span className="font-semibold">{money(pendiente(f))}</span>
+              </label>
+            ))}
+          {!pago &&
+            pagosPosibles.map((p) => (
+              <label key={p.id} className={`flex items-center gap-3 px-3 py-2 text-xs cursor-pointer ${elegido === p.id ? 'bg-dorado/10' : 'hover:bg-suave/60'}`}>
+                <input type="radio" name="vinculo" checked={elegido === p.id} onChange={() => setElegido(p.id)} className="accent-dorado" />
+                <span className="flex-1 truncate">
+                  {fecha(p.fecha)} · {p.medio} · {p.cuentaOrigen || 'sin cuenta'}
+                </span>
+                <span className="font-semibold">{money(p.importe)}</span>
+              </label>
+            ))}
+        </div>
+        {elegido && sobra >= 1 && <p className="text-xs text-amber-300">El pago es {money(sobra)} mayor que el saldo de la factura: se aplica el saldo y la diferencia queda anotada en el pago.</p>}
+        {elegido && queda >= 1 && <p className="text-xs text-seco">Queda un saldo de {money(queda)} por pagar en la factura.</p>}
+        <div className="flex justify-end gap-2">
+          <Btn variant="secundario" onClick={onClose}>
+            Cancelar
+          </Btn>
+          <Btn disabled={!facturaElegida || !pagoElegido || enviando} onClick={() => void confirmar()}>
+            {enviando ? 'Vinculando…' : 'Vincular'}
+          </Btn>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+/** Corregir el proveedor de un pago sin factura que todavía no está en Xubio. */
+function ModalCorregirProveedor({ pago, onClose }: { pago: Pago; onClose: () => void }) {
+  const { catalogos, proveedor, corregirProveedorPago } = useStore()
+  const [provId, setProvId] = useState(pago.proveedorId ?? '')
+  const [enviando, setEnviando] = useState(false)
+  const yaEnXubio = !['CARGADO', 'REVISADO', 'PENDIENTE_RALPHARMA'].includes(pago.estado) || !!pago.envioXubioEn
+  return (
+    <Modal titulo="Corregir proveedor del pago" onClose={onClose} ancho="max-w-lg">
+      <div className="space-y-4">
+        <p className="text-sm">
+          Pago de {money(pago.importe)} del {fecha(pago.fecha)} · hoy figura a nombre de <span className="font-semibold">{proveedor(pago.proveedorId)?.nombre ?? pago.proveedorDestino ?? 'nadie'}</span>.
+        </p>
+        {yaEnXubio && <p className="text-xs text-red-300">Este pago ya está registrado en Xubio. Si quedó con otro proveedor, primero hay que anular esa orden de pago en Xubio.</p>}
+        <Field label="Proveedor correcto">
+          <Desplegable
+            value={provId}
+            onChange={setProvId}
+            anchoMenu={320}
+            opciones={[{ value: '', label: 'Elegí un proveedor' }, ...catalogos.proveedores.map((p) => ({ value: p.id, label: p.nombre, detalle: p.cuit ? fmtCuit(p.cuit) : undefined }))]}
+          />
+        </Field>
+        <div className="flex justify-end gap-2">
+          <Btn variant="secundario" onClick={onClose}>
+            Cancelar
+          </Btn>
+          <Btn
+            disabled={!provId || provId === pago.proveedorId || yaEnXubio || enviando}
+            onClick={async () => {
+              setEnviando(true)
+              const ok = await corregirProveedorPago(pago.id, provId)
+              setEnviando(false)
+              if (ok) onClose()
+            }}
+          >
+            Guardar proveedor
+          </Btn>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+/** Adjuntar (o cambiar) el comprobante de un pago ya cargado. Si el pago no tenía banco, se completa acá. */
+function ModalAdjuntarComprobante({ pago, onClose }: { pago: Pago; onClose: () => void }) {
+  const { catalogos, adjuntarComprobantePago } = useStore()
+  const [archivo, setArchivo] = useState<File | null>(null)
+  const [cuenta, setCuenta] = useState('')
+  const [enviando, setEnviando] = useState(false)
+  const pideBanco = !!pago.faltaComprobante && !pago.cuentaOrigen
+  return (
+    <Modal titulo={pago.comprobante || pago.comprobanteUrl ? 'Cambiar el comprobante' : 'Adjuntar el comprobante'} onClose={onClose} ancho="max-w-lg">
+      <div className="space-y-4">
+        <p className="text-sm">
+          Pago de {money(pago.importe)} del {fecha(pago.fecha)} · {pago.medio}. No se crea otro pago ni otra orden en Xubio.
+        </p>
+        <Field label="Comprobante (PDF o captura)" hint="Hasta 4 MB. Si ya tenía uno, se reemplaza.">
+          <input type="file" accept=".pdf,.jpg,.jpeg,.png,.webp" onChange={(e) => setArchivo(e.target.files?.[0] ?? null)} className={inputCls} aria-label="Comprobante" />
+        </Field>
+        {pideBanco && (
+          <Field label="Banco o cuenta desde la que se pagó" marcado={!cuenta ? 'falta' : undefined}>
+            <Desplegable value={cuenta} onChange={setCuenta} anchoMenu={300} opciones={cuentasOrigenDe(catalogos.cuentasOrigen, pago.empresaId).map((c) => ({ value: c.nombre, label: c.nombre }))} />
+          </Field>
+        )}
+        <div className="flex justify-end gap-2">
+          <Btn variant="secundario" onClick={onClose}>
+            Cancelar
+          </Btn>
+          <Btn
+            disabled={!archivo || (pideBanco && !cuenta) || enviando}
+            onClick={async () => {
+              setEnviando(true)
+              const ok = await adjuntarComprobantePago(pago.id, archivo!, pideBanco ? cuenta : undefined)
+              setEnviando(false)
+              if (ok) onClose()
+            }}
+          >
+            {enviando ? 'Subiendo…' : 'Adjuntar'}
           </Btn>
         </div>
       </div>

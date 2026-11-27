@@ -25,7 +25,7 @@ import type {
   Unidad,
 } from '../types'
 import { addDays, iso } from '../lib/format'
-import type { Bucket, Datos, DatosAprobacion, DatosContabilizacion, DatosEdicion, DatosLiberacion, DatosYaPagada, Fuente, ResultadoLiberacion, ResultadoYaPagada, ResultadoEdicion, NuevoPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
+import type { Bucket, Datos, DatosAprobacion, ResultadoAprobacion, ResultadoVinculo, DatosContabilizacion, DatosEdicion, DatosLiberacion, DatosYaPagada, Fuente, ResultadoLiberacion, ResultadoYaPagada, ResultadoEdicion, NuevoPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
 import { archivoABase64, llamarFuncion } from '../lib/supabase'
 import { rutaComprobante } from '../lib/rutas'
 
@@ -134,6 +134,11 @@ function mapPago(r: Row, facturaIds: string[]): Pago {
     anuladoPor: s(r.anulado_por),
     anuladoEn: s(r.anulado_en),
     motivoAnulacion: s(r.motivo_anulacion),
+    tipoPago: s(r.tipo_pago),
+    facturaAsociada: s(r.factura_asociada),
+    posibleDuplicado: s(r.posible_duplicado),
+    avisoCheque: s(r.aviso_cheque),
+    faltaComprobante: r.falta_comprobante === true,
   }
 }
 
@@ -263,8 +268,34 @@ export class FuenteSupabase implements Fuente {
     return data as T
   }
 
-  async aprobarFactura(id: string, d: DatosAprobacion) {
-    await this.rpc('aprobar_factura', { p_id: id, p_cuenta: d.cuentaContable, p_metodo: d.metodoPago, p_dias: d.diasCheque ?? null })
+  async aprobarFactura(id: string, d: DatosAprobacion): Promise<ResultadoAprobacion> {
+    const args = { p_id: id, p_cuenta: d.cuentaContable, p_metodo: d.metodoPago, p_dias: d.diasCheque ?? null }
+    try {
+      const r = await this.rpc<Row>('aprobar_factura_y_vincular', args)
+      return { estado: s(r.estado), estadoXubio: s(r.estado_xubio), tarjeta: r.tarjeta === true, vinculado: r.vinculado === true, mensaje: s(r.mensaje) }
+    } catch (e) {
+      // Base sin la migración 0036: se aprueba como antes.
+      if (!/could not find the function/i.test(e instanceof Error ? e.message : String(e))) throw e
+      await this.rpc('aprobar_factura', args)
+      return {}
+    }
+  }
+
+  async vincularPagoSinFactura(pagoId: string, facturaId: string): Promise<ResultadoVinculo> {
+    const r = await this.rpc<Row>('vincular_pago_sin_factura', { p_pago: pagoId, p_factura: facturaId })
+    return { numero: String(r.numero), monto: n(r.monto), sobra: n(r.sobra), completa: r.completa === true, yaEnXubio: r.ya_en_xubio === true }
+  }
+
+  async corregirProveedorPago(pagoId: string, proveedorId: string) {
+    await this.rpc('corregir_proveedor_pago', { p_pago: pagoId, p_proveedor: proveedorId })
+  }
+
+  async adjuntarComprobantePago(pagoId: string, ruta: string, cuentaOrigen: string | undefined) {
+    await this.rpc('adjuntar_comprobante_pago', { p_pago: pagoId, p_ruta: ruta, p_cuenta_origen: cuentaOrigen ?? null })
+  }
+
+  async quitarComprobantePago(pagoId: string) {
+    await this.rpc('quitar_comprobante_pago', { p_pago: pagoId })
   }
 
   async rechazarFactura(id: string, motivo: string) {
@@ -686,6 +717,7 @@ export class FuenteSupabase implements Fuente {
         extractos,
         cheques,
         pendientesXubio: await this.pendientesXubio(),
+        chequesSugeridos: await this.chequesSugeridos(),
         filas,
         lineas,
         control,
@@ -707,6 +739,7 @@ export class FuenteSupabase implements Fuente {
         extractos: [],
         cheques: [],
         pendientesXubio: [],
+        chequesSugeridos: [],
         filas: [],
         lineas: [],
         control: [],
@@ -714,6 +747,13 @@ export class FuenteSupabase implements Fuente {
         cuentasContables: [],
       }
     }
+  }
+
+  /** Vista movimientos_cheque_sugerido (0036). Sin la migración, lista vacía. */
+  private async chequesSugeridos(): Promise<DatosTesoreria['chequesSugeridos']> {
+    const { data, error } = await this.db.from('movimientos_cheque_sugerido').select('movimiento_id, cheque_id, numero, importe')
+    if (error) return []
+    return (data as Row[]).map((r) => ({ movimientoId: String(r.movimiento_id), chequeId: String(r.cheque_id), numero: String(r.numero), importe: n(r.importe) }))
   }
 
   /** Vista xubio_bancos_pendientes (0029). Sin la migración, lista vacía: el resto de Tesorería sigue andando. */

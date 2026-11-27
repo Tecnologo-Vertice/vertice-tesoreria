@@ -194,6 +194,15 @@ export interface Pago {
   anuladoPor?: string
   anuladoEn?: string
   motivoAnulacion?: string
+  /** SIN_FACTURA o FACTURA. Un pago sin facturas vinculadas que espera su factura se arma con esto (ver esperaFactura). */
+  tipoPago?: string
+  facturaAsociada?: string
+  /** Otros pagos que parecen el mismo (mismo importe, empresa y destino a ±3 días). Es un aviso, no bloquea. */
+  posibleDuplicado?: string
+  /** Qué pasó con su fila en Cheques al cargar el pago con cheque o e-cheq. */
+  avisoCheque?: string
+  /** Pago registrado al aprobar una factura "ya pagada": falta el comprobante. */
+  faltaComprobante?: boolean
 }
 
 export interface CuentaOrigen {
