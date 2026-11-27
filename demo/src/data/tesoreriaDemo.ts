@@ -19,6 +19,7 @@ import type {
   Extracto,
   Factura,
   FilaFlujo,
+  FotoFlujo,
   LineaFlujo,
   MovimientoBancario,
   Proyeccion,
@@ -69,6 +70,8 @@ export interface EstadoTesoreria {
   filas: FilaFlujo[]
   proyecciones: Proyeccion[]
   ajustes: AjusteDemo[]
+  /** Fotos mensuales de la proyección (0038). */
+  fotos?: FotoFlujo[]
   reglas: ReglaDemo[]
   /** Pagos anulados en el sistema que siguen en Xubio (en la demo los pagos viven aparte: se simulan acá). */
   anulacionesPago?: AnulacionPagoDemo[]
@@ -174,6 +177,10 @@ function filasDe(u: Unidad): FilaFlujo[] {
     etiqueta,
     cuentaContable: cuenta,
     mueveCaja: mueve,
+    // Como la carga inicial de 0038: sueldos, préstamos, intereses, retiros e intercompany se cargan a mano.
+    manual: !!cuenta && /^(SUELDOS|PRESTAMOS|INTERESES|RETIROS|INTERCOMPANY|Rendimientos)/i.test(cuenta),
+    // En Dax Salud, las personas físicas pagadas desde la unidad van a Consultorios.
+    personaFisica: u.id === 'u-dax' && orden === 220,
   }))
 }
 
@@ -580,9 +587,16 @@ export function lineasFlujo(e: EstadoTesoreria, facturas: Factura[], hoyIso: str
   }
   // PROYECTADO · proyecciones de hoy a 180 días.
   const hasta = iso(addDays(parseIso(hoyIso), 180))
+  // Fila manual (0038): lo cargado a mano (origen MANUAL) reemplaza ese día a las demás proyecciones de la fila; si no hay carga, suman.
+  const cargasManuales = new Set<string>()
+  for (const p of e.proyecciones) {
+    if (p.estado === 'ACTIVA' && p.origen === 'MANUAL' && e.filas.find((f) => f.id === p.filaId)?.manual)
+      for (const o of ocurrenciasProyeccion(p, hoyIso, hasta, fer)) cargasManuales.add(`${p.filaId}|${o.fecha}`)
+  }
   for (const p of e.proyecciones) {
     if (p.estado !== 'ACTIVA') continue
     for (const o of ocurrenciasProyeccion(p, hoyIso, hasta, fer)) {
+      if (p.origen !== 'MANUAL' && cargasManuales.has(`${p.filaId}|${o.fecha}`)) continue
       base.push({
         empresaId: p.empresaId,
         unidadId: p.unidadId,
@@ -724,6 +738,7 @@ export function vistaTesoreria(e: EstadoTesoreria, facturas: Factura[], hoyIso: 
     lineas,
     control: controlFlujo(e, lineas),
     proyecciones: e.proyecciones,
+    fotos: e.fotos ?? [],
     cuentasContables: [...new Set([...PLAN_CUENTAS, ...usadas, 'IVA COMPRAS', 'Fondos Comun de Inversion Bancos'])].sort((a, b) => a.localeCompare(b)),
   }
 }

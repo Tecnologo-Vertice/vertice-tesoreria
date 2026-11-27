@@ -17,6 +17,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { env } from './comun'
 import * as xubio from './xubio'
 import { CIRCUITO, idCreado, MONEDA_ARS } from './xubio-armado'
+import { anularDesde, anularEnXubioAuto, anularOpReal } from './xubio-anular'
 import { subirFacturaAXubio } from './xubio-facturas'
 
 export const envioRealBancos = () => env('XUBIO_BANCOS_ENVIO_REAL', false) === 'true'
@@ -26,7 +27,7 @@ export const borradoAsientoConfirmado = () => env('XUBIO_BORRAR_ASIENTO_CONFIRMA
 export const PATH_ASIENTO = 'asientoContableManualBean'
 const USUARIO = 'Envíos bancarios'
 
-export type Proceso = 'XUBIO_ASIENTOS' | 'XUBIO_ANULACIONES' | 'CONTROL_DIARIO'
+export type Proceso = 'XUBIO_ASIENTOS' | 'XUBIO_ANULACIONES' | 'CONTROL_DIARIO' | 'XUBIO_PAGOS' | 'LECTURA_XUBIO'
 export type EstadoLog = 'OK' | 'PRUEBA_OK' | 'ERROR' | 'OMITIDO'
 
 export interface Item {
@@ -309,11 +310,65 @@ export async function procesarPendientesBancos(db: SupabaseClient, o: OpcionesBa
       await anularAsientoEnXubio('asientos', 'ANULAR_ASIENTO', String(a.id), String(a.empresa_id), id)
     }
 
-    for (const p of await pendientes('pagos', 'id, empresa_id, xubio_id, forma_carga_xubio')) {
+    const anularPagoPorApi = async (p: Record<string, unknown>, id: string) => {
+      const base = { entidad: 'ANULAR_PAGO' as const, id: String(p.id), empresaId: String(p.empresa_id), proceso: 'XUBIO_ANULACIONES' as const }
+      const importe = Number(p.importe) || 0
+      const prov = p.proveedores as { nombre?: string } | { nombre?: string }[] | null | undefined
+      const proveedor = String((Array.isArray(prov) ? prov[0]?.nombre : prov?.nombre) || p.proveedor_destino || '')
+      const fecha = p.fecha ? String(p.fecha).slice(0, 10) : undefined
+      if (!o.real) {
+        await db.from('xubio_log').insert({ empresa_id: base.empresaId, entidad: 'PAGO', entidad_id: base.id, en_seco: true, request: { metodo: 'DELETE', path: `pagoBean o asientoContableManualBean /${id}`, importe, verifica: 'importe (suma de los instrumentos), proveedor y fecha antes de borrar' }, usuario })
+        await log({ ...base, estado: 'PRUEBA_OK', detalle: `En seco: se anularía en Xubio la orden de pago (o el asiento) ${id}, verificando antes importe ${importe}, proveedor y fecha` })
+        return
+      }
+      // Si no se puede marcar el resultado se registra y la corrida sigue con el resto (la próxima vuelta lo vuelve a ver).
+      const resultado = async (estado: 'HECHA' | 'ERROR', detalle: string) => {
+        const { error } = await db.rpc('resultado_anulacion_xubio', { p_tabla: 'pagos', p_id: base.id, p_estado: estado, p_detalle: detalle })
+        if (error) await log({ ...base, estado: 'ERROR', detalle: `No se pudo marcar la anulación (${estado}) del pago ${base.id}: ${error.message}. Detalle: ${detalle}` })
+      }
+      let c: Conexion | null
+      try {
+        c = await con(base.empresaId, false)
+      } catch (e) {
+        await log({ ...base, estado: 'OMITIDO', detalle: `No se pudo conectar con Xubio (${mensaje(e)}): se reintenta en la próxima corrida` })
+        return
+      }
+      if (!c) {
+        await resultado('ERROR', `Faltan las credenciales de Xubio de ${base.empresaId}`)
+        await log({ ...base, estado: 'ERROR', detalle: `Faltan las credenciales de Xubio de ${base.empresaId}` })
+        return
+      }
+      const r = await anularEnXubioAuto(c.t, { id, importe, proveedor, fecha })
+      // Solo queda como DELETE lo que de verdad se mandó; si se frenó antes, el registro dice que fue una lectura.
+      await db.from('xubio_log').insert({ empresa_id: base.empresaId, entidad: 'PAGO', entidad_id: base.id, en_seco: false, request: { metodo: r.path ? 'DELETE' : 'GET', path: `${r.path ?? 'pagoBean o asientoContableManualBean'}/${id}`, importe }, response: r.ok ? r.body : { error: r.error }, http_status: r.status ?? null, usuario })
+      if (r.ok) {
+        await resultado('HECHA', `Anulado en Xubio: ${r.que} ${id}`)
+        await log({ ...base, estado: 'OK', detalle: `Anulado también en Xubio: ${r.que} ${id}` })
+      } else if (r.reintentar) {
+        // Pasajero (límite de pedidos, sesión, sin conexión): no se marca nada, queda PENDIENTE.
+        await log({ ...base, estado: 'OMITIDO', detalle: r.error ?? 'Xubio no pudo responder ahora: se reintenta' })
+      } else {
+        await resultado('ERROR', r.error ?? 'No se pudo anular en Xubio')
+        await log({ ...base, estado: 'ERROR', detalle: `${r.error ?? 'No se pudo anular en Xubio'}. Anular a mano en Xubio.` })
+      }
+    }
+
+    // Anulación por API: solo con la variable prendida, solo pagos del sistema anulados desde XUBIO_ANULAR_DESDE (sin esa fecha
+    // no procesa nada: el atraso de la 0024 y lo que el Apps Script ya anuló no se toca).
+    const desde = anularOpReal() ? anularDesde() : null
+    for (const p of await pendientes('pagos', 'id, empresa_id, xubio_id, forma_carga_xubio, importe, fecha, gestion, anulado_en, proveedor_destino, proveedores(nombre)')) {
       if (!queda()) break
       const base = { entidad: 'ANULAR_PAGO' as const, id: String(p.id), empresaId: String(p.empresa_id), proceso: 'XUBIO_ANULACIONES' as const }
       const forma = String(p.forma_carga_xubio ?? '')
       const id = idNumerico(p.xubio_id as string)
+      if (desde && id && p.gestion === 'SISTEMA' && p.anulado_en && new Date(String(p.anulado_en)) >= desde) {
+        try {
+          await anularPagoPorApi(p, id)
+        } catch (e) {
+          await log({ ...base, estado: 'ERROR', detalle: `Falló la anulación por API: ${mensaje(e)}` })
+        }
+        continue
+      }
       if ((forma === 'SALIDA_FONDOS' || forma === 'ASIENTO_MANUAL') && id) {
         await anularAsientoEnXubio('pagos', 'ANULAR_PAGO', String(p.id), String(p.empresa_id), id)
         continue

@@ -26,7 +26,7 @@ export function Contabilizacion() {
     clave: 'contabilizacion',
     texto: (p) =>
       [proveedor(p.proveedorId)?.nombre, proveedor(p.proveedorId)?.cuit, p.proveedorDestino, p.descripcion, p.observaciones, p.numeroCheque, p.cuentaOrigen, p.bancoOrigen,
-        p.cuentaContable, p.medio, empresa(p.empresaId).nombre, p.importe.toFixed(2)].join(' '),
+        p.cuentaContable, p.medio, empresa(p.empresaId).nombre, p.importe.toFixed(2), p.numeroOp, p.xubioId].join(' '),
     empresa: (p) => p.empresaId,
     proveedor: (p) => proveedor(p.proveedorId)?.nombre ?? p.proveedorDestino ?? '',
     cuenta: (p) => p.cuentaContable,
@@ -90,7 +90,7 @@ export function Contabilizacion() {
 }
 
 function TarjetaPago({ p, empresaNombre, erp, nueva }: { p: Pago; empresaNombre: string; erp: string; nueva?: boolean }) {
-  const { facturas, proveedor, catalogos, usuario, contabilizarPago, marcarRalpharma, abrirArchivo, anularPago, liberarPagoXubio } = useStore()
+  const { facturas, proveedor, catalogos, usuario, contabilizarPago, marcarRalpharma, abrirArchivo, anularPago, liberarPagoXubio, guardarNumeroOp } = useStore()
   // Envío a Xubio sin confirmar: se reservó para enviar y nunca quedó contabilizado. No se sabe si Xubio lo creó.
   const trabado = !!p.envioXubioEn && (p.estado === 'CARGADO' || p.estado === 'REVISADO')
   // Hasta que pase el plazo que define la base, el envío puede estar todavía saliendo: no se ofrece resolverlo
@@ -105,6 +105,8 @@ function TarjetaPago({ p, empresaNombre, erp, nueva }: { p: Pago; empresaNombre:
   }, [resolubleDesde, ahora])
   const envioEnCurso = trabado && (resolubleDesde == null || ahora < resolubleDesde)
   const [nroXubio, setNroXubio] = useState('')
+  const [nroOp, setNroOp] = useState('')
+  const [guardandoOp, setGuardandoOp] = useState(false)
   const [confirmandoLiberar, setConfirmandoLiberar] = useState(false)
   const puedeAnular = puede(usuario.rol, 'ANULAR_PAGO') && p.gestion !== 'HOJA' && !trabado && ['CARGADO', 'REVISADO', 'PENDIENTE_RALPHARMA'].includes(p.estado)
   const [anulando, setAnulando] = useState(false)
@@ -333,6 +335,37 @@ function TarjetaPago({ p, empresaNombre, erp, nueva }: { p: Pago; empresaNombre:
             </div>
           )}
           {(hecho || p.estado === 'REVISADO') && p.detalleXubio && <p className="text-[0.8125rem] text-seco leading-snug">{p.detalleXubio}</p>}
+          {hecho && erp === 'XUBIO' && p.xubioId !== 'RALPHARMA' && (
+            <div className="rounded-lg border border-borde p-3 space-y-2">
+              <p className="text-[0.8125rem] text-seco leading-snug">
+                {p.numeroOp ? (
+                  <>
+                    N° de OP / asiento: <b className="text-crema">{p.numeroOp}</b> · {p.numeroOpOrigen === 'XUBIO' ? 'traído de Xubio' : 'cargado a mano'}
+                  </>
+                ) : (
+                  'Todavía sin N° de OP / asiento. Se busca solo en Xubio a las 9 y a las 14 h; si no aparece (por ejemplo un asiento), cargalo a mano.'
+                )}
+              </p>
+              {puede(usuario.rol, 'PAGAR') && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <input value={nroOp} onChange={(ev) => setNroOp(ev.target.value)} placeholder={p.numeroOp ? 'Corregir el N°' : 'Ej.: X-0001-00002312'} aria-label="N° de OP o de asiento" className={inputCls + ' flex-1 min-w-[10rem]'} />
+                  <Btn
+                    variant="secundario"
+                    disabled={!nroOp.trim() || guardandoOp}
+                    onClick={async () => {
+                      // Cambiar un número que ya está pide confirmación (la base también lo exige).
+                      if (p.numeroOp && p.numeroOp !== nroOp.trim() && !window.confirm(`Este pago ya tiene el N° ${p.numeroOp}. ¿Lo cambiás por ${nroOp.trim()}?`)) return
+                      setGuardandoOp(true)
+                      if (await guardarNumeroOp(p.id, nroOp.trim(), !!p.numeroOp)) setNroOp('')
+                      setGuardandoOp(false)
+                    }}
+                  >
+                    Guardar N°
+                  </Btn>
+                </div>
+              )}
+            </div>
+          )}
           {hecho && (
             <TablaDatos
               filas={[

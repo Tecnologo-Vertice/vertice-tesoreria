@@ -2,14 +2,18 @@
 // Las reglas de verdad están en la base (0023 a 0027); esto solo replica lo necesario para mostrar.
 
 import type {
+  Cheque,
   CategoriaMovimiento,
   ClaseCuenta,
   ControlFlujo,
   CuentaBancaria,
   EstadoCheque,
   EstadoConciliacion,
+  Factura,
   FilaFlujo,
+  FotoFlujo,
   LineaFlujo,
+  Pago,
   Proyeccion,
   SaldoBancario,
   SeccionFlujo,
@@ -285,6 +289,222 @@ export function armarGrilla(args: {
   for (const d of dias) control[d] = args.control.find((c) => c.unidadId === unidadId && c.fecha === d)
 
   return { dias, bloques, internas, neto, cajaInicial, cajaFinal, cajaInicialReal, bancos, totalBancos, control }
+}
+
+// ---------------------------------------------------------------- Exportar la grilla (fbExportar)
+
+const fechaLarga = (d: string) => `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}`
+/** Un campo del CSV: entre comillas si trae separador, comillas o salto de línea. */
+const campoCsv = (x: string | number | undefined): string => {
+  if (x === undefined || x === '') return ''
+  if (typeof x === 'number') return String(Math.round(x * 100) / 100).replace('.', ',')
+  // Un texto que empieza con = + - @ (o tab / retorno) se leería como fórmula al abrirlo en la planilla: se neutraliza con una comilla.
+  const t = /^[=+\-@\t\r]/.test(x) ? `'${x}` : x
+  return /[;"\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t
+}
+
+/**
+ * La grilla visible como CSV para abrir en una planilla (el Apps Script la volcaba a una planilla nueva: fbExportar).
+ * Misma estructura: Sección, Cuenta y una columna por día; después ingresos y egresos del día y la caja. Separador ";",
+ * decimales con coma y BOM, así Excel y Google Sheets en español lo leen sin vueltas. Las filas sin importes no van.
+ */
+export function grillaACsv(g: Grilla): string {
+  const dias = g.dias
+  const filas: (string | number | undefined)[][] = [['Sección', 'Cuenta', ...dias.map(fechaLarga), 'Total']]
+  const ing = dias.map(() => 0)
+  const egr = dias.map(() => 0)
+  const suma = (f: FilaGrilla) => {
+    dias.forEach((d, i) => {
+      const v = f.valores[d]
+      if (v === undefined) return
+      if (v > 0) ing[i] += v
+      else egr[i] += -v
+    })
+  }
+  const linea = (seccion: string, f: FilaGrilla) => {
+    if (dias.every((d) => f.valores[d] === undefined)) return
+    filas.push([seccion, f.fila.etiqueta, ...dias.map((d) => f.valores[d]), f.total])
+    suma(f)
+  }
+  for (const b of g.bloques) for (const f of b.filas) linea(b.seccion.etiqueta, f)
+  for (const f of g.internas) linea('', f)
+  const r2 = (n: number) => Math.round(n * 100) / 100
+  filas.push(
+    ['', 'Ingresos del día', ...ing.map(r2), r2(ing.reduce((a, x) => a + x, 0))],
+    ['', 'Egresos del día', ...egr.map(r2), r2(egr.reduce((a, x) => a + x, 0))],
+    ['', 'Flujo neto del día', ...dias.map((d) => g.neto[d]), r2(dias.reduce((a, d) => a + g.neto[d], 0))],
+    ['', 'Caja inicial', ...dias.map((d) => g.cajaInicial[d])],
+    ['', 'Caja acumulada', ...dias.map((d) => g.cajaFinal[d])],
+  )
+  return '﻿' + filas.map((f) => f.map(campoCsv).join(';')).join('\r\n') + '\r\n'
+}
+
+// ---------------------------------------------------------------- Bloques con detalle (flujoBloquesDatos / fbItem_)
+
+export type EstadoItemBloque = 'PAGADO' | 'BANCO' | 'DEBITADO' | 'A DEBITAR' | 'PROGRAMADO' | 'PARCIAL' | 'PROYECTADO' | 'MANUAL' | 'PLANILLA'
+export interface ItemBloque {
+  linea: LineaFlujo
+  tipo: 'PAGO' | 'CHEQUE' | 'COBRO' | 'BANCO' | 'FACTURA' | 'PROYECCION' | 'MANUAL' | 'PLANILLA'
+  estado: EstadoItemBloque
+  /** Lo que se sabe de ese renglón: número, vencimiento, cheque, comprobante. */
+  detalle: string[]
+  /** Se puede mover, editar o eliminar (lo proyectado). */
+  editable: boolean
+}
+export interface BloqueDetalle {
+  /** Valor absoluto de la celda. */
+  total: number
+  pagado: number
+  estado: 'PAGADO' | 'PARCIAL' | 'PROYECTADO' | 'PROGRAMADO'
+  ingreso: boolean
+  items: ItemBloque[]
+  /** Lo que hay cargado a mano en la celda (filas MANUAL): entra en el total como cualquier otra línea. */
+  manual: number
+}
+
+const numeroFactura = (f: Factura) => `${String(f.puntoVenta).padStart(5, '0')}-${String(f.numero).padStart(8, '0')}`
+
+/**
+ * El detalle de un bloque (fila × día): cada línea con su estado y sus datos, y el estado del bloque como el
+ * Apps Script: PAGADO si lo pagado llega al total, PARCIAL si hay algo pagado, PROYECTADO si todo es proyectado,
+ * si no PROGRAMADO. Un día pasado cuenta entero como pagado. Las cargas manuales suman como cualquier línea.
+ */
+export function bloqueDetalle(
+  lineas: LineaFlujo[],
+  ctx: { hoy: string; facturas: Factura[]; pagos: Pago[]; cheques: Cheque[]; cuentas: CuentaBancaria[]; proyecciones: Proyeccion[]; fila?: FilaFlujo },
+): BloqueDetalle {
+  const items: ItemBloque[] = lineas.map((l) => {
+    const real = l.naturaleza === 'REAL'
+    const detalle: string[] = []
+    const proy = l.origenTipo === 'PROYECCION' ? ctx.proyecciones.find((x) => x.id === l.origenId) : undefined
+    if (l.origenTipo === 'FACTURA') {
+      const f = ctx.facturas.find((x) => x.id === l.origenId)
+      if (f) {
+        detalle.push(`${f.tipo} ${numeroFactura(f)}`)
+        detalle.push(`Vence ${fechaLarga(f.vencimiento)}${f.fechaPago ? ` · programada ${fechaLarga(f.fechaPago)}` : ''}`)
+        detalle.push(`Total ${num(f.total)}${f.pagadoPct > 0 ? ` · pagada ${Math.round(f.pagadoPct)} %` : ''}`)
+        if (f.tipoPago === 'ANTICIPO_PARCIAL' && f.anticipoPct) detalle.push(`Anticipo ${f.anticipoPct} % + cuenta corriente (${l.ocurrencia === 'ANTICIPO' ? 'tramo del anticipo' : 'saldo'})`)
+        if (f.ncAplicadas?.length) detalle.push(`${f.ncAplicadas.length} nota(s) de crédito aplicada(s)`)
+      }
+    } else if (l.origenTipo === 'PAGO') {
+      const p = ctx.pagos.find((x) => x.id === l.origenId)
+      if (p) {
+        const fs = p.facturaIds.map((id) => ctx.facturas.find((f) => f.id === id)).filter((f): f is Factura => !!f)
+        detalle.push(fs.length ? `Factura asociada: ${fs.map(numeroFactura).join(', ')}` : 'Sin factura asociada')
+        if (p.cuentaOrigen) detalle.push(`Desde ${p.cuentaOrigen}`)
+        if (p.comprobante || p.comprobanteUrl) detalle.push('Con comprobante')
+      }
+    } else if (l.origenTipo === 'CHEQUE') {
+      const c = ctx.cheques.find((x) => x.id === l.origenId)
+      if (c) {
+        const banco = ctx.cuentas.find((x) => x.id === c.cuentaId)?.nombre
+        detalle.push(`Cheque ${c.numero} (${c.tipo})${banco ? ` · ${banco}` : ''}`)
+        detalle.push(c.estado === 'DEBITADO' ? `Debitado el ${c.debitadoEn ? fechaLarga(c.debitadoEn) : fechaLarga(l.fecha)}` : `Fecha de pago ${fechaLarga(c.fechaPago)}`)
+      }
+    } else if (proy) {
+      detalle.push(proy.recurrencia === 'UNICA' ? 'Proyección puntual' : `Proyección ${proy.recurrencia.toLowerCase()}${proy.ajustePctMensual ? ` con ajuste de ${String(proy.ajustePctMensual).replace('.', ',')} % por mes` : ''}`)
+      if (proy.nota) detalle.push(proy.nota)
+    }
+    let tipo: ItemBloque['tipo'] = l.origenTipo === 'MOVIMIENTO' || l.origenTipo === 'RENDIMIENTO' ? 'BANCO' : (l.origenTipo as ItemBloque['tipo'])
+    let estado: EstadoItemBloque
+    if (l.origenTipo === 'PROYECCION') {
+      tipo = proy?.origen === 'MANUAL' ? 'MANUAL' : proy?.origen === 'PLANILLA_GASTOS' ? 'PLANILLA' : 'PROYECCION'
+      estado = tipo === 'MANUAL' ? 'MANUAL' : tipo === 'PLANILLA' ? 'PLANILLA' : 'PROYECTADO'
+    } else if (l.origenTipo === 'FACTURA') {
+      const f = ctx.facturas.find((x) => x.id === l.origenId)
+      estado = f && f.pagadoPct > 0 && f.pagadoPct < 100 ? 'PARCIAL' : 'PROGRAMADO'
+    } else if (l.origenTipo === 'CHEQUE') estado = real ? 'DEBITADO' : 'A DEBITAR'
+    else if (l.origenTipo === 'MOVIMIENTO' || l.origenTipo === 'RENDIMIENTO') estado = 'BANCO'
+    else estado = 'PAGADO'
+    if (l.ajustada) detalle.push(`Ajustada a mano (la calculada era el ${fechaLarga(l.fechaCalculada)})`)
+    return { linea: l, tipo, estado, detalle, editable: l.editable }
+  })
+  const neto = Math.round(lineas.reduce((a, l) => a + l.importe, 0) * 100) / 100
+  const total = Math.abs(neto)
+  const pagado = Math.round(lineas.filter((l) => l.naturaleza === 'REAL').reduce((a, l) => a + Math.abs(l.importe), 0) * 100) / 100
+  const pasado = lineas.length > 0 && lineas.every((l) => l.fecha < ctx.hoy)
+  const estado: BloqueDetalle['estado'] =
+    pasado || (total > 0 && pagado >= total - 1)
+      ? 'PAGADO'
+      : pagado > 0
+        ? 'PARCIAL'
+        : items.length > 0 && items.every((i) => i.estado === 'PROYECTADO' || i.estado === 'MANUAL' || i.estado === 'PLANILLA')
+          ? 'PROYECTADO'
+          : 'PROGRAMADO'
+  const manual = Math.round(items.filter((i) => i.tipo === 'MANUAL').reduce((a, i) => a + i.linea.importe, 0) * 100) / 100
+  const ingreso = ctx.fila ? ctx.fila.seccion === 'INGRESOS_OPERATIVOS' || ctx.fila.seccion === 'INGRESOS_FINANCIEROS' || ctx.fila.seccion === 'TOMA_DEUDA' : neto > 0
+  return { total, pagado, estado, ingreso, items, manual }
+}
+
+// ---------------------------------------------------------------- Foto mensual (resumen_flujo_dias)
+
+export interface ResumenDia {
+  dia: string
+  ingresosOperativos: number
+  costos: number
+  gastosOperativos: number
+  impuestos: number
+  subtotal: number
+  socios: number
+  intercompany: number
+  variacionCaja: number
+}
+
+const redondear = (n: number) => Math.round(n * 100) / 100
+
+/**
+ * El Flujo de una unidad resumido por día y sección, como resumen_flujo_dias() en SQL: ingresos operativos, costos,
+ * gastos, impuestos, su subtotal, socios, intercompany y la variación de caja. Es lo que guarda la foto y lo que se
+ * compara con ella.
+ */
+export function resumenDias(lineas: LineaFlujo[], filas: FilaFlujo[], unidadId: string, dias: string[]): ResumenDia[] {
+  const fila = new Map(filas.map((f) => [f.id, f] as const))
+  const por = new Map<string, LineaFlujo[]>()
+  for (const l of lineas) if (l.unidadId === unidadId) por.set(l.fecha, [...(por.get(l.fecha) ?? []), l])
+  return dias.map((dia) => {
+    const ls = por.get(dia) ?? []
+    const de = (...s: SeccionFlujo[]) => redondear(ls.filter((l) => s.includes(fila.get(l.filaId)?.seccion as SeccionFlujo)).reduce((a, l) => a + l.importe, 0))
+    return {
+      dia,
+      ingresosOperativos: de('INGRESOS_OPERATIVOS'),
+      costos: de('COSTOS'),
+      gastosOperativos: de('GASTOS_OPERATIVOS'),
+      impuestos: de('IMPUESTOS'),
+      subtotal: de('INGRESOS_OPERATIVOS', 'COSTOS', 'GASTOS_OPERATIVOS', 'IMPUESTOS'),
+      socios: de('SOCIOS'),
+      intercompany: de('INTERCOMPANY'),
+      variacionCaja: redondear(ls.filter((l) => fila.get(l.filaId)?.mueveCaja !== false).reduce((a, l) => a + l.importe, 0)),
+    }
+  })
+}
+
+/** Los días de un mes (aaaa-mm): los hábiles y los que tienen líneas. */
+export function diasDelMes(mes: string, lineas: LineaFlujo[], unidadId: string, feriados: Set<string>): string[] {
+  const [a, m] = mes.split('-').map(Number)
+  const ultimo = new Date(a, m, 0).getDate()
+  const set = new Set<string>()
+  for (let d = 1; d <= ultimo; d++) {
+    const x = `${mes}-${String(d).padStart(2, '0')}`
+    if (esDiaHabil(x, feriados)) set.add(x)
+  }
+  for (const l of lineas) if (l.unidadId === unidadId && l.fecha.startsWith(mes)) set.add(l.fecha)
+  return [...set].sort()
+}
+
+export interface FilaComparacion {
+  dia: string
+  foto?: FotoFlujo
+  ahora: ResumenDia
+  /** Lo de hoy menos lo de la foto, en la variación de caja. */
+  diferencia: number
+}
+
+/** La foto de un mes contra cómo está el mes hoy (el "Real vs Proyectado" de la planilla del motor). */
+export function compararFoto(fotos: FotoFlujo[], ahora: ResumenDia[]): FilaComparacion[] {
+  return ahora.map((a) => {
+    const foto = fotos.find((f) => f.dia === a.dia)
+    return { dia: a.dia, foto, ahora: a, diferencia: redondear(a.variacionCaja - (foto?.variacionCaja ?? 0)) }
+  })
 }
 
 /** Normaliza como texto_banco() en SQL: mayúsculas, sin tildes, espacios simples. */

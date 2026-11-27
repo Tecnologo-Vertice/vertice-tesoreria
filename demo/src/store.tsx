@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { Auditoria, ComprobanteEjemplo, Documento, Empresa, EstadoEspejo, Factura, LecturaComprobante, Pago, Proveedor, Usuario } from './types'
-import type { Bucket, CambioLinea, Catalogos, DatosAprobacion, DatosContabilizacion, DatosEdicion, DatosLiberacion, DatosTesoreria, DatosYaPagada, Fuente, NuevaProyeccion, NuevoCheque, NuevoPago, OpcionesExtracto, ResultadoCorridaBancos, ResultadoExtracto } from './data/fuente'
+import type { AlcanceProyeccion, Bucket, CambioLinea, Catalogos, DatosAprobacion, DatosContabilizacion, DatosEdicion, DatosLiberacion, DatosTesoreria, DatosYaPagada, Fuente, NuevaProyeccion, NuevoCheque, NuevoPago, OpcionesExtracto, ResultadoCorridaBancos, ResultadoExtracto } from './data/fuente'
 import type { CategoriaMovimiento, OrigenSaldo, RefLinea, TipoPagoFactura } from './types'
 import { fecha as fmtFecha, money } from './lib/format'
 
@@ -28,6 +28,8 @@ interface Store {
   /** Sube el archivo a la carpeta de la empresa del pago y lo adjunta (reemplaza el que había). */
   adjuntarComprobantePago: (pagoId: string, archivo: File, cuentaOrigen?: string) => Promise<boolean>
   quitarComprobantePago: (pagoId: string) => Promise<boolean>
+  /** Carga a mano el N° de OP o de asiento de un pago contabilizado. */
+  guardarNumeroOp: (pagoId: string, numero: string, confirmar?: boolean) => Promise<boolean>
   liberarPagoXubio: (id: string, xubioId: string, datos: DatosLiberacion) => Promise<void>
   guardarEmailProveedor: (proveedorId: string, email: string) => Promise<boolean>
   marcarMailPreparado: (facturaIds: string[]) => Promise<void>
@@ -67,6 +69,12 @@ interface Store {
   ajustarLineaFlujo: (ref: RefLinea, cambio: CambioLinea, motivo: string) => Promise<boolean>
   restaurarLineaFlujo: (ref: RefLinea) => Promise<boolean>
   crearProyeccion: (p: NuevaProyeccion) => Promise<boolean>
+  /** "Esta y las siguientes" (0038): cambia o borra una ocurrencia de una proyección recurrente. */
+  cambiarProyeccion: (id: string, ocurrencia: string, alcance: AlcanceProyeccion, accion: 'EDITAR' | 'BORRAR', cambio: { importe?: number; fecha?: string }, motivo: string) => Promise<boolean>
+  /** Marca una fila del Flujo como manual o como la de las personas físicas (0038). */
+  marcarFilaFlujo: (filaId: string, manual: boolean, personaFisica: boolean) => Promise<boolean>
+  /** Foto mensual de la proyección (0038): devuelve qué pasó en cada unidad. */
+  sacarFotoFlujo: (forzar: boolean) => Promise<{ unidad: string; resultado: string }[] | null>
   cancelarProyeccion: (id: string, motivo: string) => Promise<boolean>
   definirPagoFactura: (id: string, tipoPago: TipoPagoFactura, anticipoPct: number | null, unidadId: string | null) => Promise<boolean>
   toasts: Toast[]
@@ -232,6 +240,7 @@ export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fu
       },
       quitarComprobantePago: async (pagoId) =>
         (await accion(() => fuente.quitarComprobantePago(pagoId, usuario).then(() => true), 'Comprobante quitado del pago')) === true,
+      guardarNumeroOp: async (pagoId, numero, confirmar) => (await accion(() => fuente.guardarNumeroOp(pagoId, numero, usuario, confirmar).then(() => true), 'N° guardado')) === true,
       liberarPagoXubio: async (id, nro, d) => {
         await accion(
           () => fuente.liberarPagoXubio(id, nro, d, usuario),
@@ -361,6 +370,13 @@ export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fu
         (await accion(() => fuente.ajustarLineaFlujo(ref, c, m, usuario).then(() => true), c.eliminar ? 'Línea eliminada del Flujo (se puede restaurar)' : c.fecha ? `Línea movida al ${fmtFecha(c.fecha)}` : 'Importe cambiado')) === true,
       restaurarLineaFlujo: async (ref) => (await accion(() => fuente.restaurarLineaFlujo(ref, usuario).then(() => true), 'Línea restaurada: vuelve a como la calcula el sistema')) === true,
       crearProyeccion: async (p) => (await accion(() => fuente.crearProyeccion(p, usuario), 'Proyección creada')) !== null,
+      cambiarProyeccion: async (id, oc, alcance, acc, cambio, m) =>
+        (await accion(
+          () => fuente.cambiarProyeccion(id, oc, alcance, acc, cambio, m, usuario).then(() => true),
+          acc === 'BORRAR' ? (alcance === 'DESDE_ESTA' ? 'Proyección cortada: esta y las siguientes ya no están' : 'Esa ocurrencia quedó fuera del Flujo') : alcance === 'DESDE_ESTA' ? 'Cambio guardado: vale para esta y las siguientes' : 'Cambio guardado solo para esta ocurrencia',
+        )) === true,
+      marcarFilaFlujo: async (filaId, manual, pf) => (await accion(() => fuente.marcarFilaFlujo(filaId, manual, pf, usuario).then(() => true), 'Fila actualizada')) === true,
+      sacarFotoFlujo: (forzar) => accion(() => fuente.sacarFotoFlujo(forzar, usuario), (r) => r.map((x) => `${x.unidad}: ${x.resultado}`).join(' · ') || 'No hay unidades para sacar la foto'),
       cancelarProyeccion: async (id, m) => (await accion(() => fuente.cancelarProyeccion(id, m, usuario).then(() => true), 'Proyección cancelada')) === true,
       definirPagoFactura: async (id, t, pct, u) => (await accion(() => fuente.definirPagoFactura(id, t, pct, u, usuario).then(() => true), 'Forma de pago guardada: el Flujo la proyecta en tramos')) === true,
       toasts,

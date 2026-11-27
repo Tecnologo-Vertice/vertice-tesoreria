@@ -13,6 +13,7 @@ import type {
   DocumentoBancario,
   Extracto,
   FilaFlujo,
+  FotoFlujo,
   LineaFlujo,
   MovimientoBancario,
   OrigenSaldo,
@@ -163,6 +164,8 @@ export interface DatosTesoreria {
   lineas: LineaFlujo[]
   control: ControlFlujo[]
   proyecciones: Proyeccion[]
+  /** Fotos mensuales de la proyección (0038). Vacío si la base no tiene 0038. */
+  fotos: FotoFlujo[]
   /** Cuentas contables para reclasificar (plan común + las usadas en el Flujo). */
   cuentasContables: string[]
 }
@@ -262,6 +265,8 @@ export interface CambioLinea {
 
 export type NuevaProyeccion = Omit<Proyeccion, 'id' | 'estado' | 'creadoPor'>
 
+export type AlcanceProyeccion = 'SOLO_ESTA' | 'DESDE_ESTA'
+
 export interface Fuente {
   modo: 'demo' | 'conectado'
   cargar(): Promise<Datos>
@@ -274,6 +279,8 @@ export interface Fuente {
   /** Adjunta (o reemplaza) el comprobante ya subido de un pago. La cuenta de origen completa a un pago ya pagado que no tenía banco. */
   adjuntarComprobantePago(pagoId: string, ruta: string, cuentaOrigen: string | undefined, u: Usuario): Promise<void>
   quitarComprobantePago(pagoId: string, u: Usuario): Promise<void>
+  /** Carga a mano el N° de OP o de asiento de un pago ya contabilizado en Xubio (0037). Cambiar uno que ya está pide confirmar. */
+  guardarNumeroOp(pagoId: string, numero: string, u: Usuario, confirmar?: boolean): Promise<void>
   rechazarFactura(id: string, motivo: string, u: Usuario): Promise<void>
   aprobarYaPagada(id: string, datos: DatosAprobacion, pago: DatosYaPagada, u: Usuario): Promise<ResultadoYaPagada>
   /** Aplica una nota de crédito aprobada a una factura del mismo proveedor y empresa. */
@@ -340,6 +347,12 @@ export interface Fuente {
   ajustarLineaFlujo(ref: RefLinea, cambio: CambioLinea, motivo: string, u: Usuario): Promise<void>
   restaurarLineaFlujo(ref: RefLinea, u: Usuario): Promise<void>
   crearProyeccion(p: NuevaProyeccion, u: Usuario): Promise<string>
+  /** Cambia o borra una ocurrencia: solo esa o esa y las siguientes (0038). Con "esta y las siguientes" devuelve la serie nueva. */
+  cambiarProyeccion(id: string, ocurrencia: string, alcance: AlcanceProyeccion, accion: 'EDITAR' | 'BORRAR', cambio: { importe?: number; fecha?: string }, motivo: string, u: Usuario): Promise<string | null>
+  /** Marca una fila del Flujo como MANUAL (se carga a mano, sin recurrencia) o como la de las personas físicas de su unidad (0038). */
+  marcarFilaFlujo(filaId: string, manual: boolean, personaFisica: boolean, u: Usuario): Promise<void>
+  /** Saca la foto del mes de las unidades que ve la persona. Dice qué pasó en cada una. */
+  sacarFotoFlujo(forzar: boolean, u: Usuario): Promise<{ unidad: string; resultado: string }[]>
   cancelarProyeccion(id: string, motivo: string, u: Usuario): Promise<void>
   definirPagoFactura(id: string, tipoPago: TipoPagoFactura, anticipoPct: number | null, unidadId: string | null, u: Usuario): Promise<void>
 }

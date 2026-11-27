@@ -2,10 +2,10 @@
 // Toda la lógica de negocio de acá tiene su equivalente en supabase/migrations/0003_funciones.sql.
 
 import type { Auditoria, ComprobanteEjemplo, Documento, Factura, LecturaComprobante, Pago, Usuario } from '../types'
-import type { CambioLinea, DatosTesoreria, NuevaProyeccion, NuevoCheque, OpcionesExtracto, ResultadoCorridaBancos, ResultadoExtracto } from './fuente'
-import type { CategoriaMovimiento, Cheque, MovimientoBancario, OrigenSaldo, RefLinea, TipoPagoFactura } from '../types'
+import type { AlcanceProyeccion, CambioLinea, DatosTesoreria, NuevaProyeccion, NuevoCheque, OpcionesExtracto, ResultadoCorridaBancos, ResultadoExtracto } from './fuente'
+import type { CategoriaMovimiento, Cheque, MovimientoBancario, OrigenSaldo, Proyeccion, RefLinea, TipoPagoFactura } from '../types'
 import { pendientesXubioDemo, reglaPara, tesoreriaInicial, vistaTesoreria, type EstadoTesoreria } from './tesoreriaDemo'
-import { diaHabilAnterior, textoBanco } from '../lib/tesoreria'
+import { diaHabilAnterior, diasDelMes, ocurrenciasProyeccion, resumenDias, textoBanco } from '../lib/tesoreria'
 import type { Datos, DatosAprobacion, ResultadoAprobacion, ResultadoVinculo, DatosContabilizacion, DatosEdicion, DatosLiberacion, DatosYaPagada, Fuente, ResultadoLiberacion, ResultadoYaPagada, ResultadoEdicion, NuevoPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
 import {
   auditoriaInicial,
@@ -19,7 +19,7 @@ import {
   PROVEEDORES,
 } from './demo'
 import { leerComprobante as leerSimulado, registrarEnXubio } from '../lib/ia'
-import { iso, pendiente } from '../lib/format'
+import { addDays, iso, parseIso, pendiente } from '../lib/format'
 import { esperaFactura } from '../lib/pagos'
 
 const STORAGE_KEY = 'vertice-demo-v5' // v5: Tesorería sin planillas (bancos, cheques, Flujo en grilla)
@@ -172,6 +172,21 @@ export class FuenteDemo implements Fuente {
     if (!p.comprobante) throw new Error('El pago no tiene comprobante para quitar')
     this.e.pagos = this.e.pagos.map((x): Pago => (x.id === pagoId ? { ...x, comprobante: '' } : x))
     this.log(u, { accion: 'COMPROBANTE_QUITADO', entidad: 'PAGO', entidadId: pagoId, detalle: `Se quitó ${p.comprobante}` })
+    this.commit()
+  }
+
+  async guardarNumeroOp(pagoId: string, numero: string, u: Usuario, confirmar = false) {
+    const p = this.e.pagos.find((x) => x.id === pagoId)
+    if (!p) throw new Error('Ese pago ya no existe')
+    const n = numero.trim()
+    if (!n) throw new Error('Escribí el N° de OP o de asiento')
+    if (p.estado === 'ANULADO') throw new Error('Este pago está anulado: no se le carga N° de OP')
+    if (p.estado !== 'CONTABILIZADO' && p.estado !== 'CONCILIADO') throw new Error('Este pago todavía no está contabilizado')
+    if (this.e.pagos.some((x) => x.id !== pagoId && x.empresaId === p.empresaId && x.numeroOp === n)) throw new Error(`El N° ${n} ya está en otro pago de esta empresa`)
+    if (p.numeroOp && p.numeroOp !== n && !confirmar) throw new Error(`Este pago ya tiene el N° ${p.numeroOp}. Para cambiarlo hay que confirmarlo`)
+    if (p.xubioId === 'RALPHARMA') throw new Error('Este pago se cargó en Ralpharma: no tiene N° de Xubio')
+    this.e.pagos = this.e.pagos.map((x): Pago => (x.id === pagoId ? { ...x, numeroOp: n, numeroOpOrigen: 'MANUAL' } : x))
+    this.log(u, { accion: 'NUMERO_OP_MANUAL', entidad: 'PAGO', entidadId: pagoId, detalle: `N° ${n}${p.numeroOp ? ` (antes ${p.numeroOp})` : ''}` })
     this.commit()
   }
 
@@ -883,13 +898,19 @@ export class FuenteDemo implements Fuente {
     this.commit()
   }
 
-  async crearProyeccion(p: NuevaProyeccion, u: Usuario): Promise<string> {
+  async crearProyeccion(p0: NuevaProyeccion, u: Usuario): Promise<string> {
+    let p = p0
     this.exigirRol(u, ['TESORERIA', 'ADMINISTRACION', 'CONTROLLER', 'ADMIN'])
     const fila = this.t.filas.find((f) => f.id === p.filaId)
     const unidad = this.t.unidades.find((x) => x.id === p.unidadId)
     if (!fila || !unidad || fila.unidadId !== p.unidadId || unidad.empresaId !== p.empresaId) throw new Error('La fila no es de esa unidad o la unidad no es de esa empresa')
     if (!p.concepto.trim()) throw new Error('Falta el concepto')
     if (!p.importe) throw new Error('El importe no puede ser cero')
+    if (fila.manual) {
+      if (p.recurrencia !== 'UNICA') throw new Error('Esa fila se carga a mano en el Flujo: cargá el importe de un día (sin recurrencia)')
+      if (p.fechaInicio < iso(new Date())) throw new Error('Solo se carga de hoy en adelante')
+      p = { ...p, origen: 'MANUAL' }
+    }
     if (p.recurrencia !== 'UNICA' && !p.hasta && !p.cuotas) throw new Error('Una proyección recurrente necesita "hasta" o cantidad de cuotas')
     if (p.recurrencia === 'MENSUAL' && !p.diaMes) throw new Error('Una proyección mensual necesita el día del mes')
     const id = `pr${Date.now()}`
@@ -897,6 +918,109 @@ export class FuenteDemo implements Fuente {
     this.log(u, { accion: 'CREAR', entidad: 'PROYECCION', entidadId: id, detalle: `${p.concepto} · ${p.importe}` })
     this.commit()
     return id
+  }
+
+  /** Como cambiar_proyeccion() (0038): solo esta ocurrencia, o esta y las siguientes (corta la serie y crea otra). */
+  async cambiarProyeccion(id: string, ocurrencia: string, alcance: AlcanceProyeccion, accion: 'EDITAR' | 'BORRAR', cambio: { importe?: number; fecha?: string }, motivo: string, u: Usuario): Promise<string | null> {
+    this.exigirRol(u, ['TESORERIA', 'ADMINISTRACION', 'CONTROLLER', 'ADMIN'])
+    if (!motivo.trim()) throw new Error('Falta el motivo')
+    const borrar = accion === 'BORRAR'
+    if (!borrar && cambio.importe === undefined && !cambio.fecha) throw new Error('No hay nada para cambiar: falta el importe o la fecha')
+    if (cambio.importe !== undefined && cambio.importe <= 0) throw new Error('El importe va en positivo: el signo lo pone la proyección')
+    const p = this.t.proyecciones.find((x) => x.id === id)
+    if (!p) throw new Error('No encontré la proyección')
+    if (p.estado !== 'ACTIVA') throw new Error('La proyección ya no está activa')
+    const hoyIso = iso(new Date())
+    if (ocurrencia < hoyIso) throw new Error('No se cambia lo que ya pasó')
+    if (cambio.fecha && cambio.fecha < hoyIso) throw new Error('No se proyecta en el pasado')
+    const fer = new Set(this.t.feriados)
+    const o = ocurrenciasProyeccion(p, ocurrencia, ocurrencia, fer).find((x) => x.ocurrencia === ocurrencia)
+    if (!o) throw new Error(`La proyección no tiene una ocurrencia el ${ocurrencia}`)
+    const ahora = new Date().toISOString()
+    if (alcance === 'SOLO_ESTA' || p.recurrencia === 'UNICA') {
+      if (p.recurrencia === 'UNICA' && borrar) {
+        this.t.proyecciones = this.t.proyecciones.map((x): Proyeccion => (x.id === id ? { ...x, estado: 'CANCELADA', nota: [x.nota, motivo].filter(Boolean).join(' · ') } : x))
+      } else {
+        await this.ajustarLineaFlujo({ origenTipo: 'PROYECCION', origenId: id, ocurrencia }, borrar ? { eliminar: true } : { fecha: cambio.fecha, importe: cambio.importe }, motivo, u)
+      }
+      this.log(u, { accion: 'PROYECCION_CAMBIAR', entidad: 'PROYECCION', entidadId: id, detalle: `Solo la del ${ocurrencia} · ${accion} · ${motivo}` })
+      this.commit()
+      return null
+    }
+    const inicio = cambio.fecha ?? ocurrencia
+    if (!borrar && p.hasta && inicio > p.hasta) throw new Error('La fecha nueva queda después del final de la serie')
+    const antes = ocurrenciasProyeccion(p, p.fechaInicio, iso(addDays(parseIso(ocurrencia), -1)), fer).length
+    const nuevaId = borrar ? null : `pr${Date.now()}`
+    // Las excepciones de esta ocurrencia ya no valen; las de después pasan a la serie nueva si la fecha no cambió.
+    this.t.ajustes = this.t.ajustes.map((a) => {
+      if (a.reemplazadoEn || a.origenTipo !== 'PROYECCION' || a.origenId !== id) return a
+      if (a.ocurrencia === ocurrencia) return { ...a, reemplazadoEn: ahora }
+      if (a.ocurrencia > ocurrencia) return nuevaId && !cambio.fecha ? { ...a, origenId: nuevaId } : { ...a, reemplazadoEn: ahora }
+      return a
+    })
+    const sigue: Proyeccion[] = []
+    if (nuevaId) {
+      sigue.push({
+        ...p,
+        id: nuevaId,
+        importe: (cambio.importe ?? Math.abs(o.importe)) * (p.importe < 0 ? -1 : 1),
+        fechaInicio: inicio,
+        diaMes: p.recurrencia === 'MENSUAL' ? (cambio.fecha ? parseIso(cambio.fecha).getDate() : p.diaMes) : p.diaMes,
+        cuotas: p.cuotas !== undefined ? p.cuotas - antes : undefined,
+        nota: [`Sigue a ${id.slice(0, 8)}`, motivo].join(' · '),
+        creadoPor: u.nombre,
+      })
+    }
+    this.t.proyecciones = [
+      ...this.t.proyecciones.map((x): Proyeccion =>
+        x.id !== id ? x : antes === 0 ? { ...x, estado: 'CANCELADA', nota: [x.nota, motivo].filter(Boolean).join(' · ') } : { ...x, hasta: iso(addDays(parseIso(ocurrencia), -1)) },
+      ),
+      ...sigue,
+    ]
+    this.log(u, { accion: 'PROYECCION_CAMBIAR', entidad: 'PROYECCION', entidadId: id, detalle: `Desde el ${ocurrencia} · ${accion}${cambio.importe !== undefined ? ` · importe ${cambio.importe}` : ''}${cambio.fecha ? ` · al ${cambio.fecha}` : ''} · ${motivo}` })
+    this.commit()
+    return nuevaId
+  }
+
+  /** Como marcar_fila_flujo() (0038): solo una fila de personas físicas por unidad, y solo de cuenta. */
+  async marcarFilaFlujo(filaId: string, manual: boolean, personaFisica: boolean, u: Usuario) {
+    this.exigirRol(u, ['TESORERIA', 'ADMINISTRACION', 'CONTROLLER', 'ADMIN'])
+    const f = this.t.filas.find((x) => x.id === filaId)
+    if (!f) throw new Error('La fila no existe')
+    if (f.tipo !== 'CUENTA' && f.tipo !== 'APERTURA') throw new Error('Solo las filas de cuenta se marcan')
+    if (personaFisica && f.tipo !== 'CUENTA') throw new Error('La fila de las personas físicas tiene que ser una fila de cuenta, no una apertura')
+    this.t.filas = this.t.filas.map((x) => (x.id === filaId ? { ...x, manual, personaFisica } : personaFisica && x.unidadId === f.unidadId ? { ...x, personaFisica: false } : x))
+    this.log(u, { accion: 'FLUJO_FILA', entidad: 'FLUJO', entidadId: filaId, detalle: `${f.etiqueta} · manual ${manual ? 'sí' : 'no'} · personas físicas ${personaFisica ? 'sí' : 'no'}` })
+    this.commit()
+  }
+
+  /** Como sacar_fotos_flujo() (0038): una foto por unidad y por mes; si ya hay una (que no sea parcial) no se saca otra, salvo que se fuerce. */
+  async sacarFotoFlujo(forzar: boolean, u: Usuario): Promise<{ unidad: string; resultado: string }[]> {
+    this.exigirRol(u, ['TESORERIA', 'ADMINISTRACION', 'CONTROLLER', 'ADMIN'])
+    const hoyIso = iso(new Date())
+    const mes = hoyIso.slice(0, 7)
+    const txt = `${hoyIso.slice(5, 7)}/${hoyIso.slice(0, 4)}`
+    const t = await this.cargarTesoreria(this.e.facturas)
+    const fer = new Set(this.t.feriados)
+    const ahora = new Date().toISOString()
+    const r: { unidad: string; resultado: string }[] = []
+    let fotos = this.t.fotos ?? []
+    for (const un of this.t.unidades) {
+      if (!forzar && fotos.some((f) => f.unidadId === un.id && f.mes === mes && !f.parcial)) {
+        r.push({ unidad: un.nombre, resultado: `Ya hay foto de ${txt}` })
+        continue
+      }
+      const dias = diasDelMes(mes, t.lineas, un.id, fer)
+      fotos = [
+        ...fotos.filter((f) => !(f.unidadId === un.id && f.mes === mes)),
+        ...resumenDias(t.lineas, t.filas, un.id, dias).map((d) => ({ ...d, unidadId: un.id, mes, parcial: false, tomadaEn: ahora, tomadaPor: u.email })),
+      ]
+      this.log(u, { accion: 'FLUJO_FOTO', entidad: 'FLUJO', entidadId: un.id, detalle: `${un.nombre} · ${txt} · ${dias.length} días${forzar ? ' · reemplazada' : ''}` })
+      r.push({ unidad: un.nombre, resultado: `Foto de ${txt}: ${dias.length} filas` })
+    }
+    this.t.fotos = fotos
+    this.commit()
+    return r
   }
 
   async cancelarProyeccion(id: string, motivo: string, u: Usuario) {

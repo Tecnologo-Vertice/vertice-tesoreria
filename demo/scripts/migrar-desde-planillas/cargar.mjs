@@ -108,6 +108,9 @@ export async function cargar(db, plan, { correcciones = true, organizacion = nul
     }
 
     // ---------------------------------------------------------- flujo_filas
+    // Código de la hoja (columna B de las pestañas v2: SUELDOS, COMISIONES__ID…): desde 0038 lo usa la base para marcar las filas MANUAL.
+    // Si la base todavía no tiene 0038, se carga como siempre. Como la carga es idempotente, completa las filas ya cargadas.
+    const conCodigo = (await q(`select 1 from information_schema.columns where table_schema = 'public' and table_name = 'flujo_filas' and column_name = 'codigo_hoja'`)).length > 0
     for (const f of plan.flujo_filas) {
       const T = 'flujo_filas', u = unidad(f.empresa, f.unidad)
       if (!u) { omitir(T, f.etiqueta, `no existe la unidad ${f.unidad}`); continue }
@@ -118,7 +121,15 @@ export async function cargar(db, plan, { correcciones = true, organizacion = nul
         const y = await q(`select 1 from flujo_filas where unidad_id = $1 and tipo = 'SECCION' and seccion = $2`, [u, f.seccion])
         if (y.length) { r(T).iguales++; continue }
       }
-      const x = await uno(`insert into flujo_filas (unidad_id, empresa_id, orden, tipo, seccion, etiqueta, cuenta_contable, apertura, mueve_caja)
+      const x = conCodigo
+        ? await uno(`insert into flujo_filas (unidad_id, empresa_id, orden, tipo, seccion, etiqueta, cuenta_contable, apertura, mueve_caja, codigo_hoja)
+                           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                           on conflict (unidad_id, etiqueta) do update set orden = excluded.orden, tipo = excluded.tipo, seccion = excluded.seccion,
+                             cuenta_contable = excluded.cuenta_contable, apertura = excluded.apertura, mueve_caja = excluded.mueve_caja, codigo_hoja = excluded.codigo_hoja, activa = true
+                           where (flujo_filas.orden, flujo_filas.tipo, flujo_filas.seccion, flujo_filas.cuenta_contable, flujo_filas.apertura, flujo_filas.mueve_caja, flujo_filas.codigo_hoja, flujo_filas.activa)
+                             is distinct from (excluded.orden, excluded.tipo, excluded.seccion, excluded.cuenta_contable, excluded.apertura, excluded.mueve_caja, excluded.codigo_hoja, true)
+                           returning (xmax = 0) as alta`, [u, f.empresa, f.orden, f.tipo, f.seccion, f.etiqueta, f.cuenta_contable, f.apertura, f.mueve_caja, f.codigo ?? null])
+        : await uno(`insert into flujo_filas (unidad_id, empresa_id, orden, tipo, seccion, etiqueta, cuenta_contable, apertura, mueve_caja)
                            values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                            on conflict (unidad_id, etiqueta) do update set orden = excluded.orden, tipo = excluded.tipo, seccion = excluded.seccion,
                              cuenta_contable = excluded.cuenta_contable, apertura = excluded.apertura, mueve_caja = excluded.mueve_caja, activa = true

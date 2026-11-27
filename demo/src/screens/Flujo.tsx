@@ -4,7 +4,22 @@ import type { Factura, FilaFlujo, LineaFlujo, Proyeccion, RefLinea } from '../ty
 import { Badge, Btn, Card, Desplegable, Field, inputCls, Kpi, Modal, Tabs } from '../components/ui'
 import { AvisoTesoreria, CampoMonto, ModalFormaPago, ModalMotivo, etiquetaFormaPago } from '../components/Tesoreria'
 import { fecha, money } from '../lib/format'
-import { armarGrilla, diaCorto, diasHabiles, esDiaHabil, num, parseMonto, sumarHabiles, type FilaGrilla } from '../lib/tesoreria'
+import {
+  armarGrilla,
+  bloqueDetalle,
+  compararFoto,
+  diaCorto,
+  diasDelMes,
+  diasHabiles,
+  esDiaHabil,
+  grillaACsv,
+  num,
+  parseMonto,
+  resumenDias,
+  sumarHabiles,
+  type EstadoItemBloque,
+  type FilaGrilla,
+} from '../lib/tesoreria'
 
 const COLUMNAS = 15
 const PUEDE = ['TESORERIA', 'ADMINISTRACION', 'CONTROLLER', 'ADMIN']
@@ -18,12 +33,24 @@ const ORIGEN: Record<LineaFlujo['origenTipo'], string> = {
   PROYECCION: 'Proyección',
 }
 
+const ESTADO_ITEM: Record<EstadoItemBloque, { label: string; tone: 'neutro' | 'dorado' | 'rojo' | 'verde' | 'azul' | 'naranja' }> = {
+  PAGADO: { label: 'Pagado', tone: 'verde' },
+  BANCO: { label: 'Banco', tone: 'verde' },
+  DEBITADO: { label: 'Debitado', tone: 'verde' },
+  'A DEBITAR': { label: 'A debitar', tone: 'dorado' },
+  PROGRAMADO: { label: 'Programado', tone: 'dorado' },
+  PARCIAL: { label: 'Pago parcial', tone: 'naranja' },
+  PROYECTADO: { label: 'Proyectado', tone: 'dorado' },
+  MANUAL: { label: 'Carga manual', tone: 'azul' },
+  PLANILLA: { label: 'Planilla de gastos', tone: 'azul' },
+}
+
 type Accion = { tipo: 'mover' | 'importe' | 'eliminar'; linea: LineaFlujo; fecha?: string }
 const refDe = (l: LineaFlujo): RefLinea => ({ origenTipo: l.origenTipo as RefLinea['origenTipo'], origenId: l.origenId, ocurrencia: l.ocurrencia })
 const claveLinea = (l: LineaFlujo) => `${l.origenTipo}|${l.origenId}|${l.ocurrencia}`
 
 export function Flujo() {
-  const { tesoreria, empresa, usuario, toast, facturas, restaurarLineaFlujo } = useStore()
+  const { tesoreria, empresa, usuario, toast, facturas, pagos, restaurarLineaFlujo } = useStore()
   const [unidadSel, setUnidadSel] = useState('')
   const [corrimiento, setCorrimiento] = useState(0)
   const [ocultarVacias, setOcultarVacias] = useState(true)
@@ -31,6 +58,9 @@ export function Flujo() {
   const [accion, setAccion] = useState<Accion | null>(null)
   const [nueva, setNueva] = useState(false)
   const [verProyecciones, setVerProyecciones] = useState(false)
+  const [cargaManual, setCargaManual] = useState(false)
+  const [verFotos, setVerFotos] = useState(false)
+  const [configFila, setConfigFila] = useState<FilaFlujo | null>(null)
   const [formaPago, setFormaPago] = useState<Factura | null>(null)
   const [arrastrando, setArrastrando] = useState<string | null>(null)
 
@@ -59,6 +89,24 @@ export function Flujo() {
   const efes = dias.filter((d) => grilla.control[d]?.estado === 'F').length
   const nombreUnidad = (u: (typeof unidades)[number]) => (unidades.filter((x) => x.nombre === u.nombre).length > 1 ? `${empresa(u.empresaId).corto} · ${u.nombre}` : u.nombre)
 
+  // Exportar la grilla que se ve (como fbExportar del Apps Script): un CSV con la misma estructura, para abrir en una planilla.
+  function exportar() {
+    const blob = new Blob([grillaACsv(grilla!)], { type: 'text/csv;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `Flujo en bloques · ${unidad ? nombreUnidad(unidad) : ''} · ${hoy}.csv`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+    toast('Grilla exportada: se descargó un CSV con los días que ves')
+  }
+
+  const detalleCelda = celda
+    ? bloqueDetalle(lineasCelda, { hoy, facturas, pagos, cheques: t.cheques, cuentas: t.cuentas, proyecciones: t.proyecciones, fila: filaCelda })
+    : null
+
   function soltar(e: DragEvent, filaId: string, dia: string) {
     e.preventDefault()
     const k = e.dataTransfer.getData('text/plain')
@@ -80,6 +128,13 @@ export function Flujo() {
       <tr key={fg.fila.id} className="group">
         <th scope="row" className={`sticky left-0 z-10 bg-pino text-left font-normal px-3 py-1.5 whitespace-nowrap ${nivel === 'interna' ? 'text-seco italic' : 'pl-7'}`}>
           {fg.fila.etiqueta}
+          {fg.fila.manual && <span className="ml-1 text-[0.625rem] text-sky-300" title="Fila manual: el importe se carga a mano de un día">(manual)</span>}
+          {fg.fila.personaFisica && <span className="ml-1 text-[0.625rem] text-seco" title="Acá caen las personas físicas pagadas desde esta unidad">(personas físicas)</span>}
+          {puede && nivel === 'cuenta' && (
+            <button className="ml-2 text-seco/60 hover:text-acento opacity-0 group-hover:opacity-100 focus:opacity-100" title="Marcar la fila como manual o como la de personas físicas" aria-label={`Configurar la fila ${fg.fila.etiqueta}`} onClick={() => setConfigFila(fg.fila)}>
+              ⚙
+            </button>
+          )}
           {!fg.fila.mueveCaja && <span className="ml-1 text-[0.625rem] text-seco">(no mueve caja)</span>}
         </th>
         {dias.map((d) => {
@@ -91,7 +146,8 @@ export function Flujo() {
               key={d}
               data-fila={fg.fila.etiqueta}
               data-dia={d}
-              onClick={() => (v !== undefined ? setCelda({ filaId: fg.fila.id, dia: d }) : setCelda(null))}
+              // Una celda vacía de hoy en adelante también se abre (para cargar un importe a mano, el "+" de la grilla).
+              onClick={() => (v !== undefined || (puede && d >= hoy && nivel === 'cuenta') ? setCelda({ filaId: fg.fila.id, dia: d }) : setCelda(null))}
               onDragOver={(e) => {
                 if (arrastrando) e.preventDefault()
               }}
@@ -132,14 +188,22 @@ export function Flujo() {
           <h2 className="titulo-pagina">Flujo de caja</h2>
           <p className="text-sm text-seco">Una pestaña por unidad, columnas por día hábil. Lo real sale de bancos, pagos, cobros y cheques; lo proyectado se mueve con motivo.</p>
         </div>
-        {puede && (
-          <div className="flex gap-2">
-            <Btn variant="secundario" onClick={() => setVerProyecciones(true)}>
-              Proyecciones
-            </Btn>
-            <Btn onClick={() => setNueva(true)}>Nueva proyección</Btn>
-          </div>
-        )}
+        <div className="flex flex-wrap gap-2">
+          <Btn variant="secundario" onClick={exportar} title="Descarga la grilla como CSV para abrir en una planilla">
+            Exportar
+          </Btn>
+          <Btn variant="secundario" onClick={() => setVerFotos(true)} title="Cómo se veía el mes cuando se sacó la foto, contra cómo está hoy">
+            Fotos del mes
+          </Btn>
+          {puede && (
+            <>
+              <Btn variant="secundario" onClick={() => setVerProyecciones(true)}>
+                Proyecciones
+              </Btn>
+              <Btn onClick={() => setNueva(true)}>Nueva proyección</Btn>
+            </>
+          )}
+        </div>
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -284,13 +348,31 @@ export function Flujo() {
               </h3>
               <p className="text-xs text-seco">Arrastrá una línea proyectada a otro día de la misma fila, o usá "Mover". Lo real no se edita.</p>
             </div>
-            <button onClick={() => setCelda(null)} className="text-seco hover:text-acento text-xl leading-none" aria-label="Cerrar">
-              ×
-            </button>
+            <div className="flex items-center gap-3">
+              {puede && celda.dia >= hoy && (
+                <Btn variant="secundario" className="h-9" onClick={() => setCargaManual(true)}>
+                  + Cargar importe
+                </Btn>
+              )}
+              <button onClick={() => setCelda(null)} className="text-seco hover:text-acento text-xl leading-none" aria-label="Cerrar">
+                ×
+              </button>
+            </div>
           </div>
+          {detalleCelda && detalleCelda.items.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 mb-3 text-sm" data-testid="resumen-bloque">
+              <Badge tone={detalleCelda.estado === 'PAGADO' ? 'verde' : detalleCelda.estado === 'PARCIAL' ? 'naranja' : 'dorado'}>{detalleCelda.estado === 'PROYECTADO' ? 'Proyectado' : detalleCelda.estado === 'PROGRAMADO' ? 'Programado' : detalleCelda.estado === 'PARCIAL' ? 'Pago parcial' : 'Pagado'}</Badge>
+              <span className="text-seco">{detalleCelda.ingreso ? 'Ingreso' : 'Egreso'} del bloque:</span>
+              <span className="font-semibold tabular">{money(detalleCelda.total)}</span>
+              <span className="text-seco">· real {money(detalleCelda.pagado)}</span>
+              {filaCelda.manual && <Badge tone="azul">Fila manual: lo que cargues suma acá</Badge>}
+              {detalleCelda.manual !== 0 && <span className="text-seco">· cargado a mano {money(Math.abs(detalleCelda.manual))}</span>}
+            </div>
+          )}
           <div className="space-y-2">
-            {lineasCelda.length === 0 && <p className="text-sm text-seco italic">La celda quedó vacía.</p>}
-            {lineasCelda.map((l) => {
+            {lineasCelda.length === 0 && <p className="text-sm text-seco italic">{filaCelda.manual ? 'Fila manual: todavía no hay nada cargado ese día.' : 'La celda está vacía.'}</p>}
+            {detalleCelda?.items.map((it) => {
+              const l = it.linea
               const real = l.naturaleza === 'REAL'
               const f = l.origenTipo === 'FACTURA' ? facturas.find((x) => x.id === l.origenId) : undefined
               const fp = f ? etiquetaFormaPago(f) : null
@@ -312,6 +394,7 @@ export function Flujo() {
                     <div className="flex flex-wrap items-center gap-2 mb-0.5">
                       {real ? <Badge tone="verde">🔒 Real</Badge> : <Badge tone="dorado">Proyectado</Badge>}
                       <Badge>{ORIGEN[l.origenTipo]}</Badge>
+                      <Badge tone={ESTADO_ITEM[it.estado].tone}>{ESTADO_ITEM[it.estado].label}</Badge>
                       {l.ajustada && <Badge tone="azul">Ajustada</Badge>}
                       {l.vencido && <Badge tone="rojo">Vencida: era el {fecha(l.fechaCalculada)}</Badge>}
                       {!l.vencido && l.fechaCalculada !== l.fecha && <Badge tone="azul">Calculada el {fecha(l.fechaCalculada)}</Badge>}
@@ -319,6 +402,13 @@ export function Flujo() {
                     </div>
                     <p className="font-semibold truncate">{l.contraparte}</p>
                     <p className="text-xs text-seco truncate">{l.concepto}</p>
+                    {it.detalle.length > 0 && (
+                      <ul className="mt-1 space-y-0.5 text-[0.6875rem] text-seco" data-testid="detalle-linea">
+                        {it.detalle.map((x) => (
+                          <li key={x}>{x}</li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
                   <p className={`font-serif text-xl tabular ${l.importe < 0 ? 'text-red-300' : 'text-emerald-300'}`}>{money(l.importe)}</p>
                   <div className="flex flex-col items-end gap-1 text-[0.75rem] min-w-[120px]">
@@ -362,7 +452,18 @@ export function Flujo() {
         </Card>
       )}
 
-      {accion && <ModalAccion accion={accion} hoy={hoy} feriados={fer} onClose={() => setAccion(null)} />}
+      {accion && (
+        <ModalAccion
+          accion={accion}
+          hoy={hoy}
+          feriados={fer}
+          proyeccion={accion.linea.origenTipo === 'PROYECCION' ? t.proyecciones.find((p) => p.id === accion.linea.origenId) : undefined}
+          onClose={() => setAccion(null)}
+        />
+      )}
+      {cargaManual && celda && filaCelda && unidad && <ModalCargaManual fila={filaCelda} dia={celda.dia} unidadId={unidad.id} onClose={() => setCargaManual(false)} />}
+      {configFila && <ModalConfigFila fila={t.filas.find((f) => f.id === configFila.id) ?? configFila} onClose={() => setConfigFila(null)} />}
+      {verFotos && unidad && <ModalFotos unidadId={unidad.id} onClose={() => setVerFotos(false)} />}
       {nueva && unidad && <ModalProyeccion unidadId={unidad.id} onClose={() => setNueva(false)} />}
       {verProyecciones && unidad && <ModalProyecciones unidadId={unidad.id} onClose={() => setVerProyecciones(false)} />}
       {formaPago && <ModalFormaPago factura={formaPago} onClose={() => setFormaPago(null)} />}
@@ -370,9 +471,12 @@ export function Flujo() {
   )
 }
 
-function ModalAccion({ accion, hoy, feriados, onClose }: { accion: Accion; hoy: string; feriados: Set<string>; onClose: () => void }) {
-  const { ajustarLineaFlujo } = useStore()
+function ModalAccion({ accion, hoy, feriados, proyeccion, onClose }: { accion: Accion; hoy: string; feriados: Set<string>; proyeccion?: Proyeccion; onClose: () => void }) {
+  const { ajustarLineaFlujo, cambiarProyeccion } = useStore()
   const l = accion.linea
+  // En una proyección recurrente se elige: solo esta ocurrencia o esta y las siguientes (fbProyCambiar del Apps Script).
+  const recurrente = !!proyeccion && proyeccion.recurrencia !== 'UNICA'
+  const [alcance, setAlcance] = useState<'SOLO_ESTA' | 'DESDE_ESTA'>('SOLO_ESTA')
   const [f, setF] = useState(accion.fecha ?? l.fecha)
   const [importe, setImporte] = useState(String(Math.abs(l.importe)).replace('.', ','))
   const n = parseMonto(importe)
@@ -393,10 +497,24 @@ function ModalAccion({ accion, hoy, feriados, onClose }: { accion: Accion; hoy: 
       peligro={accion.tipo === 'eliminar'}
       listo={accion.tipo === 'mover' ? fechaOk && f !== l.fecha : accion.tipo === 'importe' ? n !== null && n > 0 : true}
       onConfirmar={(motivo) =>
-        ajustarLineaFlujo(refDe(l), accion.tipo === 'mover' ? { fecha: f } : accion.tipo === 'importe' ? { importe: n! } : { eliminar: true }, motivo)
+        recurrente && alcance === 'DESDE_ESTA'
+          ? cambiarProyeccion(l.origenId, l.ocurrencia, 'DESDE_ESTA', accion.tipo === 'eliminar' ? 'BORRAR' : 'EDITAR', accion.tipo === 'mover' ? { fecha: f } : accion.tipo === 'importe' ? { importe: n! } : {}, motivo)
+          : ajustarLineaFlujo(refDe(l), accion.tipo === 'mover' ? { fecha: f } : accion.tipo === 'importe' ? { importe: n! } : { eliminar: true }, motivo)
       }
       onClose={onClose}
     >
+      {recurrente && (
+        <Field label="Alcance" hint={alcance === 'DESDE_ESTA' ? 'La serie vieja termina el día anterior y sigue una nueva desde esta ocurrencia.' : 'Las demás ocurrencias no cambian.'}>
+          <Desplegable
+            value={alcance}
+            onChange={(v) => setAlcance(v as 'SOLO_ESTA' | 'DESDE_ESTA')}
+            opciones={[
+              { value: 'SOLO_ESTA', label: 'Solo esta ocurrencia' },
+              { value: 'DESDE_ESTA', label: 'Esta y las siguientes' },
+            ]}
+          />
+        </Field>
+      )}
       {accion.tipo === 'mover' && (
         <Field label="Nueva fecha" hint={fechaOk ? undefined : f < hoy ? 'No se proyecta en el pasado' : 'Elegí un día hábil'} marcado={fechaOk ? undefined : 'falta'}>
           <input type="date" className={inputCls} value={f} min={hoy} onChange={(e) => setF(e.target.value)} aria-label="Nueva fecha" />
@@ -419,6 +537,7 @@ const ORIGENES: Record<Proyeccion['origen'], string> = {
   PRESTAMO: 'Préstamo',
   SUELDOS: 'Sueldos',
   COBRANZA: 'Cobranza',
+  PLANILLA_GASTOS: 'Planilla de gastos',
 }
 
 function ModalProyeccion({ unidadId, onClose }: { unidadId: string; onClose: () => void }) {
@@ -575,6 +694,256 @@ function ModalProyecciones({ unidadId, onClose }: { unidadId: string; onClose: (
           onClose={() => setCancelar(null)}
         />
       )}
+    </Modal>
+  )
+}
+
+/**
+ * El "+" de la grilla (fbAgregarDesdeGrilla del Apps Script): carga un importe de un día en una fila. En una fila MANUAL (sueldos,
+ * cargas sociales, préstamos…) es lo único que se puede cargar; en las demás es una proyección puntual más (para repetirla está
+ * "Nueva proyección"). Entra en el subtotal de la sección y en la caja como cualquier otra línea.
+ */
+function ModalCargaManual({ fila, dia, unidadId, onClose }: { fila: FilaFlujo; dia: string; unidadId: string; onClose: () => void }) {
+  const { tesoreria, crearProyeccion } = useStore()
+  const unidad = tesoreria!.unidades.find((u) => u.id === unidadId)!
+  const ingresoPorDefecto = fila.seccion === 'INGRESOS_OPERATIVOS' || fila.seccion === 'INGRESOS_FINANCIEROS' || fila.seccion === 'TOMA_DEUDA'
+  const [concepto, setConcepto] = useState('')
+  const [sentido, setSentido] = useState<'EGRESO' | 'INGRESO'>(ingresoPorDefecto ? 'INGRESO' : 'EGRESO')
+  const [importe, setImporte] = useState('')
+  const [enviando, setEnviando] = useState(false)
+  const n = parseMonto(importe)
+  const listo = concepto.trim() !== '' && n !== null && n > 0
+  return (
+    <Modal titulo={`Cargar importe · ${fila.etiqueta} · ${diaCorto(dia)}`} onClose={onClose} ancho="max-w-lg">
+      <div className="space-y-4">
+        <p className="text-sm text-seco">
+          {fila.manual ? 'Esta fila se carga a mano: el motor no suma nada acá. ' : ''}
+          El importe se suma a lo que ya hay ese día y entra en el subtotal de la sección y en la caja. Después se puede editar, mover o eliminar desde la celda.
+        </p>
+        <div className="grid md:grid-cols-2 gap-3">
+          <Field label="Concepto">
+            <input className={inputCls} value={concepto} onChange={(e) => setConcepto(e.target.value)} placeholder="Ej.: Sueldos de la quincena" aria-label="Concepto" autoFocus />
+          </Field>
+          <Field label="Tipo">
+            <Desplegable value={sentido} onChange={(v) => setSentido(v as 'EGRESO' | 'INGRESO')} opciones={[{ value: 'EGRESO', label: 'Egreso (sale plata)' }, { value: 'INGRESO', label: 'Ingreso (entra plata)' }]} />
+          </Field>
+          <Field label="Importe">
+            <CampoMonto value={importe} onChange={setImporte} />
+          </Field>
+        </div>
+        <div className="flex justify-end gap-2">
+          <Btn variant="secundario" onClick={onClose}>
+            Cancelar
+          </Btn>
+          <Btn
+            disabled={!listo || enviando}
+            onClick={async () => {
+              setEnviando(true)
+              const ok = await crearProyeccion({
+                empresaId: unidad.empresaId,
+                unidadId,
+                filaId: fila.id,
+                concepto: concepto.trim(),
+                importe: sentido === 'EGRESO' ? -n! : n!,
+                fechaInicio: dia,
+                recurrencia: 'UNICA',
+                ajustePctMensual: 0,
+                origen: 'MANUAL',
+                nota: 'Cargado desde la grilla del Flujo',
+              })
+              setEnviando(false)
+              if (ok) onClose()
+            }}
+          >
+            Cargar
+          </Btn>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+/** Fotos mensuales de la proyección: cómo se veía el mes el día que se sacó la foto, contra cómo está hoy ("Real vs Proyectado"). */
+function ModalFotos({ unidadId, onClose }: { unidadId: string; onClose: () => void }) {
+  const { tesoreria, usuario, sacarFotoFlujo } = useStore()
+  const t = tesoreria!
+  const unidad = t.unidades.find((u) => u.id === unidadId)!
+  const puede = PUEDE.includes(usuario.rol)
+  const fer = useMemo(() => new Set(t.feriados), [t])
+  const mesActual = t.hoy.slice(0, 7)
+  const delUnidad = t.fotos.filter((f) => f.unidadId === unidadId)
+  const meses = [...new Set([...delUnidad.map((f) => f.mes), mesActual])].sort().reverse()
+  const [mes, setMes] = useState(meses.includes(mesActual) && delUnidad.some((f) => f.mes === mesActual) ? mesActual : (meses.find((m) => delUnidad.some((f) => f.mes === m)) ?? mesActual))
+  const [enviando, setEnviando] = useState(false)
+  const [confirmar, setConfirmar] = useState(false)
+  const fotos = delUnidad.filter((f) => f.mes === mes)
+  const dias = useMemo(() => [...new Set([...diasDelMes(mes, t.lineas, unidadId, fer), ...fotos.map((f) => f.dia)])].sort(), [mes, t, unidadId, fer, fotos])
+  const filas = useMemo(() => compararFoto(fotos, resumenDias(t.lineas, t.filas, unidadId, dias)), [fotos, t, unidadId, dias])
+  const tomada = fotos[0]
+  const suma = (f: (x: (typeof filas)[number]) => number) => Math.round(filas.reduce((a, x) => a + f(x), 0) * 100) / 100
+  const rango = t.lineas.length ? t.lineas.reduce((m, l) => (l.fecha < m ? l.fecha : m), t.hoy) : t.hoy
+  const fueraDelRango = mes + '-01' < rango && mes !== mesActual
+  const col = (v: number | undefined, ahora = false) =>
+    v === undefined ? <span className="text-seco/50">—</span> : <span className={ahora ? 'font-semibold' : ''}>{v ? num(v) : <span className="text-seco/50">–</span>}</span>
+  return (
+    <Modal titulo={`Fotos del mes · ${unidad.nombre}`} onClose={onClose} ancho="max-w-6xl">
+      <div className="space-y-4">
+        <p className="text-sm text-seco">
+          La foto se saca una vez por mes (todos los días a las 10 de Argentina, solo el primero sin foto del mes) y guarda cómo se veía el mes en el Flujo. Acá se compara con cómo está hoy:
+          la diferencia es lo que cambió desde la foto en la variación de caja de cada día.
+        </p>
+        <div className="flex flex-wrap items-end gap-3">
+          <Field label="Mes">
+            <Desplegable value={mes} onChange={setMes} opciones={meses.map((m) => ({ value: m, label: `${m.slice(5, 7)}/${m.slice(0, 4)}${delUnidad.some((f) => f.mes === m) ? '' : ' · sin foto'}` }))} />
+          </Field>
+          {tomada ? (
+            <p className="text-xs text-seco pb-2" data-testid="foto-datos">
+              Foto sacada el {fecha(tomada.tomadaEn.slice(0, 10))} por {tomada.tomadaPor}
+              {tomada.parcial ? ' · parcial' : ''}
+            </p>
+          ) : (
+            <p className="text-xs text-naranja pb-2">Este mes no tiene foto.</p>
+          )}
+          {puede && mes === mesActual && (
+            <div className="ml-auto flex gap-2 pb-1">
+              {!tomada && (
+                <Btn
+                  disabled={enviando}
+                  onClick={async () => {
+                    setEnviando(true)
+                    await sacarFotoFlujo(false)
+                    setEnviando(false)
+                  }}
+                >
+                  Sacar la foto ahora
+                </Btn>
+              )}
+              {tomada && (
+                <Btn variant="secundario" disabled={enviando} onClick={() => setConfirmar(true)}>
+                  Reemplazar la foto del mes
+                </Btn>
+              )}
+            </div>
+          )}
+        </div>
+        {confirmar && (
+          <div className="rounded-xl border border-dorado/50 bg-dorado/5 p-3 text-sm flex flex-wrap items-center gap-3">
+            <span>Se reemplaza la foto de todas las unidades que ves por el Flujo de hoy. La anterior no se recupera.</span>
+            <Btn
+              variant="peligro"
+              disabled={enviando}
+              onClick={async () => {
+                setEnviando(true)
+                await sacarFotoFlujo(true)
+                setEnviando(false)
+                setConfirmar(false)
+              }}
+            >
+              Reemplazar
+            </Btn>
+            <Btn variant="secundario" onClick={() => setConfirmar(false)}>
+              No
+            </Btn>
+          </div>
+        )}
+        {fueraDelRango && <p className="text-xs text-naranja">Los días de este mes que quedan fuera de lo que carga la pantalla (45 días atrás) se comparan contra cero.</p>}
+        <div className="overflow-x-auto max-h-[55vh]">
+          <table className="text-[0.75rem] border-separate border-spacing-0 min-w-full" data-testid="tabla-fotos">
+            <thead className="sticky top-0 bg-suave text-[0.625rem] uppercase tracking-[0.1em] text-seco">
+              <tr>
+                <th className="text-left px-2 py-2">Día</th>
+                <th className="text-right px-2 py-2">Ingresos</th>
+                <th className="text-right px-2 py-2">Costos</th>
+                <th className="text-right px-2 py-2">Gastos</th>
+                <th className="text-right px-2 py-2">Impuestos</th>
+                <th className="text-right px-2 py-2">Subtotal</th>
+                <th className="text-right px-2 py-2">Socios</th>
+                <th className="text-right px-2 py-2">Intercompany</th>
+                <th className="text-right px-2 py-2 border-l border-borde">Variación foto</th>
+                <th className="text-right px-2 py-2">Variación hoy</th>
+                <th className="text-right px-2 py-2">Diferencia</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filas.map((x) => (
+                <tr key={x.dia} className={x.dia === t.hoy ? 'bg-dorado/[0.07]' : ''} data-dia={x.dia}>
+                  <td className="px-2 py-1 whitespace-nowrap">{diaCorto(x.dia)}</td>
+                  <td className="px-2 py-1 text-right tabular">{col(x.foto?.ingresosOperativos)}</td>
+                  <td className="px-2 py-1 text-right tabular">{col(x.foto?.costos)}</td>
+                  <td className="px-2 py-1 text-right tabular">{col(x.foto?.gastosOperativos)}</td>
+                  <td className="px-2 py-1 text-right tabular">{col(x.foto?.impuestos)}</td>
+                  <td className="px-2 py-1 text-right tabular">{col(x.foto?.subtotal)}</td>
+                  <td className="px-2 py-1 text-right tabular">{col(x.foto?.socios)}</td>
+                  <td className="px-2 py-1 text-right tabular">{col(x.foto?.intercompany)}</td>
+                  <td className="px-2 py-1 text-right tabular border-l border-borde font-semibold">{col(x.foto?.variacionCaja)}</td>
+                  <td className="px-2 py-1 text-right tabular">{col(x.ahora.variacionCaja, true)}</td>
+                  <td className={`px-2 py-1 text-right tabular font-semibold ${x.diferencia < 0 ? 'text-red-300' : x.diferencia > 0 ? 'text-emerald-300' : 'text-seco/50'}`}>{x.diferencia ? num(x.diferencia) : '–'}</td>
+                </tr>
+              ))}
+              <tr className="font-bold border-t border-borde">
+                <td className="px-2 py-2">Mes</td>
+                <td className="px-2 py-2 text-right tabular">{num(suma((x) => x.foto?.ingresosOperativos ?? 0))}</td>
+                <td className="px-2 py-2 text-right tabular">{num(suma((x) => x.foto?.costos ?? 0))}</td>
+                <td className="px-2 py-2 text-right tabular">{num(suma((x) => x.foto?.gastosOperativos ?? 0))}</td>
+                <td className="px-2 py-2 text-right tabular">{num(suma((x) => x.foto?.impuestos ?? 0))}</td>
+                <td className="px-2 py-2 text-right tabular">{num(suma((x) => x.foto?.subtotal ?? 0))}</td>
+                <td className="px-2 py-2 text-right tabular">{num(suma((x) => x.foto?.socios ?? 0))}</td>
+                <td className="px-2 py-2 text-right tabular">{num(suma((x) => x.foto?.intercompany ?? 0))}</td>
+                <td className="px-2 py-2 text-right tabular border-l border-borde">{num(suma((x) => x.foto?.variacionCaja ?? 0))}</td>
+                <td className="px-2 py-2 text-right tabular">{num(suma((x) => x.ahora.variacionCaja))}</td>
+                <td className="px-2 py-2 text-right tabular">{num(suma((x) => x.diferencia))}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+/** Marcar una fila: MANUAL (el importe se carga a mano de un día, sin recurrencia) o la de personas físicas de su unidad (marcar_fila_flujo, 0038). */
+function ModalConfigFila({ fila, onClose }: { fila: FilaFlujo; onClose: () => void }) {
+  const { marcarFilaFlujo } = useStore()
+  const [manual, setManual] = useState(!!fila.manual)
+  const [pf, setPf] = useState(!!fila.personaFisica)
+  const [enviando, setEnviando] = useState(false)
+  return (
+    <Modal titulo={`Fila · ${fila.etiqueta}`} onClose={onClose} ancho="max-w-lg">
+      <div className="space-y-4">
+        <label className="flex items-start gap-3 text-sm">
+          <input type="checkbox" className="accent-dorado mt-1" checked={manual} onChange={(e) => setManual(e.target.checked)} />
+          <span>
+            <span className="font-semibold">Fila manual</span>
+            <span className="block text-seco text-xs">Sueldos, cargas sociales, préstamos, intereses… Ahí solo se carga el importe de un día, sin recurrencia, y no suman las proyecciones que no sean cargas manuales.</span>
+          </span>
+        </label>
+        <label className="flex items-start gap-3 text-sm">
+          <input type="checkbox" className="accent-dorado mt-1" checked={pf} disabled={fila.tipo !== 'CUENTA'} onChange={(e) => setPf(e.target.checked)} />
+          <span>
+            <span className="font-semibold">Fila de las personas físicas</span>
+            <span className="block text-seco text-xs">
+              Los prestadores que son personas (no S.A., S.R.L., SAS…) pagados desde una cuenta de esta unidad, sin otra regla y sin cuenta clara, caen acá (en Dax Salud, Consultorios). Hay una sola por unidad: marcar esta le saca la marca a la otra.
+              {fila.tipo !== 'CUENTA' ? ' Una apertura no puede serlo.' : ''}
+            </span>
+          </span>
+        </label>
+        <div className="flex justify-end gap-2">
+          <Btn variant="secundario" onClick={onClose}>
+            Cancelar
+          </Btn>
+          <Btn
+            disabled={enviando || (manual === !!fila.manual && pf === !!fila.personaFisica)}
+            onClick={async () => {
+              setEnviando(true)
+              const ok = await marcarFilaFlujo(fila.id, manual, pf)
+              setEnviando(false)
+              if (ok) onClose()
+            }}
+          >
+            Guardar
+          </Btn>
+        </div>
+      </div>
     </Modal>
   )
 }

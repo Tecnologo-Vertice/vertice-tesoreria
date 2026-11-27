@@ -203,6 +203,9 @@ export interface Pago {
   avisoCheque?: string
   /** Pago registrado al aprobar una factura "ya pagada": falta el comprobante. */
   faltaComprobante?: boolean
+  /** N° de la orden de pago (o del asiento) que le dio Xubio: lo trae el servidor a las 9 y a las 14 h o se carga a mano. */
+  numeroOp?: string
+  numeroOpOrigen?: 'XUBIO' | 'MANUAL'
 }
 
 export interface CuentaOrigen {
@@ -451,6 +454,10 @@ export interface FilaFlujo {
   cuentaContable?: string
   padreId?: string
   mueveCaja: boolean
+  /** Fila MANUAL (0038): el importe se carga a mano de un día, sin recurrencia. */
+  manual?: boolean
+  /** Fila donde caen las personas físicas pagadas desde esta unidad (0038): Consultorios en Dax Salud. */
+  personaFisica?: boolean
 }
 
 export type OrigenLinea = 'PAGO' | 'CHEQUE' | 'COBRO' | 'MOVIMIENTO' | 'RENDIMIENTO' | 'FACTURA' | 'PROYECCION'
@@ -513,7 +520,26 @@ export interface Proyeccion {
   cuotas?: number
   ajustePctMensual: number
   estado: 'ACTIVA' | 'PAUSADA' | 'CANCELADA'
-  origen: 'MANUAL' | 'GASTO_FIJO' | 'PLAN_PAGO' | 'PRESTAMO' | 'SUELDOS' | 'COBRANZA'
+  origen: 'MANUAL' | 'GASTO_FIJO' | 'PLAN_PAGO' | 'PRESTAMO' | 'SUELDOS' | 'COBRANZA' | 'PLANILLA_GASTOS'
   nota?: string
   creadoPor: string
+}
+
+/** Foto mensual de la proyección (0038): cómo se veía el mes de una unidad el día que se sacó, por día. */
+export interface FotoFlujo {
+  unidadId: string
+  /** aaaa-mm */
+  mes: string
+  dia: string
+  ingresosOperativos: number
+  costos: number
+  gastosOperativos: number
+  impuestos: number
+  subtotal: number
+  socios: number
+  intercompany: number
+  variacionCaja: number
+  parcial: boolean
+  tomadaEn: string
+  tomadaPor: string
 }

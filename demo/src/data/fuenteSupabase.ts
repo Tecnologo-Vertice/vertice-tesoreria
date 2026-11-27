@@ -4,7 +4,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Auditoria, ComprobanteEjemplo, CuentaOrigen, Documento, Empresa, EstadoEspejo, Factura, LecturaComprobante, Pago, Proveedor, Usuario } from '../types'
-import type { CambioLinea, DatosTesoreria, NuevaProyeccion, NuevoCheque, OpcionesExtracto, PendienteXubio, ResultadoCorridaBancos, ResultadoExtracto } from './fuente'
+import type { AlcanceProyeccion, CambioLinea, DatosTesoreria, NuevaProyeccion, NuevoCheque, OpcionesExtracto, PendienteXubio, ResultadoCorridaBancos, ResultadoExtracto } from './fuente'
 import { leerResultadoExtracto } from './resultadoExtracto'
 import type {
   CategoriaMovimiento,
@@ -15,6 +15,7 @@ import type {
   DocumentoBancario,
   Extracto,
   FilaFlujo,
+  FotoFlujo,
   LineaFlujo,
   MovimientoBancario,
   OrigenSaldo,
@@ -139,6 +140,8 @@ function mapPago(r: Row, facturaIds: string[]): Pago {
     posibleDuplicado: s(r.posible_duplicado),
     avisoCheque: s(r.aviso_cheque),
     faltaComprobante: r.falta_comprobante === true,
+    numeroOp: s(r.numero_op),
+    numeroOpOrigen: s(r.numero_op_origen) as Pago['numeroOpOrigen'],
   }
 }
 
@@ -296,6 +299,10 @@ export class FuenteSupabase implements Fuente {
 
   async quitarComprobantePago(pagoId: string) {
     await this.rpc('quitar_comprobante_pago', { p_pago: pagoId })
+  }
+
+  async guardarNumeroOp(pagoId: string, numero: string, _u?: unknown, confirmar = false) {
+    await this.rpc('guardar_numero_op', { p_pago: pagoId, p_numero: numero, p_confirmar: confirmar })
   }
 
   async rechazarFactura(id: string, motivo: string) {
@@ -610,6 +617,8 @@ export class FuenteSupabase implements Fuente {
             cuentaContable: s(r.cuenta_contable),
             padreId: s(r.padre_id),
             mueveCaja: r.mueve_caja !== false,
+            manual: r.manual === true,
+            personaFisica: r.para_persona_fisica === true,
           }),
           (q) => q.eq('activa', true),
           [['unidad_id', 'asc'], ['orden', 'asc'], ['id', 'asc']],
@@ -722,6 +731,7 @@ export class FuenteSupabase implements Fuente {
         lineas,
         control,
         proyecciones,
+        fotos: await this.fotosFlujo(),
         cuentasContables: [...new Set(filas.map((f) => f.cuentaContable).filter((x): x is string => !!x))].sort((a, b) => a.localeCompare(b)),
       }
     } catch (e) {
@@ -744,9 +754,33 @@ export class FuenteSupabase implements Fuente {
         lineas: [],
         control: [],
         proyecciones: [],
+        fotos: [],
         cuentasContables: [],
       }
     }
+  }
+
+  /** Fotos mensuales de la proyección (0038): los últimos tres meses. Sin la migración, lista vacía. */
+  private async fotosFlujo(): Promise<FotoFlujo[]> {
+    const desde = iso(addDays(new Date(), -100))
+    const { data, error } = await this.db.from('flujo_fotos').select('*').gte('dia', desde).order('dia', { ascending: true }).limit(5000)
+    if (error) return []
+    return (data as Row[]).map((r) => ({
+      unidadId: String(r.unidad_id),
+      mes: String(r.mes),
+      dia: String(r.dia),
+      ingresosOperativos: n(r.ingresos_operativos),
+      costos: n(r.costos),
+      gastosOperativos: n(r.gastos_operativos),
+      impuestos: n(r.impuestos),
+      subtotal: n(r.subtotal),
+      socios: n(r.socios),
+      intercompany: n(r.intercompany),
+      variacionCaja: n(r.variacion_caja),
+      parcial: r.parcial === true,
+      tomadaEn: String(r.tomada_en),
+      tomadaPor: String(r.tomada_por),
+    }))
   }
 
   /** Vista movimientos_cheque_sugerido (0036). Sin la migración, lista vacía. */
@@ -899,6 +933,27 @@ export class FuenteSupabase implements Fuente {
         nota: p.nota ?? null,
       },
     })
+  }
+
+  async cambiarProyeccion(id: string, ocurrencia: string, alcance: AlcanceProyeccion, accion: 'EDITAR' | 'BORRAR', cambio: { importe?: number; fecha?: string }, motivo: string): Promise<string | null> {
+    return this.rpc<string | null>('cambiar_proyeccion', {
+      p_id: id,
+      p_ocurrencia: ocurrencia,
+      p_alcance: alcance,
+      p_accion: accion,
+      p_importe: cambio.importe ?? null,
+      p_fecha: cambio.fecha ?? null,
+      p_motivo: motivo,
+    })
+  }
+
+  async marcarFilaFlujo(filaId: string, manual: boolean, personaFisica: boolean) {
+    await this.rpc('marcar_fila_flujo', { p_fila: filaId, p_manual: manual, p_persona_fisica: personaFisica })
+  }
+
+  async sacarFotoFlujo(forzar: boolean): Promise<{ unidad: string; resultado: string }[]> {
+    const r = await this.rpc<{ unidad: string; resultado: string }[]>('sacar_fotos_flujo', { p_organizacion: null, p_forzar: forzar })
+    return r ?? []
   }
 
   async cancelarProyeccion(id: string, motivo: string) {
