@@ -196,7 +196,8 @@ await falla('un cheque debitado no se anula', `select anular_cheque($1, 'x')`, [
 
 // ---------------------------------------------------------------- Facturas: anticipo % + cuenta corriente
 await servidor()
-const hoy = (await val(`select current_date d`)).d
+// Fecha de Argentina, como el sistema (con current_date, después de las 21 la prueba tomaba el día siguiente).
+const hoy = (await val(`select hoy_ar() d`)).d
 const vto = new Date(hoy.getTime() + 20 * 86400000).toISOString().slice(0, 10)
 const fac = (await val(`select ingresar_factura($1) id`, [{ empresa_id: 'india', proveedor: 'Proveedor Prueba', cuit_proveedor: '30-71111111-1',
   tipo: 'Factura A', letra: 'A', punto_venta: 1, numero: 77, fecha: hoy.toISOString().slice(0, 10), vencimiento: vto, neto: 826.45, iva: 173.55,
@@ -206,7 +207,7 @@ await db.query(`select aprobar_factura($1, 'PROVEEDORES LOCALES', 'TRANSFERENCIA
 await como('teso@prueba.com')
 await db.query(`select definir_pago_factura($1, 'ANTICIPO_PARCIAL', 30)`, [fac])
 let tr = await filas(`select ocurrencia, fecha, importe::float from flujo_lineas where origen_id = $1 order by ocurrencia`, [fac])
-const manana = (await val(`select dia_habil_desde(current_date + 1) d`)).d
+const manana = (await val(`select dia_habil_desde(hoy_ar() + 1) d`)).d
 check('anticipo 30 %: 300 el próximo día hábil y 700 al vencimiento',
   tr.length === 2 && tr[0].ocurrencia === 'ANTICIPO' && tr[0].importe === -300 && +tr[0].fecha === +manana && tr[1].importe === -700 && tr[1].fecha.toISOString().startsWith(vto), JSON.stringify(tr))
 await falla('el % va solo con anticipo parcial', `select definir_pago_factura($1, 'CUENTA_CORRIENTE', 30)`, [fac], /porcentaje/)
