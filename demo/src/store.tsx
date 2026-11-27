@@ -94,14 +94,16 @@ export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fu
   const recargar = useCallback(async () => {
     try {
       const d = await fuente.cargar()
+      // Tesorería se lee aparte (si la base todavía no tiene 0023 a 0027, el resto sigue andando), pero todo se
+      // muestra junto: si no, la copia de la hoja aparecía al día mientras Cheques, Bancos y Flujo seguían viejos.
+      const t = await fuente.cargarTesoreria(d.facturas)
       setFacturas(d.facturas)
       setPagos(d.pagos)
       setAuditoria(d.auditoria)
       setDocumentos(d.documentos)
       setCatalogos(d.catalogos)
       setEspejo(d.espejo)
-      // Tesorería se lee aparte: si la base todavía no tiene 0023 a 0027, el resto sigue andando.
-      setTesoreria(await fuente.cargarTesoreria(d.facturas))
+      setTesoreria(t)
     } catch (e) {
       toast(`No se pudieron cargar los datos: ${e instanceof Error ? e.message : e}`, 'error')
     } finally {

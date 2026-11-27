@@ -16,7 +16,8 @@ export function Kpi({ label, value, sub, tone = 'crema' }: { label: string; valu
     <div className="relative overflow-hidden bg-pino border border-borde rounded-2xl px-5 py-4 fade-up">
       <span className={`absolute left-0 top-4 bottom-4 w-[3px] rounded-r ${barra}`} />
       <p className="text-[0.625rem] uppercase tracking-[0.16em] text-seco font-bold">{label}</p>
-      <p className={`font-serif text-[2.1rem] leading-tight mt-1 ${color}`}>{value}</p>
+      {/* Montos largos (miles de millones): letra más chica en vez de cortarse. */}
+      <p title={value} className={`font-serif leading-tight mt-1 whitespace-nowrap ${value.length > 16 ? 'text-[1.35rem]' : value.length > 13 ? 'text-[1.65rem]' : 'text-[2.1rem]'} ${color}`}>{value}</p>
       {sub && <p className="text-xs text-seco mt-0.5">{sub}</p>}
     </div>
   )

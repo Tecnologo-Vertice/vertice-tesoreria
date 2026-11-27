@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { useStore } from '../store'
 import { USUARIOS } from '../data/demo'
 import { supabase } from '../lib/supabase'
@@ -38,6 +38,7 @@ interface Item {
 
 export function Layout({ pantalla, onNav, children }: { pantalla: Pantalla; onNav: (p: Pantalla) => void; children: ReactNode }) {
   const { modo, cargando, usuario, setUsuario, facturas, pagos, documentos, espejo, toasts, reiniciar, recargar, empresa, tesoreria } = useStore()
+  const [actualizando, setActualizando] = useState(false)
   const hoyT = tesoreria?.hoy ?? ''
 
   const items: Item[] = [
@@ -146,8 +147,12 @@ export function Layout({ pantalla, onNav, children }: { pantalla: Pantalla; onNa
                 <span className="hidden sm:inline text-sm text-seco mr-1">
                   <span className="font-bold text-crema">{usuario.nombre}</span> · {ROLES[usuario.rol]}
                 </span>
-                <button onClick={() => void recargar()} className="h-9 px-3 rounded-xl text-[0.8125rem] font-bold text-seco hover:text-acento border border-borde hover:border-acento">
-                  Actualizar
+                <button
+                  onClick={() => { setActualizando(true); void recargar().finally(() => setActualizando(false)) }}
+                  disabled={actualizando}
+                  className="h-9 px-3 rounded-xl text-[0.8125rem] font-bold text-seco hover:text-acento border border-borde hover:border-acento disabled:opacity-60 disabled:cursor-wait"
+                >
+                  {actualizando ? 'Actualizando…' : 'Actualizar'}
                 </button>
                 <button onClick={() => supabase?.auth.signOut()} className="h-9 px-3 rounded-xl text-[0.8125rem] text-seco hover:text-acento">
                   Salir
