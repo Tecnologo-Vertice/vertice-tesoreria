@@ -9,6 +9,7 @@ import { formaDeCarga, sugerirCuenta, type Sugerencia } from '../lib/ia'
 import { puede } from '../lib/permisos'
 import { armarMails, linkGmail, type MailProveedor } from '../lib/mails'
 import { esperaFactura, faltaComprobante } from '../lib/pagos'
+import type { ProyeccionParaPago } from '../data/fuente'
 import type { ComprobanteEjemplo, EstadoXubio, Factura, LecturaComprobante, MetodoPago, Pago } from '../types'
 
 const ESTADO_XUBIO: Record<EstadoXubio, { label: string; tone: 'verde' | 'rojo' | 'naranja' | 'neutro' }> = {
@@ -732,7 +733,7 @@ function ModalAdjuntarComprobante({ pago, onClose }: { pago: Pago; onClose: () =
 const MEDIOS: MetodoPago[] = ['TRANSFERENCIA', 'CHEQUE', 'ECHEQ', 'DEBITO', 'TARJETA', 'CAJA']
 
 function ModalCargarPago({ facturaIds, onClose }: { facturaIds: string[]; onClose: () => void }) {
-  const { modo, facturas, pagos, catalogos, proveedor, registrarPago, leerComprobante, comprobantesEjemplo, subirComprobante, toast } = useStore()
+  const { modo, facturas, pagos, catalogos, proveedor, registrarPago, proyeccionesParaPago, leerComprobante, comprobantesEjemplo, subirComprobante, toast } = useStore()
   const ejemplos = useMemo(() => comprobantesEjemplo(), [comprobantesEjemplo])
   const facts = facturas.filter((f) => facturaIds.includes(f.id))
   const [empresaId, setEmpresaId] = useState(facts[0]?.empresaId ?? catalogos.empresas[0]?.id ?? '')
@@ -753,6 +754,9 @@ function ModalCargarPago({ facturaIds, onClose }: { facturaIds: string[]; onClos
   const [sug, setSug] = useState<Sugerencia | null>(null)
   const [editados, setEditados] = useState<Set<string>>(new Set())
   const [guardando, setGuardando] = useState(false)
+  // Proyección del Flujo que cubre este pago (solo pagos sin factura): egresos de la empresa, de hoy a 30 días.
+  const [proyecciones, setProyecciones] = useState<ProyeccionParaPago[]>([])
+  const [proyElegida, setProyElegida] = useState('')
   const inputArchivo = useRef<HTMLInputElement>(null)
   // El comprobante se guarda en la carpeta de la empresa elegida al subirlo. Se recuerda el archivo por si
   // después se cambia la empresa: al confirmar se guarda de nuevo en la carpeta de la empresa del pago.
@@ -837,6 +841,21 @@ function ModalCargarPago({ facturaIds, onClose }: { facturaIds: string[]; onClos
 
   // Vencimiento del cheque: por defecto, fecha de pago + los días que se aprobaron en la factura.
   const vtoChequeFinal = vtoCheque || iso(addDays(parseIso(fechaPago), facts[0]?.diasCheque ?? 30))
+  // Se vuelve a pedir la lista solo cuando cambia la empresa. La función del store se recrea con cada recarga o aviso: se lee por ref
+  // para que eso no borre la proyección elegida ni vuelva a pedir la lista.
+  const pedirProyecciones = useRef(proyeccionesParaPago)
+  pedirProyecciones.current = proyeccionesParaPago
+  useEffect(() => {
+    let vigente = true
+    setProyElegida('')
+    if (!empresaId) return
+    pedirProyecciones.current(empresaId).then((l) => vigente && setProyecciones(l)).catch(() => vigente && setProyecciones([]))
+    return () => {
+      vigente = false
+    }
+  }, [empresaId])
+  const proyDelPago = proyecciones.find((x) => `${x.proyeccionId}|${x.ocurrencia}` === proyElegida)
+
   const cuentaFuera = !!cuenta && !enLista(cuentasPara(catalogos, empresaId), cuenta)
   const falta = !archivo || !importe || !cuentaOrigen || (esCheque && !nroCheque) || cuentaFuera
   const motivoFalta = !archivo ? 'Falta el comprobante' : !importe ? 'Falta el importe' : !cuentaOrigen ? 'Falta la cuenta de origen' : esCheque && !nroCheque ? 'Falta el número de cheque' : cuentaFuera ? 'La cuenta contable no está en el plan de la empresa' : ''
@@ -876,6 +895,8 @@ function ModalCargarPago({ facturaIds, onClose }: { facturaIds: string[]; onClos
       sugerenciaConfianza: editados.has('cuenta') ? 1 : sug?.confianza,
       formaCargaXubio: formaDeCarga(facturasEmpresa.filter((f) => vinculadas.includes(f.id)), obs),
       comprobante,
+      proyeccionId: vinculadas.length === 0 ? proyDelPago?.proyeccionId : undefined,
+      proyeccionOcurrencia: vinculadas.length === 0 ? proyDelPago?.ocurrencia : undefined,
     })
     setGuardando(false)
     if (r) onClose()
@@ -1074,6 +1095,39 @@ function ModalCargarPago({ facturaIds, onClose }: { facturaIds: string[]; onClos
                 <span className="text-red-300">el pago supera lo vinculado: cargá el excedente como un pago aparte</span>
               )}
             </p>
+          )}
+
+          {vinculadas.length === 0 && proyecciones.length > 0 && (
+            <>
+              <p className="text-[0.625rem] uppercase tracking-widest text-seco pt-2">Proyección del Flujo que cubre este pago (opcional)</p>
+              <div className="max-h-40 overflow-y-auto rounded-lg border border-borde divide-y divide-borde/60">
+                <label className={`flex items-center gap-3 px-3 py-2 text-xs cursor-pointer ${proyElegida === '' ? 'bg-dorado/10' : 'hover:bg-suave/60'}`}>
+                  <input type="radio" name="proyeccion" checked={proyElegida === ''} onChange={() => setProyElegida('')} className="accent-dorado" />
+                  <span className="flex-1">Ninguna</span>
+                </label>
+                {proyecciones.map((x) => {
+                  const clave = `${x.proyeccionId}|${x.ocurrencia}`
+                  return (
+                    <label key={clave} className={`flex items-center gap-3 px-3 py-2 text-xs cursor-pointer ${proyElegida === clave ? 'bg-dorado/10' : 'hover:bg-suave/60'}`}>
+                      <input type="radio" name="proyeccion" checked={proyElegida === clave} onChange={() => setProyElegida(clave)} className="accent-dorado" />
+                      <span className="flex-1 truncate">
+                        {fecha(x.fecha)} · {x.concepto}
+                        {x.proveedor ? ` · ${x.proveedor}` : ''} · {x.fila}
+                      </span>
+                      <span className="font-semibold">{money(x.importe)}</span>
+                    </label>
+                  )
+                })}
+              </div>
+              {proyDelPago && (
+                <p className="text-xs text-seco">
+                  {importe >= proyDelPago.importe
+                    ? 'El pago cubre toda la proyección: se da de baja del Flujo.'
+                    : `Se descuentan ${money(importe)} de la proyección y en el Flujo quedan ${money(proyDelPago.importe - importe)}.`}{' '}
+                  Si anulás el pago, el importe vuelve a la proyección.
+                </p>
+              )}
+            </>
           )}
 
           <p className="text-[0.625rem] uppercase tracking-widest text-seco pt-2">4 · Cuenta contable (regla de oro)</p>

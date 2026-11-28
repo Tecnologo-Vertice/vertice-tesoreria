@@ -41,6 +41,8 @@ export interface FacturaParaXubio {
   numero: number
   fecha: string
   vencimiento: string | null
+  /** El vencimiento que traía la factura (0041): al aprobar con fecha de pago, `vencimiento` pasa a ser la fecha de pago. */
+  vencimiento_factura?: string | null
   cotizacion: number
   neto: number
   iva: number
@@ -87,7 +89,7 @@ export function facturaCompra(f: FacturaParaXubio, proveedor: Ref, producto: Ref
     tipo: tipoComprobante(f.tipo),
     nombre: '',
     fecha: f.fecha,
-    fechaVto: f.vencimiento || f.fecha,
+    fechaVto: f.vencimiento_factura || f.vencimiento || f.fecha,
     puntoVenta: String(f.punto_venta).padStart(5, '0'),
     numeroDocumento: numeroDocumento(f.letra, f.punto_venta, f.numero),
     condicionDePago: 1, // cuenta corriente: se paga después

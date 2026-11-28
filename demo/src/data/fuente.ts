@@ -101,7 +101,10 @@ export interface DatosEdicion {
 /** Cómo quedó después de guardar: si la validación falla, en Excepciones con el motivo. */
 export type ResultadoEdicion = { estado: string; motivo?: string | null }
 
-export type DatosAprobacion = { cuentaContable: string; metodoPago: MetodoPago; diasCheque?: number }
+/** fechaPago: obligatoria al aprobar desde Pendiente de aprobación, salvo cheque y notas de crédito (0041). No puede ser anterior a hoy. */
+export type DatosAprobacion = { cuentaContable: string; metodoPago: MetodoPago; diasCheque?: number; fechaPago?: string }
+/** Una ocurrencia de proyección de egreso que un pago puede cubrir (proyecciones_para_pago, 0041): de hoy a 30 días. */
+export interface ProyeccionParaPago { proyeccionId: string; ocurrencia: string; fecha: string; importe: number; concepto: string; proveedor?: string; fila: string; recurrencia: string }
 /** Cómo quedó una factura al aprobarla: pagada sola (tarjeta), sin subir a Xubio, o vinculada a un pago sin factura. */
 export interface ResultadoAprobacion {
   estado?: string
@@ -208,6 +211,8 @@ export interface ResultadoExtracto {
   detalle?: string
   avisos?: string[]
   cuentas?: CuentaImportada[]
+  /** El extracto parece ya cargado en otra empresa (aviso del servidor): no se importó nada; la pantalla ofrece "Subir igual". */
+  otraEmpresa?: string
 }
 
 /** Lo que la pantalla puede indicar al subir un extracto (el servidor lo necesita a veces). */
@@ -216,6 +221,8 @@ export interface OpcionesExtracto {
   fechaTenencia?: string
   /** Brubank: cuál es la remunerada, si la CC tiene más de una. */
   cuentaRemuneradaId?: string
+  /** "Subir igual": confirma que es esta cuenta aunque el extracto parezca ya cargado en otra empresa. */
+  confirmarOtraEmpresa?: boolean
 }
 
 /** Un pendiente bancario con Xubio (vista xubio_bancos_pendientes, 0029). */
@@ -308,6 +315,8 @@ export interface Fuente {
   corregirFactura(id: string, u: Usuario): Promise<void>
   editarFactura(id: string, datos: DatosEdicion, u: Usuario): Promise<ResultadoEdicion>
   registrarPago(datos: NuevoPago, u: Usuario): Promise<Pago>
+  /** Proyecciones de egreso de la empresa (hoy a 30 días) para asociarles un pago manual o sin factura. */
+  proyeccionesParaPago(empresaId: string): Promise<ProyeccionParaPago[]>
   contabilizarPago(id: string, datos: DatosContabilizacion, u: Usuario): Promise<ResultadoXubio>
   marcarRalpharma(id: string, u: Usuario): Promise<void>
   /** En demo recibe un comprobante de ejemplo; conectado, un File real que va a la IA. */
@@ -333,6 +342,8 @@ export interface Fuente {
   cargarTesoreria(facturas: Factura[]): Promise<DatosTesoreria>
   /** Sube el archivo del banco a POST /api/bancos/extracto (el lector por banco lo arma el servidor). */
   subirExtracto(archivo: File, cuentaId: string, u: Usuario, opciones?: OpcionesExtracto): Promise<ResultadoExtracto>
+  /** Deshace un extracto importado en la cuenta equivocada (solo si nada de lo que trajo está conciliado ni en un asiento). */
+  borrarExtracto(id: string, u: Usuario): Promise<void>
   reclasificarMovimiento(id: string, categoria: CategoriaMovimiento, cuenta: string | null, aprenderPatron: string | null, u: Usuario): Promise<void>
   /** La otra cuenta propia de una suscripción, un rescate o una transferencia entre cuentas (null la quita). */
   asignarContraparte(movimientoId: string, cuentaId: string | null, u: Usuario): Promise<void>

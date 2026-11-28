@@ -54,6 +54,8 @@ export interface Factura {
   numero: number
   fecha: string // ISO
   vencimiento: string // ISO
+  /** Vencimiento que traía la factura, guardado una sola vez al aprobar con fecha de pago (0041). */
+  vencimientoFactura?: string
   neto: number
   iva: number
   percepciones: number
@@ -182,6 +184,11 @@ export interface Pago {
   numeroCuenta?: string
   proveedorDestino?: string
   tipoCheque?: string
+  /** Proyección del Flujo que cubre este pago (0041): cuál, qué ocurrencia, cuánto descontó y si la dio de baja. */
+  proyeccionId?: string
+  proyeccionOcurrencia?: string
+  proyeccionImporte?: number
+  proyeccionBaja?: boolean
   /** Lectura del comprobante por la IA: OK · MANUAL_OK · ERROR_n · REVISION_MANUAL. */
   estadoExtraccion?: string
   /** El comprobante dice un importe y Tesorería cargó otro. */

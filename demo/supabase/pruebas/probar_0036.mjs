@@ -85,16 +85,17 @@ const registrar = async (extra) => (await val(`select registrar_pago($1) id`, [{
 // ================================================================ 3. Tarjeta de crédito: directo a pagada
 await como('aprob@prueba.com')
 const fTar = await factura('india', pA, 1000)
-await db.query(`select aprobar_factura($1, 'GASTOS VARIOS', 'TARJETA')`, [fTar])
+await db.query(`select aprobar_factura($1, 'GASTOS VARIOS', 'TARJETA', null::integer, greatest(hoy_ar(), (select vencimiento from facturas where id = $1)))`, [fTar])
 let f = await fac(fTar)
 check('[3] aprobar con tarjeta: la factura nace PAGADA, pagado = total y con la fecha de hoy (Argentina)', f.estado === 'PAGADA' && f.pagado === 1000 && f.fecha_pago === hoy, JSON.stringify(f))
 check('[3] la auditoría lo dice', (await val(`select count(*)::int n from auditoria where accion = 'APROBACION' and entidad_id = $1 and detalle like '%tarjeta de crédito%'`, [fTar])).n === 1)
 const fNoTar = await factura('india', pA, 500)
-await db.query(`select aprobar_factura($1, 'GASTOS VARIOS', 'TRANSFERENCIA')`, [fNoTar])
+await db.query(`select aprobar_factura($1, 'GASTOS VARIOS', 'TRANSFERENCIA', null::integer, greatest(hoy_ar(), (select vencimiento from facturas where id = $1)))`, [fNoTar])
 f = await fac(fNoTar)
-check('[3] con otro método sigue como siempre: PARA_PAGAR, sin pagar', f.estado === 'PARA_PAGAR' && f.pagado === 0 && f.fecha_pago === null)
+// Desde 0041 aprobar con otro método fija la fecha de pago (acá, el vencimiento de la factura, que es la fecha que se pasa).
+check('[3] con otro método sigue como siempre: PARA_PAGAR, sin pagar (y con la fecha de pago de 0041)', f.estado === 'PARA_PAGAR' && f.pagado === 0 && f.fecha_pago === dia(10))
 const ncTar = await factura('india', pA, 300, { tipo: 'Nota de Crédito A' })
-await db.query(`select aprobar_factura($1, 'GASTOS VARIOS', 'TARJETA')`, [ncTar])
+await db.query(`select aprobar_factura($1, 'GASTOS VARIOS', 'TARJETA', null::integer, greatest(hoy_ar(), (select vencimiento from facturas where id = $1)))`, [ncTar])
 check('[3] una nota de crédito con tarjeta no se da por pagada', (await fac(ncTar)).estado === 'PARA_PAGAR')
 // Aprobar ya pagada con tarjeta: el pago se crea aparte por el saldo entero (no importe 0).
 const fTarYa = await factura('india', pA, 700)
@@ -102,7 +103,7 @@ const r = (await val(`select aprobar_factura_ya_pagada($1, 'GASTOS VARIOS', 'TAR
 f = await fac(fTarYa)
 check('[3] aprobar "ya pagada" con tarjeta: crea el pago por el total y la factura queda PAGADA', r === 'PARA_CONTABILIZAR' && f.estado === 'PAGADA' && f.pagado === 700, JSON.stringify({ r, f }))
 await como('teso@prueba.com')
-await falla('[3] Tesorería no aprueba facturas', `select aprobar_factura($1, 'X', 'TARJETA')`, [await (async () => { await servidor(); const id = await factura('india', pA, 10); await como('teso@prueba.com'); return id })()], /rol/)
+await falla('[3] Tesorería no aprueba facturas', `select aprobar_factura($1, 'X', 'TARJETA', null::integer, greatest(hoy_ar(), (select vencimiento from facturas where id = $1)))`, [await (async () => { await servidor(); const id = await factura('india', pA, 10); await como('teso@prueba.com'); return id })()], /rol/)
 
 // ================================================================ 4. Proveedor que no va a Xubio
 await servidor()
@@ -111,18 +112,18 @@ await db.exec(`
   insert into proveedores_empresa (proveedor_id, empresa_id, cuenta_contable, metodo_pago, saltar_xubio) values ('${pB}', 'robles', 'X', 'TRANSFERENCIA', true);`)
 await como('aprob@prueba.com')
 const fSalta = await factura('india', pB, 200)
-await db.query(`select aprobar_factura($1, 'GASTOS VARIOS', 'TRANSFERENCIA')`, [fSalta])
+await db.query(`select aprobar_factura($1, 'GASTOS VARIOS', 'TRANSFERENCIA', null::integer, greatest(hoy_ar(), (select vencimiento from facturas where id = $1)))`, [fSalta])
 f = await fac(fSalta)
 check('[4] proveedor que no va a Xubio: la factura aprobada queda SIN_ERP y en Para pagar', f.estado_xubio === 'SIN_ERP' && f.estado === 'PARA_PAGAR', JSON.stringify(f))
 check('[4] no aparece entre las facturas para subir a Xubio', (await val(`select count(*)::int n from facturas where id = $1 and estado_xubio = 'PENDIENTE'`, [fSalta])).n === 0)
 const fNoSalta = await factura('india', pA, 200)
-await db.query(`select aprobar_factura($1, 'GASTOS VARIOS', 'TRANSFERENCIA')`, [fNoSalta])
+await db.query(`select aprobar_factura($1, 'GASTOS VARIOS', 'TRANSFERENCIA', null::integer, greatest(hoy_ar(), (select vencimiento from facturas where id = $1)))`, [fNoSalta])
 check('[4] un proveedor común sigue quedando PENDIENTE de Xubio', (await fac(fNoSalta)).estado_xubio === 'PENDIENTE')
 const fRobles = await factura('robles', pB, 200)
-await db.query(`select aprobar_factura($1, 'GASTOS VARIOS', 'TRANSFERENCIA')`, [fRobles])
+await db.query(`select aprobar_factura($1, 'GASTOS VARIOS', 'TRANSFERENCIA', null::integer, greatest(hoy_ar(), (select vencimiento from facturas where id = $1)))`, [fRobles])
 check('[4] una empresa de Ralpharma sigue por su camino (pendiente de Ralpharma)', (await fac(fRobles)).estado_xubio === 'PENDIENTE_RALPHARMA')
 const fSalta2 = await factura('india', pB, 200)
-const rs = (await val(`select aprobar_factura_y_vincular($1, 'GASTOS VARIOS', 'TRANSFERENCIA') r`, [fSalta2])).r
+const rs = (await val(`select aprobar_factura_y_vincular($1, 'GASTOS VARIOS', 'TRANSFERENCIA', null::integer, greatest(hoy_ar(), (select vencimiento from facturas where id = $1))) r`, [fSalta2])).r
 check('[4] aprobar_factura_y_vincular también lo respeta y lo informa', rs.estado_xubio === 'SIN_ERP' && rs.estado === 'PARA_PAGAR', JSON.stringify(rs))
 
 // ================================================================ 1. Vincular al aprobar la factura
@@ -130,7 +131,7 @@ await servidor()
 const antUno = await pagoSF('india', pC, 300)          // un solo pago sin factura de Proveedor Tres
 const fC = await factura('india', pC, 1000)
 await como('aprob@prueba.com')
-let ap = (await val(`select aprobar_factura_y_vincular($1, 'GASTOS VARIOS', 'TRANSFERENCIA') r`, [fC])).r
+let ap = (await val(`select aprobar_factura_y_vincular($1, 'GASTOS VARIOS', 'TRANSFERENCIA', null::integer, greatest(hoy_ar(), (select vencimiento from facturas where id = $1))) r`, [fC])).r
 f = await fac(fC)
 check('[1] al aprobar, el único pago sin factura del proveedor se vincula solo', ap.vinculado === true && ap.pago === antUno && /vinculó sola/.test(ap.mensaje), JSON.stringify(ap))
 check('[1] la factura baja por lo pagado: PAGADA_PARCIAL con 300 pagados', f.estado === 'PAGADA_PARCIAL' && f.pagado === 300, JSON.stringify(f))
@@ -148,7 +149,7 @@ const antDos = await pagoSF('india', pA, 100)
 const antTres = await pagoSF('india', pA, 120)
 const fA2 = await factura('india', pA, 900)
 await como('aprob@prueba.com')
-ap = (await val(`select aprobar_factura_y_vincular($1, 'GASTOS VARIOS', 'TRANSFERENCIA') r`, [fA2])).r
+ap = (await val(`select aprobar_factura_y_vincular($1, 'GASTOS VARIOS', 'TRANSFERENCIA', null::integer, greatest(hoy_ar(), (select vencimiento from facturas where id = $1))) r`, [fA2])).r
 check('[1] con dos pagos sin factura del proveedor: no vincula y avisa cuántos hay', !ap.vinculado && /Hay 2 pagos sin factura/.test(ap.mensaje), JSON.stringify(ap))
 check('[1] la factura queda aprobada y sin pagar', (await fac(fA2)).pagado === 0 && (await fac(fA2)).estado === 'PARA_PAGAR')
 
@@ -158,7 +159,7 @@ await pagoSF('beratung', pB, 50)
 const antHoja = await pagoSF('india', pB, 60, { gestion: 'HOJA' })
 const fB = await factura('india', pB, 400)
 await como('aprob@prueba.com')
-ap = (await val(`select aprobar_factura_y_vincular($1, 'GASTOS VARIOS', 'TRANSFERENCIA') r`, [fB])).r
+ap = (await val(`select aprobar_factura_y_vincular($1, 'GASTOS VARIOS', 'TRANSFERENCIA', null::integer, greatest(hoy_ar(), (select vencimiento from facturas where id = $1))) r`, [fB])).r
 check('[1] un pago de la hoja del Apps Script no se vincula solo (se avisa) y el de otra empresa no cuenta', !ap.vinculado && /no se pudo vincular solo/.test(ap.mensaje), JSON.stringify(ap))
 
 // ================================================================ 1. Vincular a mano
@@ -428,7 +429,7 @@ await db.query(`select aprobar_factura_ya_pagada($1, 'GASTOS VARIOS', 'TARJETA',
 const pTj = (await val(`select pago_id from pagos_facturas where factura_id = $1`, [fTj])).pago_id
 check('[R1] aprobar ya pagada con tarjeta: el pago no queda esperando comprobante', (await pagoDe(pTj)).falta_comprobante === false)
 const fTarj2 = await factura('india', pA, 120)
-await db.query(`select aprobar_factura($1, 'GASTOS VARIOS', 'TARJETA')`, [fTarj2])
+await db.query(`select aprobar_factura($1, 'GASTOS VARIOS', 'TARJETA', null::integer, greatest(hoy_ar(), (select vencimiento from facturas where id = $1)))`, [fTarj2])
 check('[R2] factura de tarjeta pagada al aprobar: sin fila en pagos (la pantalla muestra "Tarjeta de crédito")', (await val(`select count(*)::int n from pagos_facturas where factura_id = $1`, [fTarj2])).n === 0 && (await fac(fTarj2)).estado === 'PAGADA')
 // El backfill de la migración, corrido de nuevo sobre filas de cada tipo.
 await servidor()

@@ -50,6 +50,8 @@ interface Pedido {
   bytes: Uint8Array
   cuentaRemuneradaId?: string
   fechaTenencia?: string
+  /** "Subir igual": el extracto parece ya cargado en otra empresa y Tesorería confirma que es esta cuenta. */
+  confirmarOtraEmpresa?: boolean
 }
 
 async function leerPedido(req: Request): Promise<Pedido> {
@@ -69,9 +71,9 @@ async function leerPedido(req: Request): Promise<Pedido> {
       const v = f.get(n)
       return typeof v === 'string' && v.trim() ? v.trim() : undefined
     }
-    p = { cuentaOrigenId: campo('cuentaOrigenId'), nombre: archivo.name, bytes: new Uint8Array(await archivo.arrayBuffer()), cuentaRemuneradaId: campo('cuentaRemuneradaId'), fechaTenencia: campo('fechaTenencia') }
+    p = { cuentaOrigenId: campo('cuentaOrigenId'), nombre: archivo.name, bytes: new Uint8Array(await archivo.arrayBuffer()), cuentaRemuneradaId: campo('cuentaRemuneradaId'), fechaTenencia: campo('fechaTenencia'), confirmarOtraEmpresa: campo('confirmarOtraEmpresa') === 'true' }
   } else {
-    let b: { cuentaOrigenId?: string; nombre?: string; data?: string; cuentaRemuneradaId?: string; fechaTenencia?: string }
+    let b: { cuentaOrigenId?: string; nombre?: string; data?: string; cuentaRemuneradaId?: string; fechaTenencia?: string; confirmarOtraEmpresa?: boolean }
     try {
       b = await req.json()
     } catch {
@@ -79,7 +81,7 @@ async function leerPedido(req: Request): Promise<Pedido> {
     }
     if (!b.data) throw new ErrorHttp(400, 'Falta el archivo (data en base64)')
     if (b.data.length > (MAX_BYTES * 4) / 3 + 4) throw new ErrorHttp(413, 'Archivo demasiado grande (máximo 4 MB)')
-    p = { cuentaOrigenId: b.cuentaOrigenId, nombre: b.nombre, bytes: new Uint8Array(Buffer.from(b.data, 'base64')), cuentaRemuneradaId: b.cuentaRemuneradaId, fechaTenencia: b.fechaTenencia }
+    p = { cuentaOrigenId: b.cuentaOrigenId, nombre: b.nombre, bytes: new Uint8Array(Buffer.from(b.data, 'base64')), cuentaRemuneradaId: b.cuentaRemuneradaId, fechaTenencia: b.fechaTenencia, confirmarOtraEmpresa: b.confirmarOtraEmpresa === true }
   }
   if (!p.cuentaOrigenId) throw new ErrorHttp(400, 'Falta cuentaOrigenId (la cuenta del extracto)')
   if (!p.nombre) throw new ErrorHttp(400, 'Falta el nombre del archivo')
@@ -243,6 +245,28 @@ export default manejar(async (req) => {
   const { data: ya, error: eYa } = await db.from('extractos').select('id, cuenta_origen_id').eq('archivo_hash', l.hash).in('cuenta_origen_id', lista.map((d) => d.cuenta.id))
   if (eYa) throw new ErrorHttp(500, eYa.message)
   const importadas = new Set(((ya ?? []) as { cuenta_origen_id: string }[]).map((x) => x.cuenta_origen_id))
+  // ¿Ya está en una cuenta de OTRA empresa de la organización (mismo archivo o mismos movimientos)? Se controla ANTES de guardar el
+  // archivo: un extracto rechazado no deja nada en el storage. El aviso empieza con [OTRA_EMPRESA]: la pantalla ofrece "Subir igual".
+  if (!p.confirmarOtraEmpresa) {
+    for (const d of lista) {
+      if (importadas.has(d.cuenta.id)) continue
+      const { data, error } = await db.rpc('extracto_duplicado_en_otra_empresa', {
+        p: { cuenta_origen_id: d.cuenta.id, hash: l.hash, movimientos: d.parte.movimientos },
+      })
+      // Base sin la migración 0041: no hay control.
+      if (error) {
+        if (/could not find|does not exist/i.test(error.message)) break
+        throw new ErrorHttp(500, error.message)
+      }
+      const dup = data as { motivo?: string; cuenta?: string; empresa?: string; coinciden?: number; total?: number } | null
+      if (dup?.motivo) {
+        throw new ErrorHttp(
+          409,
+          `[OTRA_EMPRESA] Este extracto ${dup.motivo === 'ARCHIVO' ? 'ya está cargado' : `parece ya cargado (${dup.coinciden} de ${dup.total} movimientos iguales)`} en la cuenta ${dup.cuenta} de ${dup.empresa}: no se importa en ${d.cuenta.nombre} (¿cuenta equivocada?)`,
+        )
+      }
+    }
+  }
   const path = lista.every((d) => importadas.has(d.cuenta.id)) ? null : await guardarArchivo(db, u.organizacionId, elegida.empresa_id, p.nombre, p.bytes, l.tipoArchivo)
 
   const origenSaldos = l.tenencia ? 'TENENCIA' : 'EXTRACTO'
@@ -257,6 +281,7 @@ export default manejar(async (req) => {
         movimientos: movs,
         saldos: d.parte.saldos,
         origen_saldos: origenSaldos,
+        ...(p.confirmarOtraEmpresa ? { confirmar_otra_empresa: 'true' } : {}),
       },
     })
     if (error) {

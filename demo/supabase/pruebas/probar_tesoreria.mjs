@@ -149,7 +149,7 @@ check('comprobante: neto 100 + IVA 21 + percepciones 3 = 124 (el SIRCREB de 4 va
 check('comprobante: 09990-20261124 del banco (por CUIT), nace pagado', f.punto_venta === 9990 && f.numero === 20261124 && f.cuit === '30999999991' && n(f.pagado) === 124)
 check('regenerar el mismo día no duplica', (await val(`select generar_comprobante_gastos($1, '2026-11-24') = $2 x`, [ca, fid])).x)
 await como('admin@prueba.com')
-await db.query(`select aprobar_factura($1, 'GASTOS BANCARIOS', 'DEBITO')`, [fid])
+await db.query(`select aprobar_factura($1, 'GASTOS BANCARIOS', 'DEBITO', null::integer, greatest(hoy_ar(), (select vencimiento from facturas where id = $1)))`, [fid])
 check('aprobado: queda PAGADA, no "para pagar"', (await val(`select estado from facturas where id = $1`, [fid])).estado === 'PAGADA')
 check('el comprobante no se proyecta como deuda en el Flujo', (await val(`select count(*)::int n from flujo_lineas where origen_id = $1`, [fid])).n === 0)
 await servidor()
@@ -203,7 +203,7 @@ const fac = (await val(`select ingresar_factura($1) id`, [{ empresa_id: 'india',
   tipo: 'Factura A', letra: 'A', punto_venta: 1, numero: 77, fecha: hoy.toISOString().slice(0, 10), vencimiento: vto, neto: 826.45, iva: 173.55,
   total: 1000, estado: 'PENDIENTE_APROBACION', validacion_ok: true }])).id
 await como('admin@prueba.com')
-await db.query(`select aprobar_factura($1, 'PROVEEDORES LOCALES', 'TRANSFERENCIA')`, [fac])
+await db.query(`select aprobar_factura($1, 'PROVEEDORES LOCALES', 'TRANSFERENCIA', null::integer, greatest(hoy_ar(), (select vencimiento from facturas where id = $1)))`, [fac])
 await como('teso@prueba.com')
 await db.query(`select definir_pago_factura($1, 'ANTICIPO_PARCIAL', 30)`, [fac])
 let tr = await filas(`select ocurrencia, fecha, importe::float from flujo_lineas where origen_id = $1 order by ocurrencia`, [fac])

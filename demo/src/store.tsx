@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { Auditoria, ComprobanteEjemplo, Documento, Empresa, EstadoEspejo, Factura, LecturaComprobante, Pago, Proveedor, Usuario } from './types'
-import type { AlcanceProyeccion, Bucket, CambioLinea, Catalogos, DatosAprobacion, DatosContabilizacion, DatosEdicion, DatosLiberacion, DatosTesoreria, DatosYaPagada, Fuente, NuevaProyeccion, NuevoCheque, NuevoPago, OpcionesExtracto, ResultadoCorridaBancos, ResultadoExtracto } from './data/fuente'
+import type { AlcanceProyeccion, Bucket, CambioLinea, Catalogos, DatosAprobacion, DatosContabilizacion, DatosEdicion, DatosLiberacion, DatosTesoreria, DatosYaPagada, Fuente, NuevaProyeccion, NuevoCheque, NuevoPago, OpcionesExtracto, ProyeccionParaPago, ResultadoCorridaBancos, ResultadoExtracto } from './data/fuente'
 import type { CategoriaMovimiento, OrigenSaldo, RefLinea, TipoPagoFactura } from './types'
 import { fecha as fmtFecha, money } from './lib/format'
 
@@ -38,6 +38,7 @@ interface Store {
   corregirFactura: (id: string) => Promise<void>
   editarFactura: (id: string, datos: DatosEdicion) => Promise<boolean>
   registrarPago: (p: NuevoPago) => Promise<Pago | null>
+  proyeccionesParaPago: (empresaId: string) => Promise<ProyeccionParaPago[]>
   contabilizarPago: (id: string, datos: DatosContabilizacion) => Promise<void>
   marcarRalpharma: (id: string) => Promise<void>
   leerComprobante: (archivo: File | ComprobanteEjemplo) => Promise<LecturaComprobante>
@@ -55,6 +56,7 @@ interface Store {
   /** Bancos, cheques y Flujo (0023 a 0027). Null mientras carga. */
   tesoreria: DatosTesoreria | null
   subirExtracto: (archivo: File, cuentaId: string, opciones?: OpcionesExtracto) => Promise<ResultadoExtracto | null>
+  borrarExtracto: (id: string) => Promise<boolean>
   reclasificarMovimiento: (id: string, categoria: CategoriaMovimiento, cuenta: string | null, aprender: string | null) => Promise<boolean>
   asignarContraparte: (movimientoId: string, cuentaId: string | null) => Promise<boolean>
   marcarSinMovimientos: (cuentaId: string, fecha: string, confirmo: boolean) => Promise<boolean>
@@ -260,6 +262,7 @@ export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fu
         else toast(r.estado === 'PENDIENTE_APROBACION' ? 'Guardado: los datos cierran y la factura queda lista para aprobar' : 'Guardado')
         return true
       },
+      proyeccionesParaPago: (empresaId) => fuente.proyeccionesParaPago(empresaId),
       registrarPago: (p) =>
         accion(
           () => fuente.registrarPago(p, usuario),
@@ -328,11 +331,14 @@ export function StoreProvider({ fuente, usuarioInicial, children }: { fuente: Fu
       },
       recargar,
       tesoreria,
+      borrarExtracto: async (id) => (await accion(() => fuente.borrarExtracto(id, usuario).then(() => true), 'Extracto deshecho: se borraron sus movimientos y saldos')) === true,
       subirExtracto: (a, c, o) =>
         accion(
           () => fuente.subirExtracto(a, c, usuario, o),
           (r) =>
-            r.repetido
+            r.otraEmpresa
+              ? 'Ojo: ese extracto parece ya cargado en otra empresa. No se importó nada'
+              : r.repetido
               ? 'Ese archivo ya estaba importado: no se agregó nada'
               : r.tenencia
                 ? 'Tenencia importada: el rendimiento sale solo de la conciliación'

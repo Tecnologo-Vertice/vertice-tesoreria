@@ -28,7 +28,7 @@ import type {
   Unidad,
 } from '../types'
 import { addDays, iso } from '../lib/format'
-import type { Bucket, Datos, DatosAprobacion, ResultadoAprobacion, ResultadoVinculo, DatosContabilizacion, DatosEdicion, DatosLiberacion, DatosYaPagada, Fuente, ResultadoLiberacion, ResultadoYaPagada, ResultadoEdicion, NuevoPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
+import type { Bucket, Datos, DatosAprobacion, ResultadoAprobacion, ResultadoVinculo, DatosContabilizacion, DatosEdicion, DatosLiberacion, DatosYaPagada, Fuente, ResultadoLiberacion, ResultadoYaPagada, ResultadoEdicion, NuevoPago, ProyeccionParaPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
 import { archivoABase64, llamarFuncion } from '../lib/supabase'
 import { rutaComprobante } from '../lib/rutas'
 
@@ -49,6 +49,7 @@ function mapFactura(r: Row): Factura {
     numero: n(r.numero),
     fecha: String(r.fecha),
     vencimiento: String(r.vencimiento ?? r.fecha),
+    vencimientoFactura: s(r.vencimiento_factura),
     neto: n(r.neto),
     iva: n(r.iva),
     percepciones: n(r.percepciones),
@@ -130,6 +131,10 @@ function mapPago(r: Row, facturaIds: string[]): Pago {
     numeroCuenta: s(r.numero_cuenta),
     proveedorDestino: s(r.proveedor_destino),
     tipoCheque: s(r.tipo_cheque),
+    proyeccionId: s(r.proyeccion_id),
+    proyeccionOcurrencia: s(r.proyeccion_ocurrencia),
+    proyeccionImporte: r.proyeccion_importe == null ? undefined : n(r.proyeccion_importe),
+    proyeccionBaja: r.proyeccion_baja === true,
     estadoExtraccion: s(r.estado_extraccion),
     avisoImporte: s(r.aviso_importe),
     detalleXubio: s(r.xubio_detalle) ?? s(r.detalle_contabilizacion),
@@ -274,16 +279,10 @@ export class FuenteSupabase implements Fuente {
   }
 
   async aprobarFactura(id: string, d: DatosAprobacion): Promise<ResultadoAprobacion> {
-    const args = { p_id: id, p_cuenta: d.cuentaContable, p_metodo: d.metodoPago, p_dias: d.diasCheque ?? null }
-    try {
-      const r = await this.rpc<Row>('aprobar_factura_y_vincular', args)
-      return { estado: s(r.estado), estadoXubio: s(r.estado_xubio), tarjeta: r.tarjeta === true, vinculado: r.vinculado === true, mensaje: s(r.mensaje) }
-    } catch (e) {
-      // Base sin la migración 0036: se aprueba como antes.
-      if (!/could not find the function/i.test(e instanceof Error ? e.message : String(e))) throw e
-      await this.rpc('aprobar_factura', args)
-      return {}
-    }
+    // La fecha de pago es obligatoria salvo cheque, tarjeta y notas de crédito (la base lo controla, 0041). Las firmas viejas de
+    // 4 argumentos ya no las puede llamar una persona.
+    const r = await this.rpc<Row>('aprobar_factura_y_vincular', { p_id: id, p_cuenta: d.cuentaContable, p_metodo: d.metodoPago, p_dias: d.diasCheque ?? null, p_fecha_pago: d.fechaPago ?? null })
+    return { estado: s(r.estado), estadoXubio: s(r.estado_xubio), tarjeta: r.tarjeta === true, vinculado: r.vinculado === true, mensaje: s(r.mensaje) }
   }
 
   async vincularPagoSinFactura(pagoId: string, facturaId: string): Promise<ResultadoVinculo> {
@@ -402,10 +401,26 @@ export class FuenteSupabase implements Fuente {
         sugerencia_confianza: d.sugerenciaConfianza ?? null,
         forma_carga_xubio: d.formaCargaXubio,
         comprobante_path: d.comprobante,
+        proyeccion_id: d.proyeccionId ?? null,
+        proyeccion_ocurrencia: d.proyeccionOcurrencia ?? null,
       },
     })
     const { data } = await this.db.from('pagos').select('*').eq('id', id).single()
     return mapPago(data as Row, d.facturaIds)
+  }
+
+  async proyeccionesParaPago(empresaId: string): Promise<ProyeccionParaPago[]> {
+    try {
+      const filas = await this.rpc<Row[]>('proyecciones_para_pago', { p_empresa: empresaId })
+      return (filas ?? []).map((r) => ({
+        proyeccionId: String(r.proyeccion_id), ocurrencia: String(r.ocurrencia), fecha: String(r.fecha), importe: n(r.importe),
+        concepto: s(r.concepto) ?? '', proveedor: s(r.proveedor), fila: s(r.fila) ?? '', recurrencia: s(r.recurrencia) ?? 'UNICA',
+      }))
+    } catch (e) {
+      // Base sin la migración 0041: no hay proyecciones para elegir.
+      if (/could not find the function/i.test(e instanceof Error ? e.message : String(e))) return []
+      throw e
+    }
   }
 
   async contabilizarPago(id: string, d: DatosContabilizacion): Promise<ResultadoXubio> {
@@ -851,8 +866,19 @@ export class FuenteSupabase implements Fuente {
       data,
       ...(o.fechaTenencia ? { fechaTenencia: o.fechaTenencia } : {}),
       ...(o.cuentaRemuneradaId ? { cuentaRemuneradaId: o.cuentaRemuneradaId } : {}),
+      ...(o.confirmarOtraEmpresa ? { confirmarOtraEmpresa: true } : {}),
+    }).catch((e) => {
+      // [OTRA_EMPRESA]: no es un error, es un aviso que se puede confirmar desde la pantalla ("Subir igual").
+      const msg = e instanceof Error ? e.message : String(e)
+      if (msg.startsWith('[OTRA_EMPRESA]')) return { otraEmpresa: msg.replace('[OTRA_EMPRESA]', '').trim() } as Record<string, unknown>
+      throw e
     })
+    if (typeof r.otraEmpresa === 'string') return { repetido: false, nuevos: 0, otraEmpresa: r.otraEmpresa }
     return leerResultadoExtracto(r)
+  }
+
+  async borrarExtracto(id: string) {
+    await this.rpc('borrar_extracto', { p_id: id })
   }
 
   async marcarAnulacionXubioManual(tipo: 'PAGO' | 'CHEQUE' | 'ASIENTO', id: string, nota: string) {

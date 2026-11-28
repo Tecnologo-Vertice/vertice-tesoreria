@@ -566,6 +566,7 @@ function mundo(extra: { extractos?: Fila[]; cuentas?: Fila[] } = {}): Mundo {
       extractos: extra.extractos ?? [],
     },
     rpc: {
+      extracto_duplicado_en_otra_empresa: () => null,
       usuario_ve_empresa: (a) => a.p_email !== 'otra@prueba.com' && a.p_empresa === 'india',
       importar_extracto: (a) => {
         const p = a.p as { movimientos: unknown[] }

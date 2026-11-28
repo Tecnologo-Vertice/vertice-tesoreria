@@ -6,7 +6,7 @@ import type { AlcanceProyeccion, CambioLinea, DatosTesoreria, NuevaProyeccion, N
 import type { CategoriaMovimiento, Cheque, MovimientoBancario, OrigenSaldo, Proyeccion, RefLinea, TipoPagoFactura } from '../types'
 import { pendientesXubioDemo, reglaPara, tesoreriaInicial, vistaTesoreria, type EstadoTesoreria } from './tesoreriaDemo'
 import { diaHabilAnterior, diasDelMes, ocurrenciasProyeccion, resumenDias, textoBanco } from '../lib/tesoreria'
-import type { Datos, DatosAprobacion, ResultadoAprobacion, ResultadoVinculo, DatosContabilizacion, DatosEdicion, DatosLiberacion, DatosYaPagada, Fuente, ResultadoLiberacion, ResultadoYaPagada, ResultadoEdicion, NuevoPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
+import type { Datos, DatosAprobacion, ResultadoAprobacion, ResultadoVinculo, DatosContabilizacion, DatosEdicion, DatosLiberacion, DatosYaPagada, Fuente, ResultadoLiberacion, ResultadoYaPagada, ResultadoEdicion, NuevoPago, ProyeccionParaPago, ResultadoSubida, ResultadoXubio, ResultadoXubioFactura } from './fuente'
 import {
   auditoriaInicial,
   comprobantesEjemplo,
@@ -96,6 +96,14 @@ export class FuenteDemo implements Fuente {
 
   /** Mismas reglas que aprobar_factura_y_vincular en SQL (0036). En la demo ningún proveedor está marcado "no va a Xubio". */
   async aprobarFactura(id: string, d: DatosAprobacion, u: Usuario): Promise<ResultadoAprobacion> {
+    // Mismas reglas de fecha de pago que aprobar_factura_interna en SQL (0041): obligatoria salvo cheque y notas de crédito, no pasada.
+    const fac = this.e.facturas.find((x) => x.id === id)
+    const conFecha = !!fac && d.metodoPago !== 'CHEQUE' && d.metodoPago !== 'ECHEQ' && d.metodoPago !== 'TARJETA' && !fac.tipo.startsWith('Nota de Cr')
+    if (conFecha) {
+      if (!d.fechaPago) throw new Error('Falta la fecha de pago: es obligatoria salvo que se pague con cheque')
+      if (d.fechaPago < iso(new Date())) throw new Error('La fecha de pago no puede ser anterior a hoy')
+      if (d.fechaPago > iso(addDays(new Date(), 365))) throw new Error('La fecha de pago no puede ser a más de un año')
+    }
     const tarjeta = this.aprobar(id, d, u, true)
     const f = this.e.facturas.find((x) => x.id === id)!
     let mensaje: string | undefined
@@ -201,7 +209,9 @@ export class FuenteDemo implements Fuente {
             estado: tarjeta ? 'PAGADA' : 'PARA_PAGAR',
             pagado: tarjeta ? f.total : f.pagado,
             pagadoPct: tarjeta ? 100 : f.pagadoPct,
-            fechaPago: tarjeta ? iso(new Date()) : f.fechaPago,
+            fechaPago: tarjeta ? iso(new Date()) : tarjetaDirecta && d.fechaPago && d.metodoPago !== 'TARJETA' ? d.fechaPago : f.fechaPago,
+            vencimientoFactura: tarjetaDirecta && d.fechaPago && d.metodoPago !== 'TARJETA' ? (f.vencimientoFactura ?? f.vencimiento) : f.vencimientoFactura,
+            vencimiento: tarjetaDirecta && d.fechaPago && d.metodoPago !== 'TARJETA' ? d.fechaPago : f.vencimiento,
             cuentaContable: d.cuentaContable,
             metodoPago: d.metodoPago,
             diasCheque: d.diasCheque,
@@ -421,6 +431,11 @@ export class FuenteDemo implements Fuente {
     return nuevo
   }
 
+  /** La demo no tiene Flujo: no hay proyecciones para elegir. */
+  async proyeccionesParaPago(): Promise<ProyeccionParaPago[]> {
+    return []
+  }
+
   async contabilizarPago(id: string, d: DatosContabilizacion, u: Usuario): Promise<ResultadoXubio> {
     const p = this.e.pagos.find((x) => x.id === id)
     if (!p) return { ok: false, error: 'Pago inexistente' }
@@ -574,6 +589,11 @@ export class FuenteDemo implements Fuente {
   }
 
   /** Mismo contrato que POST /api/bancos/extracto: totales, una entrada por cuenta y, en un FCI, tenencia (0029). */
+  /** La demo no deshace extractos. */
+  async borrarExtracto(): Promise<void> {
+    throw new Error('Deshacer un extracto solo está disponible con la base real')
+  }
+
   async subirExtracto(archivo: File, cuentaId: string, u: Usuario, o: OpcionesExtracto = {}): Promise<ResultadoExtracto> {
     this.exigirRol(u, ['TESORERIA', 'ADMINISTRACION', 'ADMIN'])
     await demora(700)

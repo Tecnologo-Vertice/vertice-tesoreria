@@ -5,7 +5,7 @@ import { Badge, BadgeVencimiento, Btn, Card, Desplegable, Empty, Field, inputCls
 import { cuentasFactura, enLista } from '../lib/cuentas'
 import { useFiltro } from '../components/Filtros'
 import { FormFactura } from '../components/FormFactura'
-import { fecha, fechaHora, fmtCuit, money, nroComprobante } from '../lib/format'
+import { addDays, fecha, fechaHora, fmtCuit, iso, money, nroComprobante } from '../lib/format'
 import { puede } from '../lib/permisos'
 import type { Documento, Factura, MetodoPago } from '../types'
 
@@ -209,6 +209,10 @@ function TarjetaFactura({ f, modo, nueva }: { f: Factura; modo: 'PENDIENTES' | '
   const [cuenta, setCuenta] = useState(f.cuentaContable ?? p.cuentaHabitual ?? '')
   const [metodo, setMetodo] = useState<MetodoPago>(f.metodoPago ?? 'TRANSFERENCIA')
   const [dias, setDias] = useState(30)
+  // Fecha de pago al aprobar (0041): obligatoria salvo cheque y notas de crédito; no puede ser anterior a hoy.
+  const hoyIso = iso(new Date())
+  const topeIso = iso(addDays(new Date(), 365))
+  const [fechaPagoAprob, setFechaPagoAprob] = useState('')
   const [rechazando, setRechazando] = useState(false)
   const [motivo, setMotivo] = useState('')
   const [editando, setEditando] = useState(false)
@@ -222,6 +226,8 @@ function TarjetaFactura({ f, modo, nueva }: { f: Factura; modo: 'PENDIENTES' | '
   const editable = puedeAprobar && modo !== 'HISTORIAL' && f.pagado === 0 && f.estadoXubio !== 'SUBIDA'
   const esCheque = metodo === 'CHEQUE' || metodo === 'ECHEQ'
   const cuentaValida = enLista(opcionesCuenta, cuenta)
+  const pideFechaPago = !esCheque && metodo !== 'TARJETA' && !f.tipo.startsWith('Nota de Cr')
+  const fechaPagoMala = pideFechaPago && (!fechaPagoAprob || fechaPagoAprob < hoyIso || fechaPagoAprob > topeIso)
 
   const panelRechazo = (
     <div className="space-y-2">
@@ -366,6 +372,15 @@ function TarjetaFactura({ f, modo, nueva }: { f: Factura; modo: 'PENDIENTES' | '
                           <input type="number" value={dias} onChange={(ev) => setDias(Number(ev.target.value))} className={inputCls} />
                         </Field>
                       )}
+                      {pideFechaPago && !yaPagada && (
+                        <Field
+                          label="Fecha de pago"
+                          hint={`Obligatoria (salvo cheque y tarjeta), desde hoy hasta un año. El vencimiento de la factura (${fecha(f.vencimiento)}) se guarda y esta fecha pasa a ser la del pago.`}
+                          marcado={fechaPagoMala ? 'falta' : undefined}
+                        >
+                          <input type="date" min={hoyIso} max={topeIso} value={fechaPagoAprob} onChange={(ev) => setFechaPagoAprob(ev.target.value)} className={inputCls} />
+                        </Field>
+                      )}
                     </div>
                     {yaPagada && (
                       <div className="rounded-lg border border-borde p-4 space-y-3">
@@ -424,7 +439,7 @@ function TarjetaFactura({ f, modo, nueva }: { f: Factura; modo: 'PENDIENTES' | '
                           Aprobar · ya pagada
                         </Btn>
                       )}
-                      <Btn disabled={!cuentaValida} onClick={() => aprobarFactura(f.id, { cuentaContable: cuentaValida!, metodoPago: metodo, diasCheque: esCheque ? dias : undefined })}>
+                      <Btn disabled={!cuentaValida || fechaPagoMala} onClick={() => aprobarFactura(f.id, { cuentaContable: cuentaValida!, metodoPago: metodo, diasCheque: esCheque ? dias : undefined, fechaPago: pideFechaPago ? fechaPagoAprob : undefined })}>
                         {e.erp !== 'XUBIO' ? 'Aprobar (carga manual en Ralpharma)' : modoApp === 'demo' ? 'Aprobar y enviar a Xubio' : 'Aprobar'}
                       </Btn>
                     </div>

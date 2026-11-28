@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useStore } from '../store'
 import type { CategoriaMovimiento, Conciliacion, CuentaBancaria, MovimientoBancario } from '../types'
-import type { PendienteXubio, ResultadoCorridaBancos, ResultadoExtracto } from '../data/fuente'
+import type { OpcionesExtracto, PendienteXubio, ResultadoCorridaBancos, ResultadoExtracto } from '../data/fuente'
 import { Badge, Btn, Card, Desplegable, Empty, Field, inputCls, Kpi, Modal, SelectorCuenta, Table, Tabs } from '../components/ui'
 import { AvisoTesoreria, CampoMonto, ModalAnulacionManual, PUEDE_ANULAR_XUBIO_A_MANO } from '../components/Tesoreria'
 import { fecha, fechaHora, money } from '../lib/format'
@@ -75,10 +75,12 @@ export function Bancos() {
 // ---------------------------------------------------------------- Movimientos bancarios
 
 function Movimientos({ cuentas, dia, puede }: { cuentas: CuentaBancaria[]; dia: string; puede: boolean }) {
-  const { tesoreria, empresa, subirExtracto, generarComprobanteGastos, generarAsientoBancario, asignarContraparte } = useStore()
+  const { tesoreria, empresa, subirExtracto, borrarExtracto, generarComprobanteGastos, generarAsientoBancario, asignarContraparte } = useStore()
   const t = tesoreria!
   const [resultado, setResultado] = useState<{ cuenta: string; r: ResultadoExtracto } | null>(null)
   const [subiendo, setSubiendo] = useState<string | null>(null)
+  // El extracto parece ya cargado en otra empresa: se pregunta antes de subirlo igual.
+  const [otraEmpresa, setOtraEmpresa] = useState<{ cuenta: CuentaBancaria; archivo: File; opciones: OpcionesExtracto; mensaje: string } | null>(null)
   const [vista, setVista] = useState<'REVISAR' | 'DIA' | 'TODOS'>('REVISAR')
   const [reclasificar, setReclasificar] = useState<MovimientoBancario | null>(null)
   const [sinMov, setSinMov] = useState<CuentaBancaria | null>(null)
@@ -96,10 +98,14 @@ function Movimientos({ cuentas, dia, puede }: { cuentas: CuentaBancaria[]; dia: 
     .filter((m) => (vista === 'REVISAR' ? m.estado === 'A_REVISAR' : vista === 'DIA' ? m.fecha === dia : true))
     .sort((a, b) => b.fecha.localeCompare(a.fecha) || a.cuentaId.localeCompare(b.cuentaId))
 
-  async function importar(c: CuentaBancaria, f: File, o: { fechaTenencia?: string; cuentaRemuneradaId?: string }): Promise<boolean> {
+  async function importar(c: CuentaBancaria, f: File, o: OpcionesExtracto): Promise<boolean> {
     setSubiendo(c.id)
     const r = await subirExtracto(f, c.id, o)
     setSubiendo(null)
+    if (r?.otraEmpresa) {
+      setOtraEmpresa({ cuenta: c, archivo: f, opciones: o, mensaje: r.otraEmpresa })
+      return true
+    }
     if (r) setResultado({ cuenta: c.nombre, r })
     return r !== null
   }
@@ -359,7 +365,7 @@ function Movimientos({ cuentas, dia, puede }: { cuentas: CuentaBancaria[]; dia: 
         {t.extractos.length === 0 ? (
           <p className="text-sm text-seco italic">Todavía no se importó ninguno.</p>
         ) : (
-          <Table head={['Importado', 'Cuenta', 'Archivo', 'Período', 'Movimientos', 'Nuevos', 'Por']}>
+          <Table head={['Importado', 'Cuenta', 'Archivo', 'Período', 'Movimientos', 'Nuevos', 'Por', '']}>
             {t.extractos
               .filter((x) => ids.has(x.cuentaId))
               .slice(0, 15)
@@ -372,6 +378,19 @@ function Movimientos({ cuentas, dia, puede }: { cuentas: CuentaBancaria[]; dia: 
                   <td className="px-4 py-2 tabular">{x.movimientos}</td>
                   <td className="px-4 py-2 tabular">{x.nuevos}</td>
                   <td className="px-4 py-2 text-seco">{x.importadoPor}</td>
+                  <td className="px-4 py-2 text-right">
+                    {puede && (
+                      <button
+                        className="text-[0.6875rem] text-acento underline"
+                        title="Si lo subiste a la cuenta equivocada: borra el archivo importado, sus movimientos y sus saldos. No se puede si algo ya está conciliado."
+                        onClick={() => {
+                          if (window.confirm(`¿Deshacer este extracto (${x.archivo})? Se borran sus ${x.movimientos} movimientos y sus saldos. Solo se puede si ninguno está conciliado ni en un asiento.`)) void borrarExtracto(x.id)
+                        }}
+                      >
+                        Deshacer
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))}
           </Table>
@@ -382,6 +401,28 @@ function Movimientos({ cuentas, dia, puede }: { cuentas: CuentaBancaria[]; dia: 
       {sinMov && <ModalSinMovimientos cuenta={sinMov} dia={dia} onClose={() => setSinMov(null)} />}
       {tenencia && <ModalTenencia cuenta={tenencia} dia={dia} onClose={() => setTenencia(null)} />}
       {extracto && <ModalExtracto cuenta={extracto} onImportar={(f, o) => importar(extracto, f, o)} onClose={() => setExtracto(null)} />}
+      {otraEmpresa && (
+        <Modal titulo="Este extracto parece de otra empresa" onClose={() => setOtraEmpresa(null)} ancho="max-w-lg">
+          <div className="space-y-4">
+            <p className="text-sm">{otraEmpresa.mensaje}</p>
+            <p className="text-xs text-seco">Si te equivocaste de cuenta, cancelá y subilo en la correcta. Si de verdad es de {otraEmpresa.cuenta.nombre}, podés subirlo igual: queda anotado en la auditoría.</p>
+            <div className="flex justify-end gap-2">
+              <Btn variant="secundario" onClick={() => setOtraEmpresa(null)}>
+                Cancelar
+              </Btn>
+              <Btn
+                onClick={async () => {
+                  const o = otraEmpresa
+                  setOtraEmpresa(null)
+                  await importar(o.cuenta, o.archivo, { ...o.opciones, confirmarOtraEmpresa: true })
+                }}
+              >
+                Subir igual
+              </Btn>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   )
 }
