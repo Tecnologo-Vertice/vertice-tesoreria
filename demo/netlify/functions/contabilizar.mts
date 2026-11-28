@@ -53,8 +53,15 @@ export default manejar(async (req) => {
   const echeqAMano = !!pago.numero_cheque && b.formaCargaXubio === 'ORDEN_PAGO' && (co4?.tipo_cuenta === 4 || xubio.tipoCuentaPara(origenTexto) === 4)
 
   const envioReal = env('XUBIO_ENVIO_REAL', false) === 'true'
-  if (echeqAMano && envioReal)
-    throw new ErrorHttp(422, `Pago con e-cheq ${pago.numero_cheque}: Xubio no permite crear esta orden de pago por API. Cargala a mano en Xubio (${pago.empresas.nombre}).`)
+  // E-cheq contra una cuenta de e-cheqs (como el CARGAR_A_MANO del Apps Script): Xubio no deja crear esa OP por API. Con el envío real, el pago
+  // queda REVISADO con su cuenta contable y marcado para que lo cargue el robot de e-cheqs (migración 0039). No se escribe nada en Xubio acá.
+  if (echeqAMano && envioReal) {
+    const detalle = `E-cheq ${pago.numero_cheque}: Xubio no permite crear esta orden de pago por API; queda marcado para que lo cargue el robot en Xubio (${pago.empresas.nombre})`
+    const { error: e0 } = await db.rpc('marcar_echeq_a_mano', { p_id: pago.id, p_cuenta: b.cuentaContable, p_forma: b.formaCargaXubio, p_detalle: detalle, p_usuario: u.nombre, p_rol: u.rol })
+    if (e0) throw new ErrorHttp(500, e0.message)
+    if (origenNuevo.cuenta_origen) await db.from('pagos').update(origenNuevo).eq('id', pago.id)
+    return json({ ok: true, id: 'ROBOT-ECHEQ', enSeco: false, detalle })
+  }
   const creds = await xubio.credencialesDe(db, pago.empresas.id)
   const notas: string[] = []
   if (echeqAMano) notas.push('e-cheq: en real hay que cargar la OP a mano en Xubio')

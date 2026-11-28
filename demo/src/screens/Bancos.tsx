@@ -90,6 +90,7 @@ function Movimientos({ cuentas, dia, puede }: { cuentas: CuentaBancaria[]; dia: 
   const fondosDe = (cuentaId: string) => t.cuentas.filter((c) => c.cuentaMadreId === cuentaId && (c.clase === 'FCI' || c.clase === 'REMUNERADA'))
 
   const ids = new Set(cuentas.map((c) => c.id))
+  const avisosDeFondos = t.avisosFci.filter((a) => ids.has(a.cuentaId))
   const movs = t.movimientos
     .filter((m) => ids.has(m.cuentaId))
     .filter((m) => (vista === 'REVISAR' ? m.estado === 'A_REVISAR' : vista === 'DIA' ? m.fecha === dia : true))
@@ -144,6 +145,19 @@ function Movimientos({ cuentas, dia, puede }: { cuentas: CuentaBancaria[]; dia: 
         </div>
       )}
 
+      {avisosDeFondos.length > 0 && (
+        <Card className="p-4" data-aviso="fondos-sin-movimientos">
+          <p className="text-sm font-semibold text-dorado">Fondos sin movimientos de su banco ({avisosDeFondos.length})</p>
+          <ul className="mt-1 text-xs text-seco list-disc pl-5 space-y-0.5">
+            {avisosDeFondos.slice(0, 6).map((a) => (
+              <li key={a.cuentaId + a.fecha}>
+                {a.cuenta} · {fecha(a.fecha).slice(0, 5)}: {a.detalle}
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
       <Card className="p-0 overflow-hidden">
         <div className="px-6 py-4 border-b border-borde flex items-center justify-between">
           <h3 className="font-serif text-xl">Cuentas · {fecha(dia)}</h3>
@@ -170,7 +184,9 @@ function Movimientos({ cuentas, dia, puede }: { cuentas: CuentaBancaria[]; dia: 
                 const conComprobante = movsDia.some((m) => m.destinoXubio === 'COMPROBANTE')
                 const conAsiento = movsDia.some((m) => m.destinoXubio === 'ASIENTO')
                 const comp = t.documentos.find((d) => d.tipo === 'COMPROBANTE' && d.cuentaId === c.id && d.fecha === dia)
-                const asi = t.documentos.find((d) => d.tipo === 'ASIENTO' && d.cuentaId === c.id && d.fecha === dia)
+                const asi = t.documentos.find((d) => d.tipo === 'ASIENTO' && !d.complemento && d.cuentaId === c.id && d.fecha === dia)
+                const complementos = t.documentos.filter((d) => d.tipo === 'ASIENTO' && d.complemento && d.cuentaId === c.id && d.fecha === dia)
+                const arrastre = !s ? t.saldosArrastrados.find((x) => x.cuentaId === c.id && x.fecha === dia && x.arrastrado) : undefined
                 return (
                   <tr key={c.id} data-cuenta={c.nombre}>
                     <td className="px-4 py-3">
@@ -192,7 +208,8 @@ function Movimientos({ cuentas, dia, puede }: { cuentas: CuentaBancaria[]; dia: 
                       )}
                     </td>
                     <td className="px-4 py-3 tabular font-semibold whitespace-nowrap">
-                      {s ? money(s.saldo) : '—'}
+                      {s ? money(s.saldo) : arrastre ? <span className="text-seco">{money(arrastre.saldo)}</span> : '—'}
+                      {arrastre && <span className="block text-[0.625rem] text-seco font-normal">repite el del {fecha(arrastre.saldoDe ?? '').slice(0, 5)} (arrastre)</span>}
                       {s && s.origen !== 'EXTRACTO' && <span className="block text-[0.625rem] text-seco font-normal">{s.origen === 'SIN_MOVIMIENTOS' ? 'repite el anterior' : s.origen === 'TENENCIA' ? 'tenencia del fondo' : 'cargado a mano'}</span>}
                     </td>
                     <td className="px-4 py-3">
@@ -207,7 +224,14 @@ function Movimientos({ cuentas, dia, puede }: { cuentas: CuentaBancaria[]; dia: 
                           <Badge tone={asi.estadoXubio === 'SUBIDA' ? 'verde' : 'dorado'}>Asiento {asi.estadoXubio === 'SUBIDA' ? 'en Xubio' : 'generado'}</Badge>
                         </div>
                       )}
-                      {!comp && !asi && <span className="text-seco">—</span>}
+                      {complementos.map((k) => (
+                        <div key={k.id}>
+                          <Badge tone={k.estadoXubio === 'SUBIDA' ? 'verde' : k.estadoXubio === 'ERROR' ? 'rojo' : 'dorado'}>
+                            Complemento {k.estadoXubio === 'SUBIDA' ? 'en Xubio' : k.estadoXubio === 'ERROR' ? 'con error' : 'generado'}
+                          </Badge>
+                        </div>
+                      ))}
+                      {!comp && !asi && complementos.length === 0 && <span className="text-seco">—</span>}
                     </td>
                     <td className="px-4 py-3">
                       {puede ? (
@@ -239,6 +263,13 @@ function Movimientos({ cuentas, dia, puede }: { cuentas: CuentaBancaria[]; dia: 
                               {asi ? 'Rehacer asiento' : 'Asiento del día'}
                             </button>
                           )}
+                          {asi?.estadoXubio === 'SUBIDA' &&
+                            (movsDia.some((m) => m.destinoXubio === 'ASIENTO' && !m.asientoId && m.estado !== 'CONTABILIZADO' && m.estado !== 'CARGADO_A_MANO') ||
+                              complementos.some((k) => k.estadoXubio !== 'SUBIDA')) && (
+                              <button className="text-acento underline" title="El asiento del día ya está en Xubio: lo nuevo va en un asiento aparte" onClick={() => void generarAsientoBancario(c.id, dia)}>
+                                {complementos.some((k) => k.estadoXubio !== 'SUBIDA') ? 'Rehacer complemento' : 'Asiento complementario'}
+                              </button>
+                            )}
                         </div>
                       ) : (
                         <span className="text-xs text-seco">Solo consulta</span>
@@ -525,6 +556,12 @@ function ModalExtracto({ cuenta, onImportar, onClose }: { cuenta: CuentaBancaria
   )
 }
 
+const sumarDias = (d: string, n: number) => {
+  const x = new Date(d + 'T12:00:00Z')
+  x.setUTCDate(x.getUTCDate() + n)
+  return x.toISOString().slice(0, 10)
+}
+
 function ModalTenencia({ cuenta, dia, onClose }: { cuenta: CuentaBancaria; dia: string; onClose: () => void }) {
   const { tesoreria, registrarSaldo } = useStore()
   const [f, setF] = useState(dia)
@@ -532,10 +569,31 @@ function ModalTenencia({ cuenta, dia, onClose }: { cuenta: CuentaBancaria; dia: 
   const [enviando, setEnviando] = useState(false)
   const n = parseMonto(saldo)
   const ant = tesoreria!.saldos.filter((s) => s.cuentaId === cuenta.id && s.fecha < f).sort((a, b) => b.fecha.localeCompare(a.fecha))[0]
+  // Aviso "fondo sin movimientos del banco": sin extracto, movimientos ni "sin movimientos" de la cuenta madre ese día, un rescate o una
+  // suscripción haría que el rendimiento salga mal.
+  const madre = cuenta.cuentaMadreId ? tesoreria!.cuentas.find((c) => c.id === cuenta.cuentaMadreId) : undefined
+  const hoyT = tesoreria!.hoy
+  const dow = f ? new Date(f + 'T12:00:00').getDay() : 0
+  // Solo FCI, solo días hábiles y solo dentro de lo que la pantalla tiene cargado (45 días): más atrás no se sabe.
+  const sinBanco =
+    cuenta.clase === 'FCI' &&
+    !!madre &&
+    !!f &&
+    dow !== 0 &&
+    dow !== 6 &&
+    !tesoreria!.feriados.includes(f) &&
+    f >= sumarDias(hoyT, -40) &&
+    !tesoreria!.movimientos.some((m) => m.cuentaId === madre.id && m.fecha === f && m.estado !== 'IGNORADO') &&
+    !tesoreria!.saldos.some((s) => s.cuentaId === madre.id && s.fecha === f && (s.origen === 'EXTRACTO' || s.origen === 'SIN_MOVIMIENTOS'))
   return (
     <Modal titulo={`Tenencia · ${cuenta.nombre}`} onClose={onClose} ancho="max-w-lg">
       <div className="space-y-4">
         <p className="text-sm text-seco">El valor de la tenencia según el informe del fondo. El rendimiento del día sale solo: saldo − anterior − suscripciones + rescates, y entra real al Flujo.</p>
+        {sinBanco && (
+          <p className="text-sm text-dorado" data-aviso="fondo-sin-movimientos">
+            OJO: no hay movimientos de {madre!.nombre} el {fecha(f)}. Si hubo rescate o suscripción, subí antes el extracto del banco.
+          </p>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <Field label="Fecha">
             <input type="date" className={inputCls} value={f} max={tesoreria!.hoy} onChange={(e) => setF(e.target.value)} />

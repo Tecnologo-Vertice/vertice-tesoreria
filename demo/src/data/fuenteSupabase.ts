@@ -7,6 +7,7 @@ import type { Auditoria, ComprobanteEjemplo, CuentaOrigen, Documento, Empresa, E
 import type { AlcanceProyeccion, CambioLinea, DatosTesoreria, NuevaProyeccion, NuevoCheque, OpcionesExtracto, PendienteXubio, ResultadoCorridaBancos, ResultadoExtracto } from './fuente'
 import { leerResultadoExtracto } from './resultadoExtracto'
 import type {
+  AvisoFci,
   CategoriaMovimiento,
   Cheque,
   Conciliacion,
@@ -21,6 +22,7 @@ import type {
   OrigenSaldo,
   Proyeccion,
   RefLinea,
+  SaldoArrastrado,
   SaldoBancario,
   TipoPagoFactura,
   Unidad,
@@ -551,6 +553,7 @@ export class FuenteSupabase implements Fuente {
             cobroId: s(r.cobro_id),
             chequeId: s(r.cheque_id),
             facturaId: s(r.factura_id),
+            asientoId: s(r.asiento_id),
             revisadoPor: s(r.revisado_por),
           }),
           (q) => q.gte('fecha', desde),
@@ -585,8 +588,8 @@ export class FuenteSupabase implements Fuente {
         ),
         this.consulta<DocumentoBancario>(
           'asientos',
-          (r) => ({ id: String(r.id), tipo: 'ASIENTO', cuentaId: String(r.cuenta_origen_id), fecha: String(r.fecha), estado: r.anulado_en ? 'ANULADO' : 'GENERADO', estadoXubio: s(r.estado_xubio) }),
-          (q) => q.gte('fecha', desde).eq('tipo', 'BANCARIO_DIARIO').is('anulado_en', null),
+          (r) => ({ id: String(r.id), tipo: 'ASIENTO', cuentaId: String(r.cuenta_origen_id), fecha: String(r.fecha), estado: r.anulado_en ? 'ANULADO' : 'GENERADO', estadoXubio: s(r.estado_xubio), complemento: r.tipo === 'BANCARIO_COMPLEMENTO' }),
+          (q) => q.gte('fecha', desde).in('tipo', ['BANCARIO_DIARIO', 'BANCARIO_COMPLEMENTO']).is('anulado_en', null),
           [['fecha', 'asc'], ['id', 'asc']],
         ),
         this.consulta<DocumentoBancario>(
@@ -727,6 +730,8 @@ export class FuenteSupabase implements Fuente {
         cheques,
         pendientesXubio: await this.pendientesXubio(),
         chequesSugeridos: await this.chequesSugeridos(),
+        avisosFci: await this.avisosFci(),
+        saldosArrastrados: await this.saldosArrastrados(),
         filas,
         lineas,
         control,
@@ -750,6 +755,8 @@ export class FuenteSupabase implements Fuente {
         cheques: [],
         pendientesXubio: [],
         chequesSugeridos: [],
+        avisosFci: [],
+        saldosArrastrados: [],
         filas: [],
         lineas: [],
         control: [],
@@ -781,6 +788,20 @@ export class FuenteSupabase implements Fuente {
       tomadaEn: String(r.tomada_en),
       tomadaPor: String(r.tomada_por),
     }))
+  }
+
+  /** Vista avisos_fci (0040). Sin la migración, lista vacía. */
+  private async avisosFci(): Promise<AvisoFci[]> {
+    const { data, error } = await this.db.from('avisos_fci').select('cuenta_origen_id, cuenta, madre, fecha, detalle').order('fecha', { ascending: false }).limit(200)
+    if (error) return []
+    return (data as Row[]).map((r) => ({ cuentaId: String(r.cuenta_origen_id), cuenta: String(r.cuenta), madre: String(r.madre), fecha: String(r.fecha), detalle: String(r.detalle) }))
+  }
+
+  /** saldos_arrastrados (0040) de los últimos 20 días. Sin la migración, lista vacía. */
+  private async saldosArrastrados(): Promise<SaldoArrastrado[]> {
+    const { data, error } = await this.db.rpc('saldos_arrastrados', { p_desde: iso(addDays(new Date(), -20)), p_hasta: null, p_empresa: null })
+    if (error) return []
+    return ((data ?? []) as Row[]).map((r) => ({ cuentaId: String(r.cuenta_origen_id), fecha: String(r.fecha), saldo: n(r.saldo), arrastrado: r.arrastrado === true, saldoDe: s(r.saldo_de) }))
   }
 
   /** Vista movimientos_cheque_sugerido (0036). Sin la migración, lista vacía. */
@@ -869,7 +890,7 @@ export class FuenteSupabase implements Fuente {
   }
 
   async generarAsientoBancario(cuentaId: string, fecha: string): Promise<string | null> {
-    return (await this.rpc<string | null>('generar_asiento_bancario', { p_cuenta: cuentaId, p_fecha: fecha })) ?? null
+    return (await this.rpc<string | null>('generar_asiento_del_dia', { p_cuenta: cuentaId, p_fecha: fecha })) ?? null
   }
 
   async emitirCheque(c: NuevoCheque): Promise<string> {

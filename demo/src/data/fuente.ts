@@ -5,6 +5,7 @@
 
 import type {
   Auditoria,
+  AvisoFci,
   CategoriaMovimiento,
   Cheque,
   Conciliacion,
@@ -19,6 +20,7 @@ import type {
   OrigenSaldo,
   Proyeccion,
   RefLinea,
+  SaldoArrastrado,
   SaldoBancario,
   TipoCheque,
   TipoPagoFactura,
@@ -158,6 +160,10 @@ export interface DatosTesoreria {
   cheques: Cheque[]
   /** Débitos de cheque sin número con un único cheque emitido por el mismo importe (±$1): "puede ser el cheque X". Vacío si la base no tiene 0036. */
   chequesSugeridos: { movimientoId: string; chequeId: string; numero: string; importe: number }[]
+  /** Fondos con tenencia y sin movimientos de su banco ese día (0040). Vacío si la base no tiene 0040. */
+  avisosFci: AvisoFci[]
+  /** Saldos de los últimos días hábiles con el arrastre de los días sin movimientos (0040). Vacío si la base no tiene 0040. */
+  saldosArrastrados: SaldoArrastrado[]
   /** Lo bancario que falta en Xubio (comprobantes, asientos, anulaciones). Vacío si la base no tiene 0029. */
   pendientesXubio: PendienteXubio[]
   filas: FilaFlujo[]

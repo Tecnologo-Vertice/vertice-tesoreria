@@ -5,7 +5,10 @@ import { supabase } from '../lib/supabase'
 import type { EstadoEspejo, Rol } from '../types'
 import { BotonLetra, BotonTema, Desplegable } from './ui'
 
-export type Pantalla = 'vencimientos' | 'aprobacion' | 'pagos' | 'cheques' | 'bancos' | 'contabilizacion' | 'ralpharma' | 'flujo' | 'auditoria'
+export type Pantalla = 'vencimientos' | 'aprobacion' | 'pagos' | 'cheques' | 'robot' | 'bancos' | 'contabilizacion' | 'ralpharma' | 'flujo' | 'auditoria'
+
+/** Quién ve el panel del robot de e-cheqs (los mismos roles que acepta robot_estado_panel). */
+const ROLES_ROBOT: Rol[] = ['TESORERIA', 'ADMINISTRACION', 'DIRECCION', 'CONTROLLER', 'ADMIN']
 
 const ROLES: Record<Rol, string> = {
   TESORERIA: 'Tesorería',
@@ -22,6 +25,7 @@ const ICONOS: Record<Pantalla, ReactNode> = {
   aprobacion: <path d="M9 12l2 2 4-4M7 3h7l5 5v11a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" />,
   pagos: <path d="M3 9h18M7 15h3M5 5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z" />,
   cheques: <path d="M3 7h18v10H3zM7 13h6M16 11h2" />,
+  robot: <path d="M12 3v3M6 8h12a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2zM9 13h.01M15 13h.01M9 17h6" />,
   bancos: <path d="M3 10l9-6 9 6M5 10v8M9 10v8M15 10v8M19 10v8M3 20h18" />,
   contabilizacion: <path d="M4 19V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v14l-4-2-4 2-4-2-4 2zM8 8h8M8 12h8" />,
   ralpharma: <path d="M12 3a9 9 0 1 0 0 18V3zM12 3a9 9 0 0 1 0 18" />,
@@ -41,7 +45,7 @@ export function Layout({ pantalla, onNav, children }: { pantalla: Pantalla; onNa
   const [actualizando, setActualizando] = useState(false)
   const hoyT = tesoreria?.hoy ?? ''
 
-  const items: Item[] = [
+  const items: Item[] = ([
     { id: 'vencimientos', titulo: 'Vencimientos', sub: 'Deuda del grupo' },
     {
       id: 'aprobacion',
@@ -56,6 +60,7 @@ export function Layout({ pantalla, onNav, children }: { pantalla: Pantalla; onNa
       sub: 'Emitidos y a debitar',
       n: tesoreria?.cheques.filter((c) => (c.estado === 'EMITIDO' || c.estado === 'ENTREGADO') && c.fechaPago < hoyT).length,
     },
+    { id: 'robot', titulo: 'Robot e-cheqs', sub: 'Subida y débito en Xubio' },
     { id: 'bancos', titulo: 'Bancos', sub: 'Extractos y conciliación', n: tesoreria?.movimientos.filter((m) => m.estado === 'A_REVISAR').length },
     { id: 'contabilizacion', titulo: 'Contabilización', sub: 'Administración', n: pagos.filter((p) => p.estado === 'CARGADO' || p.estado === 'REVISADO').length },
     {
@@ -68,7 +73,7 @@ export function Layout({ pantalla, onNav, children }: { pantalla: Pantalla; onNa
     },
     { id: 'flujo', titulo: 'Flujo de caja', sub: 'Grilla real y proyectada' },
     { id: 'auditoria', titulo: 'Auditoría', sub: 'Quién hizo qué' },
-  ]
+  ] as Item[]).filter((i) => i.id !== 'robot' || ROLES_ROBOT.includes(usuario.rol))
   const actual = items.find((i) => i.id === pantalla)
 
   return (

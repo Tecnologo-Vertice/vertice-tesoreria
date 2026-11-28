@@ -335,6 +335,8 @@ export interface MovimientoBancario {
   chequeId?: string
   /** Comprobante "Extracto Bancario" donde quedó. */
   facturaId?: string
+  /** Asiento del día (o complementario) donde quedó. */
+  asientoId?: string
   /** Solo demo: a quién se le pagó o quién cobró (en la base sale del pago o del cobro). */
   contraparte?: string
   revisadoPor?: string
@@ -385,6 +387,26 @@ export interface DocumentoBancario {
   total?: number
   estado: string
   estadoXubio?: string
+  /** Asiento complementario del día (0040): lo que llegó después de que el asiento del día subió a Xubio. */
+  complemento?: boolean
+}
+
+/** Un FCI con tenencia un día en que su banco no tiene movimientos ni extracto (vista avisos_fci, 0040). */
+export interface AvisoFci {
+  cuentaId: string
+  cuenta: string
+  madre: string
+  fecha: string
+  detalle: string
+}
+
+/** Saldo de una cuenta un día hábil; arrastrado = repite el del día anterior con saldo (saldos_arrastrados, 0040). */
+export interface SaldoArrastrado {
+  cuentaId: string
+  fecha: string
+  saldo: number
+  arrastrado: boolean
+  saldoDe?: string
 }
 
 export interface Extracto {

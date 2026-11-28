@@ -27,7 +27,7 @@ export const borradoAsientoConfirmado = () => env('XUBIO_BORRAR_ASIENTO_CONFIRMA
 export const PATH_ASIENTO = 'asientoContableManualBean'
 const USUARIO = 'Envíos bancarios'
 
-export type Proceso = 'XUBIO_ASIENTOS' | 'XUBIO_ANULACIONES' | 'CONTROL_DIARIO' | 'XUBIO_PAGOS' | 'LECTURA_XUBIO'
+export type Proceso = 'XUBIO_ASIENTOS' | 'XUBIO_ANULACIONES' | 'CONTROL_DIARIO' | 'XUBIO_PAGOS' | 'LECTURA_XUBIO' | 'IMPORTAR_EXTRACTO'
 export type EstadoLog = 'OK' | 'PRUEBA_OK' | 'ERROR' | 'OMITIDO'
 
 export interface Item {
